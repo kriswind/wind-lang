@@ -1,0 +1,52 @@
+/* cin reads whitespace-separated values into variables; used as a value it
+   tells whether the most recent read succeeded. */
+
+cout << "Name and age: "
+cin >> string name >> int age
+cout << name << " is " << age << "\n"
+
+i8 small
+u8 byte_value
+i128 huge
+f32 ratio
+float precise
+char letter
+bool flag
+cin >> small >> byte_value >>
+    huge >> u128 huger
+cin >> ratio >> precise >> letter >> flag
+cout << small << " " << byte_value << " " << huge << " " << huger << "\n"
+cout << ratio << " " << precise << " " << letter << " " << flag << "\n"
+
+// A value that does not fit, or is not a number, fails and leaves zero.
+i8 overflow = 5
+cin >> overflow
+cout << overflow << " ok=" << cin << "\n"
+int word = 5
+cin >> word
+cout << word << " ok=" << cin << "\n"
+u8 negative = 5
+cin >> negative
+if !cin { cout << "negative rejected, left " << negative << "\n" }
+
+// A read can declare a variable inside a function or block too.
+int double_next() {
+    cin >> unsigned long seen
+    if cin {
+        cin >> int inner
+        return int(seen) * 2 + inner
+    }
+    return -1
+}
+cout << double_next() << "\n"
+
+// Sum numbers until the input runs out.
+int total = 0
+int value
+next:
+cin >> value
+if cin {
+    total += value
+    goto next
+}
+cout << "total " << total << "\n"

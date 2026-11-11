@@ -1,0 +1,18 @@
+tests/err/cin.wind:1:11: warning: constant 'K' is never used
+tests/err/cin.wind:2:5: warning: variable 'n' is never used
+tests/err/cin.wind:3:6: warning: function 'f' is never used
+tests/err/cin.wind:3:24: error: cannot read into parameter 'p'
+tests/err/cin.wind:4:8: error: cannot read into constant 'K'
+tests/err/cin.wind:5:8: error: undefined name 'missing'
+tests/err/cin.wind:5:19: error: cannot read into function 'f'
+tests/err/cin.wind:6:5: error: expected '>>', found a name
+tests/err/cin.wind:7:8: error: expected a name, found integer literal
+tests/err/cin.wind:8:10: error: expected end of statement, found '+'
+tests/err/cin.wind:9:5: warning: variable 'ok' is never used
+tests/err/cin.wind:9:10: error: cannot initialize 'int' variable with 'bool'
+tests/err/cin.wind:10:8: error: a constant's value must be known at compile time and cannot be read from input
+tests/err/cin.wind:11:13: error: 'v' cannot have type 'void'
+tests/err/cin.wind:12:12: error: 'n' is already defined at line 2
+tests/err/cin.wind:13:15: warning: variable 'fresh' is never used
+tests/err/cin.wind:13:24: error: undefined name 'fresh2'
+tests/err/cin.wind:14:11: error: expected a name, found end of line

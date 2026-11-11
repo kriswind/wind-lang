@@ -380,6 +380,8 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         return check_call(c, expr);
     case EXPR_CAST:
         return check_cast(c, expr);
+    case EXPR_CIN_OK:
+        return TYPE_BOOL;
     case EXPR_SIZEOF: {
         /* A size is known here, so the node becomes an integer literal: it
            then adapts to its context like any other, and the later passes
@@ -426,6 +428,7 @@ static bool is_constant(const Expr *expr) {
         return is_constant(expr->as.cast.operand);
     case EXPR_CALL:
     case EXPR_SIZEOF:
+    case EXPR_CIN_OK:
         return false;
     }
     return false;
@@ -623,6 +626,31 @@ static void check_stmt(Checker *c, Stmt *stmt) {
             if (check_expr(c, arg, TYPE_INVALID) == TYPE_VOID) {
                 error(c, arg->loc, "cannot print a 'void' value");
             }
+        }
+        break;
+    case STMT_CIN:
+        for (size_t i = 0; i < stmt->as.cin.count; i++) {
+            ReadTarget *target = &stmt->as.cin.targets[i];
+            if (target->declares) {
+                Symbol *declared =
+                    new_symbol(c, SYM_VAR, target->name, target->loc, target->type);
+                declare(c, declared);
+                list_push(c, declared->global ? &c->unit->program.globals : c->locals,
+                          declared);
+                target->symbol = declared;
+                continue;
+            }
+            Symbol *symbol = resolve(c, target->name, target->loc);
+            if (!symbol) continue;
+            if (symbol->kind != SYM_VAR) {
+                const char *what = symbol->kind == SYM_CONST   ? "constant"
+                                   : symbol->kind == SYM_PARAM ? "parameter"
+                                                               : "function";
+                error(c, target->loc, "cannot read into %s '%.*s'", what,
+                      NAME(target->name));
+                continue;
+            }
+            target->symbol = symbol;
         }
         break;
     case STMT_IF: {

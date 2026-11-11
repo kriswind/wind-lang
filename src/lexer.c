@@ -10,6 +10,7 @@ static const struct {
 } keywords[] = {
     {"const", TOK_KW_CONST, TYPE_INVALID},
     {"cout", TOK_KW_COUT, TYPE_INVALID},
+    {"cin", TOK_KW_CIN, TYPE_INVALID},
     {"if", TOK_KW_IF, TYPE_INVALID},
     {"else", TOK_KW_ELSE, TYPE_INVALID},
     {"goto", TOK_KW_GOTO, TYPE_INVALID},
@@ -93,6 +94,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_TYPE:      return "type name";
     case TOK_KW_CONST:  return "'const'";
     case TOK_KW_COUT:   return "'cout'";
+    case TOK_KW_CIN:    return "'cin'";
     case TOK_KW_IF:     return "'if'";
     case TOK_KW_ELSE:   return "'else'";
     case TOK_KW_GOTO:   return "'goto'";
@@ -106,6 +108,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_SHORT:  return "'short'";
     case TOK_ASSIGN:    return "'='";
     case TOK_SHL:       return "'<<'";
+    case TOK_SHR:       return "'>>'";
     case TOK_LPAREN:    return "'('";
     case TOK_RPAREN:    return "')'";
     case TOK_LBRACE:    return "'{'";
@@ -451,7 +454,9 @@ Token lexer_next(Lexer *lexer) {
         case '%': tok.kind = match(lexer, '=') ? TOK_PERCENT_EQ : TOK_PERCENT; break;
         case '=': tok.kind = match(lexer, '=') ? TOK_EQ : TOK_ASSIGN; break;
         case '!': tok.kind = match(lexer, '=') ? TOK_NE : TOK_NOT;    break;
-        case '>': tok.kind = match(lexer, '=') ? TOK_GE : TOK_GT;     break;
+        case '>':
+            tok.kind = match(lexer, '>') ? TOK_SHR : match(lexer, '=') ? TOK_GE : TOK_GT;
+            break;
         case '<':
             tok.kind = match(lexer, '<') ? TOK_SHL : match(lexer, '=') ? TOK_LE : TOK_LT;
             break;

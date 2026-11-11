@@ -65,6 +65,8 @@ typedef enum {
     EXPR_BINARY,
     EXPR_CALL,
     EXPR_CAST,
+    /* "cin" used as a value: whether the most recent read succeeded. */
+    EXPR_CIN_OK,
     /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
     EXPR_SIZEOF,
 } ExprKind;
@@ -137,6 +139,7 @@ typedef enum {
     STMT_ASSIGN,
     STMT_EXPR,
     STMT_COUT,
+    STMT_CIN,
     STMT_IF,
     STMT_GOTO,
     STMT_LABEL,
@@ -157,6 +160,16 @@ typedef struct {
     SrcLoc loc;
     Symbol *symbol; /* set by unit_analyze */
 } Param;
+
+/* A variable that "cin" reads into: an existing one, or one that the read
+   itself declares ("cin >> int n"). */
+typedef struct {
+    Str name;
+    SrcLoc loc;
+    bool declares;
+    TypeKind type;        /* the declared type, when declares is set */
+    const Symbol *symbol; /* set by unit_analyze; NULL if it cannot be read into */
+} ReadTarget;
 
 struct Stmt {
     StmtKind kind;
@@ -187,6 +200,11 @@ struct Stmt {
             Expr **args;
             size_t count;
         } cout;
+        /* STMT_CIN */
+        struct {
+            ReadTarget *targets;
+            size_t count;
+        } cin;
         /* STMT_IF. "else if" is an else block holding one if statement. */
         struct {
             Expr *cond;

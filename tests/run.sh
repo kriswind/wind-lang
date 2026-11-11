@@ -2,6 +2,7 @@
 # Run from the repository root: sh tests/run.sh
 #
 # tests/ok/*.wind  must run successfully and print exactly the matching .out file.
+#                  A matching .in file, if present, is fed to the program's stdin.
 # tests/err/*.wind must fail `wind check` with exactly the matching .err output.
 
 WIND=build/wind
@@ -10,7 +11,9 @@ total=0
 
 for src in tests/ok/*.wind; do
     total=$((total + 1))
-    actual=$("$WIND" run "$src" 2>&1; echo "[exit $?]")
+    input="${src%.wind}.in"
+    [ -f "$input" ] || input=/dev/null
+    actual=$("$WIND" run "$src" 2>&1 <"$input"; echo "[exit $?]")
     expected=$(cat "${src%.wind}.out"; echo "[exit 0]")
     if [ "$actual" != "$expected" ]; then
         failed=$((failed + 1))

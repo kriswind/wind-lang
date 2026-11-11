@@ -128,6 +128,14 @@ outside = [item["label"] for item in request("textDocument/completion", at(8, 0)
 check("completion at top level", [n in outside for n in ("n", "doubled", "Limit", "twice", "total")],
       [False, False, True, True, True])
 
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 4},
+                                  "contentChanges": [{"text": "u8 level\ncin >> level >> f32 ratio\ncout << level << cin << ratio\n"}]})
+check("diagnostics for cin", read()["params"]["diagnostics"], [])
+check("hover cin target", hover_text(1, 8), "```wind\nu8 level\n```")
+check("hover cin declaration", hover_text(1, 22), "```wind\nf32 ratio\n```")
+check("definition of cin declaration", request("textDocument/definition", at(2, 27))["result"]["range"], rng(1, 20, 25))
+check("definition of cin target", request("textDocument/definition", at(1, 8))["result"]["range"], rng(0, 3, 8))
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 

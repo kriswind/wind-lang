@@ -8,7 +8,7 @@
  *
  *   program    = { statement } EOF
  *   block      = "{" { statement } "}"
- *   statement  = ( const_decl | var_decl | assign | call | cout | goto
+ *   statement  = ( const_decl | var_decl | assign | call | cout | cin | goto
  *                | return ) terminator
  *              | if | func | label
  *   terminator = NEWLINE | ";" | EOF | before "}"
@@ -18,6 +18,8 @@
  *   assign     = IDENT ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr
  *              | IDENT ( "++" | "--" ) | ( "++" | "--" ) IDENT
  *   cout       = "cout" "<<" expr { "<<" expr }
+ *   cin        = "cin" ">>" target { ">>" target }
+ *   target     = [ type ] IDENT
  *   goto       = "goto" IDENT
  *   label      = IDENT ":"
  *   return     = "return" [ expr ]
@@ -35,11 +37,11 @@
  *   unary      = ( "-" | "!" ) unary | primary
  *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | IDENT
  *              | call | type "(" expr ")" | "(" expr ")"
- *              | "sizeof" "(" type ")" | "sizeof" unary
+ *              | "sizeof" "(" type ")" | "sizeof" unary | "cin"
  *   call       = IDENT "(" [ expr { "," expr } ] ")"
  *
  * Functions may only appear at the top level. A newline does not end a
- * statement directly after "=", "<<", "," or a binary operator, inside
+ * statement directly after "=", "<<", ">>", "," or a binary operator, inside
  * parentheses, or between an "if" condition or "}" and what follows it.
  *
  * Error handling: a parse function that fails reports one diagnostic and
@@ -251,6 +253,9 @@ static Expr *parse_primary(Parser *p) {
     switch (tok.kind) {
     case TOK_KW_SIZEOF:
         return parse_sizeof(p);
+    case TOK_KW_CIN:
+        next(p);
+        return new_expr(p, EXPR_CIN_OK, tok.loc);
     case TOK_INT:
         next(p);
         expr = new_expr(p, EXPR_INT_LIT, tok.loc);
@@ -368,6 +373,7 @@ static bool at_statement_keyword(const Parser *p) {
     switch (p->tok.kind) {
     case TOK_KW_CONST:
     case TOK_KW_COUT:
+    case TOK_KW_CIN:
     case TOK_KW_IF:
     case TOK_KW_GOTO:
     case TOK_KW_RETURN:
@@ -457,6 +463,40 @@ static Stmt *parse_cout(Parser *p) {
     return stmt;
 }
 
+static Stmt *parse_cin(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_CIN, p->tok.loc);
+    size_t cap = 0;
+    next(p);
+    do {
+        Token name;
+        ReadTarget target = {0};
+        if (!expect(p, TOK_SHR, NULL)) return NULL;
+        skip_newlines(p);
+        if (at(p, TOK_KW_CONST)) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "a constant's value must be known at compile time and cannot be "
+                     "read from input");
+            /* Consumed so that recovery does not restart at this "const". */
+            next(p);
+            return NULL;
+        }
+        if (at_type(p)) {
+            target.declares = true;
+            if (!parse_type(p, &target.type)) return NULL;
+        }
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        if (target.declares && target.type == TYPE_VOID) {
+            diag_add(p->diags, SEV_ERROR, name.loc, "'%.*s' cannot have type 'void'",
+                     (int)name.text.len, name.text.data);
+            return NULL;
+        }
+        target.name = name.text;
+        target.loc = name.loc;
+        ARENA_PUSH(p->arena, stmt->as.cin.targets, stmt->as.cin.count, cap, target);
+    } while (at(p, TOK_SHR));
+    return stmt;
+}
+
 static Stmt *parse_if(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_IF, p->tok.loc);
     next(p);
@@ -540,6 +580,8 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     }
     case TOK_KW_COUT:
         return parse_cout(p);
+    case TOK_KW_CIN:
+        return parse_cin(p);
     case TOK_KW_IF:
         *needs_terminator = false;
         return parse_if(p);

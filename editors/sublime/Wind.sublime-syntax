@@ -26,7 +26,7 @@ contexts:
       scope: constant.language.wind
     - match: '\b(void|bool|string|char|byte|int|i8|i16|i32|i64|i128|uint|u8|u16|u32|u64|u128|uintptr|float|f16|f32|f64|f128|unsigned|signed|long|short|double|u?int(8|16|32|64)_t|u?intptr_t|ptrdiff_t|ssize_t|size_t)\b'
       scope: storage.type.wind
-    - match: '\bcout\b'
+    - match: '\b(cout|cin)\b'
       scope: support.function.wind
     - match: '^\s*([A-Za-z_]\w*)(:)'
       captures:
@@ -40,7 +40,7 @@ contexts:
       scope: constant.numeric.float.wind
     - match: '\b(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[0-9_]*)[uUlL]*\b'
       scope: constant.numeric.integer.wind
-    - match: '<<|&&|\|\||\+\+|--|[-+*/%=!<>]=|[-+*/%<>!]'
+    - match: '<<|>>|&&|\|\||\+\+|--|[-+*/%=!<>]=|[-+*/%<>!]'
       scope: keyword.operator.wind
     - match: '='
       scope: keyword.operator.assignment.wind

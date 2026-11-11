@@ -6,7 +6,7 @@ syn keyword windStorage const
 syn keyword windConditional if else
 syn keyword windStatement goto return
 syn keyword windOperator sizeof
-syn keyword windBuiltin cout
+syn keyword windBuiltin cout cin
 syn keyword windBoolean true false
 syn keyword windType void bool string char byte
 syn keyword windType int i8 i16 i32 i64 i128
@@ -16,7 +16,7 @@ syn keyword windType unsigned signed long short double
 syn keyword windType int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t
 syn keyword windType intptr_t uintptr_t ptrdiff_t ssize_t size_t
 
-syn match windOperator "<<\|&&\|||\|++\|--\|[-+*/%=!<>]=\|[-+*/%=<>!]"
+syn match windOperator "<<\|>>\|&&\|||\|++\|--\|[-+*/%=!<>]=\|[-+*/%=<>!]"
 syn match windLabel "^\s*\zs\h\w*\ze:"
 syn match windFunction "\h\w*\ze\s*("
 

@@ -85,7 +85,7 @@ int main() {
 ### Basics
 
 - A statement ends at a newline or a `;`. Semicolons are optional.
-- A newline does not end a statement directly after `=`, `<<`, `,` or a
+- A newline does not end a statement directly after `=`, `<<`, `>>`, `,` or a
   binary operator, or inside parentheses.
 - `// ...` is a comment to the end of the line; `/* ... */` is a comment that
   may span lines. Block comments do not nest.
@@ -244,11 +244,58 @@ report("square", square(7))
 integers in decimal, floats with the fewest digits that read back as the same
 value, `bool` as `true` or `false`.
 
+### Input
+
+`cin >> a >> b >> ...` reads one whitespace-separated value from standard
+input into each variable, in turn. What is accepted depends on the variable's
+type:
+
+| Type | Input |
+| --- | --- |
+| Integers | a decimal number that fits the type, with an optional sign |
+| Floats | a decimal or exponent number, `inf` or `nan` |
+| `string` | the next word |
+| `char` | the next byte that is not whitespace |
+| `bool` | `true`, `false`, `1` or `0` |
+
+Used as a value, `cin` is a `bool` telling whether the most recent read
+succeeded. A read that fails (the input ran out, was not a value of the
+type, or did not fit) sets the variable to its zero value:
+
+```wind
+int total = 0
+int value
+next:
+cin >> value
+if cin {
+    total += value
+    goto next
+}
+cout << "total: " << total << "\n"
+```
+
+A read can declare the variable it fills, by naming its type. The variable
+then exists from the next statement on, like any other declaration:
+
+```wind
+cout << "Name and age: "
+cin >> string name >> int age
+cout << name << " is " << age << "\n"
+```
+
+- Only variables can be read into, not constants or parameters.
+- Pending output is flushed before reading, so a prompt printed with `cout`
+  is visible even without a newline.
+- Unlike in C++, a failed read does not block later reads, and the whole
+  word is consumed even when only its start is a valid value.
+
 ### Current limits
 
 - Integer division by zero and converting an out-of-range float to an integer
   are not checked.
-- `f128` values are printed with the precision of the C `long double`.
+- `f128` values are printed and read with the precision of the C
+  `long double`.
+- A `string` read with `cin` keeps its memory until the program exits.
 - `i128`, `u128`, `f16` and `f128` rely on GCC or Clang on a 64-bit target.
 
 ## Compiler layout

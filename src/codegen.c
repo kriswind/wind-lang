@@ -30,7 +30,21 @@
 
 /* ---- Runtime support ---- */
 
+/* Listed so that each helper comes after the ones its definition calls. */
 typedef enum {
+    HELPER_NONE, /* ends a helper's list of needs */
+    HELPER_CIN_STATE,
+    HELPER_IS_SPACE,
+    HELPER_READ_WORD,
+    HELPER_PARSE_U128,
+    HELPER_READ_STRING,
+    HELPER_READ_BOOL,
+    HELPER_READ_CHAR,
+    HELPER_READ_INT,
+    HELPER_READ_UINT,
+    HELPER_READ_U128,
+    HELPER_READ_I128,
+    HELPER_READ_FLOAT,
     HELPER_WRITE_STRING,
     HELPER_STRING_EQ,
     HELPER_WRITE_BOOL,
@@ -39,12 +53,22 @@ typedef enum {
     HELPER_WRITE_UINT,
     HELPER_WRITE_U128,
     HELPER_WRITE_I128,
+    HELPER_FLOAT_WRITER,
     HELPER_WRITE_F16,
     HELPER_WRITE_F32,
     HELPER_WRITE_F64,
     HELPER_WRITE_F128,
     HELPER_COUNT,
 } Helper;
+
+typedef enum {
+    HEADER_ERRNO = 1 << 0,
+    HEADER_STDDEF = 1 << 1,
+    HEADER_STDINT = 1 << 2,
+    HEADER_STDIO = 1 << 3,
+    HEADER_STDLIB = 1 << 4,
+    HEADER_STRING = 1 << 5,
+} Header;
 
 /* What the program generated so far needs from the runtime. */
 static struct {
@@ -95,111 +119,295 @@ static const char *const type_definitions[TYPE_COUNT] = {
                   "#endif\n",
 };
 
-/* Defines the function that prints one float type. Prints the fewest digits
-   that read back as the same value; values are formatted through long
-   double, the widest type printf accepts. */
-static const char float_writer_macro[] =
-    "#define WIND_WRITE_FLOAT(name, T, max_digits, parse) \\\n"
-    "    static void name(T v) { \\\n"
-    "        char buf[64]; \\\n"
-    "        T shown = (T)(long double)v; \\\n"
-    "        for (int digits = 1; digits <= max_digits; digits++) { \\\n"
-    "            snprintf(buf, sizeof buf, \"%.*Lg\", digits, (long double)v); \\\n"
-    "            if ((T)parse(buf, NULL) == shown) break; \\\n"
-    "        } \\\n"
-    "        fputs(buf, stdout); \\\n"
-    "    }\n";
+typedef struct {
+    const char *definition;
+    unsigned headers;     /* Header flags its definition relies on */
+    Helper needs[4];      /* other helpers its definition calls */
+    TypeKind types[3];    /* types its definition mentions */
+} HelperInfo;
 
-static const char *const helper_definitions[HELPER_COUNT] = {
-    [HELPER_WRITE_STRING] = "static void wind_write_string(wind_string s) {\n"
-                            "    if (s.len) fwrite(s.data, 1, s.len, stdout);\n"
-                            "}\n",
-    [HELPER_STRING_EQ] =
+static const HelperInfo helpers[HELPER_COUNT] = {
+    [HELPER_CIN_STATE] = {
+        "/* Whether the most recent cin read succeeded. */\n"
+        "static wind_bool wind_cin_ok = 1;\n",
+        0, {0}, {TYPE_BOOL}},
+    [HELPER_IS_SPACE] = {
+        "static int wind_is_space(int c) {\n"
+        "    return c == ' ' || (c >= '\\t' && c <= '\\r');\n"
+        "}\n",
+        0, {0}, {0}},
+    [HELPER_READ_WORD] = {
+        "/* Reads the next whitespace-delimited word from stdin into a reused,\n"
+        "   NUL-terminated buffer. Returns its length; 0 means the input is\n"
+        "   exhausted. Pending output is flushed first, so a prompt is visible. */\n"
+        "static size_t wind_read_word(char **word) {\n"
+        "    static char *buf;\n"
+        "    static size_t cap;\n"
+        "    size_t len = 0;\n"
+        "    int c;\n"
+        "    fflush(stdout);\n"
+        "    do {\n"
+        "        c = getchar();\n"
+        "    } while (wind_is_space(c));\n"
+        "    while (c != EOF && !wind_is_space(c)) {\n"
+        "        if (len + 1 >= cap) {\n"
+        "            cap = cap ? cap * 2 : 64;\n"
+        "            buf = realloc(buf, cap);\n"
+        "            if (!buf) abort();\n"
+        "        }\n"
+        "        buf[len++] = (char)c;\n"
+        "        c = getchar();\n"
+        "    }\n"
+        "    if (c != EOF) ungetc(c, stdin);\n"
+        "    if (buf) buf[len] = '\\0';\n"
+        "    *word = buf;\n"
+        "    return len;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDIO | HEADER_STDLIB, {HELPER_IS_SPACE}, {0}},
+    [HELPER_PARSE_U128] = {
+        "/* Parses decimal digits as a value no greater than max. */\n"
+        "static wind_u128 wind_parse_u128(const char *digits, size_t len, wind_u128 max) {\n"
+        "    wind_u128 v = 0;\n"
+        "    wind_cin_ok = 0;\n"
+        "    if (len == 0) return 0;\n"
+        "    for (size_t i = 0; i < len; i++) {\n"
+        "        if (digits[i] < '0' || digits[i] > '9') return 0;\n"
+        "        wind_u128 digit = (wind_u128)(digits[i] - '0');\n"
+        "        if (v > (max - digit) / 10) return 0;\n"
+        "        v = v * 10 + digit;\n"
+        "    }\n"
+        "    wind_cin_ok = 1;\n"
+        "    return v;\n"
+        "}\n",
+        HEADER_STDDEF, {HELPER_CIN_STATE}, {TYPE_U128}},
+    [HELPER_READ_STRING] = {
+        "/* The word is copied to memory that is never freed. */\n"
+        "static wind_string wind_read_string(void) {\n"
+        "    char *word;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    wind_string s = {0};\n"
+        "    wind_cin_ok = len != 0;\n"
+        "    if (len) {\n"
+        "        char *copy = malloc(len);\n"
+        "        if (!copy) abort();\n"
+        "        memcpy(copy, word, len);\n"
+        "        s.data = copy;\n"
+        "        s.len = len;\n"
+        "    }\n"
+        "    return s;\n"
+        "}\n",
+        HEADER_STDLIB | HEADER_STRING, {HELPER_CIN_STATE, HELPER_READ_WORD}, {TYPE_STRING}},
+    [HELPER_READ_BOOL] = {
+        "static wind_bool wind_read_bool(void) {\n"
+        "    char *word;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    wind_bool value = len && (!strcmp(word, \"true\") || !strcmp(word, \"1\"));\n"
+        "    wind_cin_ok = value || (len && (!strcmp(word, \"false\") || !strcmp(word, \"0\")));\n"
+        "    return value;\n"
+        "}\n",
+        HEADER_STRING, {HELPER_CIN_STATE, HELPER_READ_WORD}, {TYPE_BOOL}},
+    [HELPER_READ_CHAR] = {
+        "/* Reads the next byte that is not whitespace. */\n"
+        "static wind_char wind_read_char(void) {\n"
+        "    int c;\n"
+        "    fflush(stdout);\n"
+        "    do {\n"
+        "        c = getchar();\n"
+        "    } while (wind_is_space(c));\n"
+        "    wind_cin_ok = c != EOF;\n"
+        "    return c == EOF ? 0 : (wind_char)c;\n"
+        "}\n",
+        HEADER_STDIO, {HELPER_CIN_STATE, HELPER_IS_SPACE}, {TYPE_CHAR}},
+    [HELPER_READ_INT] = {
+        "/* Reads a decimal integer within [min, max]. */\n"
+        "static long long wind_read_int(long long min, long long max) {\n"
+        "    char *word, *end;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    wind_cin_ok = 0;\n"
+        "    if (len == 0) return 0;\n"
+        "    errno = 0;\n"
+        "    long long v = strtoll(word, &end, 10);\n"
+        "    if (errno || end != word + len || v < min || v > max) return 0;\n"
+        "    wind_cin_ok = 1;\n"
+        "    return v;\n"
+        "}\n",
+        HEADER_ERRNO | HEADER_STDINT | HEADER_STDLIB, {HELPER_CIN_STATE, HELPER_READ_WORD}, {0}},
+    [HELPER_READ_UINT] = {
+        "/* Reads a decimal integer within [0, max]. */\n"
+        "static unsigned long long wind_read_uint(unsigned long long max) {\n"
+        "    char *word, *end;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    wind_cin_ok = 0;\n"
+        "    if (len == 0 || word[0] == '-') return 0;\n"
+        "    errno = 0;\n"
+        "    unsigned long long v = strtoull(word, &end, 10);\n"
+        "    if (errno || end != word + len || v > max) return 0;\n"
+        "    wind_cin_ok = 1;\n"
+        "    return v;\n"
+        "}\n",
+        HEADER_ERRNO | HEADER_STDINT | HEADER_STDLIB, {HELPER_CIN_STATE, HELPER_READ_WORD}, {0}},
+    [HELPER_READ_U128] = {
+        "static wind_u128 wind_read_u128(void) {\n"
+        "    char *word;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    if (len && word[0] == '+') {\n"
+        "        word++;\n"
+        "        len--;\n"
+        "    }\n"
+        "    return wind_parse_u128(word, len, ~(wind_u128)0);\n"
+        "}\n",
+        0, {HELPER_READ_WORD, HELPER_PARSE_U128}, {TYPE_U128}},
+    [HELPER_READ_I128] = {
+        "static wind_i128 wind_read_i128(void) {\n"
+        "    char *word;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    int negative = len && word[0] == '-';\n"
+        "    if (len && (word[0] == '-' || word[0] == '+')) {\n"
+        "        word++;\n"
+        "        len--;\n"
+        "    }\n"
+        "    wind_u128 max = ((wind_u128)1 << 127) - (negative ? 0 : 1);\n"
+        "    wind_u128 v = wind_parse_u128(word, len, max);\n"
+        "    return negative ? (wind_i128)(-v) : (wind_i128)v;\n"
+        "}\n",
+        0, {HELPER_READ_WORD, HELPER_PARSE_U128}, {TYPE_I128, TYPE_U128}},
+    [HELPER_READ_FLOAT] = {
+        "/* Read as long double, the widest type the C library parses. */\n"
+        "static long double wind_read_float(void) {\n"
+        "    char *word, *end;\n"
+        "    size_t len = wind_read_word(&word);\n"
+        "    wind_cin_ok = 0;\n"
+        "    if (len == 0) return 0;\n"
+        "    long double v = strtold(word, &end);\n"
+        "    if (end != word + len) return 0;\n"
+        "    wind_cin_ok = 1;\n"
+        "    return v;\n"
+        "}\n",
+        HEADER_STDLIB, {HELPER_CIN_STATE, HELPER_READ_WORD}, {0}},
+    [HELPER_WRITE_STRING] = {
+        "static void wind_write_string(wind_string s) {\n"
+        "    if (s.len) fwrite(s.data, 1, s.len, stdout);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {TYPE_STRING}},
+    [HELPER_STRING_EQ] = {
         "static wind_bool wind_string_eq(wind_string a, wind_string b) {\n"
         "    return a.len == b.len && (a.len == 0 || memcmp(a.data, b.data, a.len) == 0);\n"
         "}\n",
-    [HELPER_WRITE_BOOL] = "static void wind_write_bool(wind_bool b) {\n"
-                          "    fputs(b ? \"true\" : \"false\", stdout);\n"
-                          "}\n",
-    [HELPER_WRITE_CHAR] = "static void wind_write_char(wind_char c) {\n"
-                          "    fputc(c, stdout);\n"
-                          "}\n",
-    [HELPER_WRITE_INT] = "static void wind_write_int(long long v) {\n"
-                         "    printf(\"%lld\", v);\n"
-                         "}\n",
-    [HELPER_WRITE_UINT] = "static void wind_write_uint(unsigned long long v) {\n"
-                          "    printf(\"%llu\", v);\n"
-                          "}\n",
-    [HELPER_WRITE_U128] = "static void wind_write_u128(wind_u128 v) {\n"
-                          "    char buf[40];\n"
-                          "    char *p = buf + sizeof buf;\n"
-                          "    do {\n"
-                          "        *--p = (char)('0' + (int)(v % 10));\n"
-                          "        v /= 10;\n"
-                          "    } while (v);\n"
-                          "    fwrite(p, 1, (size_t)(buf + sizeof buf - p), stdout);\n"
-                          "}\n",
-    [HELPER_WRITE_I128] = "static void wind_write_i128(wind_i128 v) {\n"
-                          "    if (v < 0) {\n"
-                          "        fputc('-', stdout);\n"
-                          "        wind_write_u128(-(wind_u128)v);\n"
-                          "    } else {\n"
-                          "        wind_write_u128((wind_u128)v);\n"
-                          "    }\n"
-                          "}\n",
-    [HELPER_WRITE_F16] = "WIND_WRITE_FLOAT(wind_write_f16, wind_f16, 5, strtof)\n",
-    [HELPER_WRITE_F32] = "WIND_WRITE_FLOAT(wind_write_f32, wind_f32, 9, strtof)\n",
-    [HELPER_WRITE_F64] = "WIND_WRITE_FLOAT(wind_write_f64, wind_f64, 17, strtod)\n",
-    [HELPER_WRITE_F128] = "WIND_WRITE_FLOAT(wind_write_f128, wind_f128, 21, strtold)\n",
+        HEADER_STRING, {0}, {TYPE_STRING, TYPE_BOOL}},
+    [HELPER_WRITE_BOOL] = {
+        "static void wind_write_bool(wind_bool b) {\n"
+        "    fputs(b ? \"true\" : \"false\", stdout);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {TYPE_BOOL}},
+    [HELPER_WRITE_CHAR] = {
+        "static void wind_write_char(wind_char c) {\n"
+        "    fputc(c, stdout);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {TYPE_CHAR}},
+    [HELPER_WRITE_INT] = {
+        "static void wind_write_int(long long v) {\n"
+        "    printf(\"%lld\", v);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {0}},
+    [HELPER_WRITE_UINT] = {
+        "static void wind_write_uint(unsigned long long v) {\n"
+        "    printf(\"%llu\", v);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {0}},
+    [HELPER_WRITE_U128] = {
+        "static void wind_write_u128(wind_u128 v) {\n"
+        "    char buf[40];\n"
+        "    char *p = buf + sizeof buf;\n"
+        "    do {\n"
+        "        *--p = (char)('0' + (int)(v % 10));\n"
+        "        v /= 10;\n"
+        "    } while (v);\n"
+        "    fwrite(p, 1, (size_t)(buf + sizeof buf - p), stdout);\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDIO, {0}, {TYPE_U128}},
+    [HELPER_WRITE_I128] = {
+        "static void wind_write_i128(wind_i128 v) {\n"
+        "    if (v < 0) {\n"
+        "        fputc('-', stdout);\n"
+        "        wind_write_u128(-(wind_u128)v);\n"
+        "    } else {\n"
+        "        wind_write_u128((wind_u128)v);\n"
+        "    }\n"
+        "}\n",
+        HEADER_STDIO, {HELPER_WRITE_U128}, {TYPE_I128, TYPE_U128}},
+    [HELPER_FLOAT_WRITER] = {
+        "/* Defines the function that prints one float type. Prints the fewest\n"
+        "   digits that read back as the same value; values are formatted through\n"
+        "   long double, the widest type printf accepts. */\n"
+        "#define WIND_WRITE_FLOAT(name, T, max_digits, parse) \\\n"
+        "    static void name(T v) { \\\n"
+        "        char buf[64]; \\\n"
+        "        T shown = (T)(long double)v; \\\n"
+        "        for (int digits = 1; digits <= max_digits; digits++) { \\\n"
+        "            snprintf(buf, sizeof buf, \"%.*Lg\", digits, (long double)v); \\\n"
+        "            if ((T)parse(buf, NULL) == shown) break; \\\n"
+        "        } \\\n"
+        "        fputs(buf, stdout); \\\n"
+        "    }\n",
+        HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
+    [HELPER_WRITE_F16] = {"WIND_WRITE_FLOAT(wind_write_f16, wind_f16, 5, strtof)\n", 0,
+                          {HELPER_FLOAT_WRITER}, {TYPE_F16}},
+    [HELPER_WRITE_F32] = {"WIND_WRITE_FLOAT(wind_write_f32, wind_f32, 9, strtof)\n", 0,
+                          {HELPER_FLOAT_WRITER}, {TYPE_F32}},
+    [HELPER_WRITE_F64] = {"WIND_WRITE_FLOAT(wind_write_f64, wind_f64, 17, strtod)\n", 0,
+                          {HELPER_FLOAT_WRITER}, {TYPE_F64}},
+    [HELPER_WRITE_F128] = {"WIND_WRITE_FLOAT(wind_write_f128, wind_f128, 21, strtold)\n", 0,
+                           {HELPER_FLOAT_WRITER}, {TYPE_F128}},
 };
-
-/* The types each helper's own definition mentions. */
-static const struct {
-    Helper helper;
-    TypeKind type;
-} helper_types[] = {
-    {HELPER_WRITE_STRING, TYPE_STRING}, {HELPER_STRING_EQ, TYPE_STRING},
-    {HELPER_STRING_EQ, TYPE_BOOL},      {HELPER_WRITE_BOOL, TYPE_BOOL},
-    {HELPER_WRITE_CHAR, TYPE_CHAR},     {HELPER_WRITE_U128, TYPE_U128},
-    {HELPER_WRITE_I128, TYPE_I128},     {HELPER_WRITE_I128, TYPE_U128},
-    {HELPER_WRITE_F16, TYPE_F16},       {HELPER_WRITE_F32, TYPE_F32},
-    {HELPER_WRITE_F64, TYPE_F64},       {HELPER_WRITE_F128, TYPE_F128},
-};
-
-static bool any_used(const bool *flags, int first, int last) {
-    for (int i = first; i <= last; i++) {
-        if (flags[i]) return true;
-    }
-    return false;
-}
 
 /* Writes the headers, type definitions and helpers recorded in `used`. */
 static void emit_runtime(FILE *out) {
-    /* The signed 128-bit printer is written in terms of the unsigned one. */
-    if (used.helpers[HELPER_WRITE_I128]) used.helpers[HELPER_WRITE_U128] = true;
-    for (size_t i = 0; i < sizeof helper_types / sizeof helper_types[0]; i++) {
-        if (used.helpers[helper_types[i].helper]) used.types[helper_types[i].type] = true;
+    /* A helper can need another that sits anywhere in the list, so the set
+       is grown until it stops changing. */
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < HELPER_COUNT; i++) {
+            if (!used.helpers[i]) continue;
+            for (size_t j = 0; j < 4 && helpers[i].needs[j] != HELPER_NONE; j++) {
+                if (!used.helpers[helpers[i].needs[j]]) {
+                    used.helpers[helpers[i].needs[j]] = true;
+                    changed = true;
+                }
+            }
+        }
     }
 
-    bool floats = any_used(used.helpers, HELPER_WRITE_F16, HELPER_WRITE_F128);
-    bool output = any_used(used.helpers, HELPER_WRITE_STRING, HELPER_WRITE_STRING) ||
-                  any_used(used.helpers, HELPER_WRITE_BOOL, HELPER_WRITE_F128);
-    bool fixed_ints = any_used(used.types, TYPE_INT, TYPE_I64) ||
-                      any_used(used.types, TYPE_UINT, TYPE_U64) ||
-                      used.types[TYPE_UINTPTR];
+    unsigned headers = 0;
+    for (int i = 0; i < HELPER_COUNT; i++) {
+        if (!used.helpers[i]) continue;
+        headers |= helpers[i].headers;
+        for (size_t j = 0; j < 3 && helpers[i].types[j] != TYPE_INVALID; j++) {
+            used.types[helpers[i].types[j]] = true;
+        }
+    }
+    if (used.types[TYPE_STRING]) headers |= HEADER_STDDEF;
+    for (int type = TYPE_INT; type <= TYPE_UINTPTR; type++) {
+        if (used.types[type] && type != TYPE_I128 && type != TYPE_U128) {
+            headers |= HEADER_STDINT;
+        }
+    }
+
+    static const struct {
+        Header header;
+        const char *name;
+    } header_names[] = {
+        {HEADER_ERRNO, "errno.h"},   {HEADER_STDDEF, "stddef.h"},
+        {HEADER_STDINT, "stdint.h"}, {HEADER_STDIO, "stdio.h"},
+        {HEADER_STDLIB, "stdlib.h"}, {HEADER_STRING, "string.h"},
+    };
+    for (size_t i = 0; i < sizeof header_names / sizeof header_names[0]; i++) {
+        if (headers & header_names[i].header) {
+            fprintf(out, "#include <%s>\n", header_names[i].name);
+        }
+    }
+    if (headers) fputs("\n", out);
 
     bool any = false;
-    if (used.types[TYPE_STRING] || used.helpers[HELPER_WRITE_U128]) {
-        fputs("#include <stddef.h>\n", out);
-        any = true;
-    }
-    if (fixed_ints) fputs("#include <stdint.h>\n", out);
-    if (output) fputs("#include <stdio.h>\n", out);
-    if (floats) fputs("#include <stdlib.h>\n", out);
-    if (used.helpers[HELPER_STRING_EQ]) fputs("#include <string.h>\n", out);
-    if (any || fixed_ints || output || floats) fputs("\n", out);
-
-    any = false;
     for (int type = 0; type < TYPE_COUNT; type++) {
         if (!used.types[type] || !type_definitions[type]) continue;
         fputs(type_definitions[type], out);
@@ -207,9 +415,8 @@ static void emit_runtime(FILE *out) {
     }
     if (any) fputs("\n", out);
 
-    if (floats) fprintf(out, "%s\n", float_writer_macro);
-    for (int helper = 0; helper < HELPER_COUNT; helper++) {
-        if (used.helpers[helper]) fprintf(out, "%s\n", helper_definitions[helper]);
+    for (int i = 0; i < HELPER_COUNT; i++) {
+        if (used.helpers[i]) fprintf(out, "%s\n", helpers[i].definition);
     }
 }
 
@@ -352,6 +559,10 @@ static void emit_expr(const Expr *expr, FILE *out) {
         emit_expr(expr->as.cast.operand, out);
         fputs(")", out);
         break;
+    case EXPR_CIN_OK:
+        used.helpers[HELPER_CIN_STATE] = true;
+        fputs("wind_cin_ok", out);
+        break;
     case EXPR_SIZEOF:
         break; /* rewritten to an integer literal by unit_analyze */
     }
@@ -390,6 +601,54 @@ static void emit_write(const Expr *arg, FILE *out) {
     fprintf(out, "%s(%s", names[helper], cast);
     emit_expr(arg, out);
     fputs(");\n", out);
+}
+
+/* The limits passed to the integer readers, as <stdint.h> spells them. */
+static const char *int_limits(TypeKind type) {
+    switch (type) {
+    case TYPE_INT:     return "INTPTR_MIN, INTPTR_MAX";
+    case TYPE_I8:      return "INT8_MIN, INT8_MAX";
+    case TYPE_I16:     return "INT16_MIN, INT16_MAX";
+    case TYPE_I32:     return "INT32_MIN, INT32_MAX";
+    case TYPE_I64:     return "INT64_MIN, INT64_MAX";
+    case TYPE_U8:      return "UINT8_MAX";
+    case TYPE_U16:     return "UINT16_MAX";
+    case TYPE_U32:     return "UINT32_MAX";
+    case TYPE_U64:     return "UINT64_MAX";
+    default:           return "UINTPTR_MAX"; /* uint, uintptr */
+    }
+}
+
+/* Emits the call that reads one value of the symbol's type from stdin. */
+static void emit_read(const Symbol *symbol, FILE *out) {
+    TypeKind type = symbol->type;
+    Helper helper;
+    const char *call;
+    switch (type) {
+    case TYPE_STRING: helper = HELPER_READ_STRING; call = "wind_read_string()"; break;
+    case TYPE_BOOL:   helper = HELPER_READ_BOOL;   call = "wind_read_bool()";   break;
+    case TYPE_CHAR:   helper = HELPER_READ_CHAR;   call = "wind_read_char()";   break;
+    case TYPE_I128:   helper = HELPER_READ_I128;   call = "wind_read_i128()";   break;
+    case TYPE_U128:   helper = HELPER_READ_U128;   call = "wind_read_u128()";   break;
+    default:
+        if (type_is_float(type)) {
+            helper = HELPER_READ_FLOAT;
+            call = "wind_read_float()";
+        } else {
+            helper = type_is_signed(type) ? HELPER_READ_INT : HELPER_READ_UINT;
+            call = NULL;
+        }
+        break;
+    }
+    used.helpers[helper] = true;
+    emit_symbol(symbol, out);
+    fprintf(out, " = (%s)", c_type(type));
+    if (call) {
+        fprintf(out, "%s;\n", call);
+    } else {
+        fprintf(out, "%s(%s);\n", helper == HELPER_READ_INT ? "wind_read_int" : "wind_read_uint",
+                int_limits(type));
+    }
 }
 
 static void indent(int depth, FILE *out) {
@@ -438,6 +697,12 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         for (size_t i = 0; i < stmt->as.cout.count; i++) {
             indent(depth, out);
             emit_write(stmt->as.cout.args[i], out);
+        }
+        break;
+    case STMT_CIN:
+        for (size_t i = 0; i < stmt->as.cin.count; i++) {
+            indent(depth, out);
+            emit_read(stmt->as.cin.targets[i].symbol, out);
         }
         break;
     case STMT_IF:
