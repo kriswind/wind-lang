@@ -5,7 +5,8 @@
 
 #include "ast.h"
 
-/* Writes a self-contained C11 translation unit for a checked program. */
-void emit_c(const Program *program, FILE *out);
+/* Writes a self-contained C translation unit for a unit that analyzed
+   without errors. */
+void emit_c(const Unit *unit, FILE *out);
 
 #endif

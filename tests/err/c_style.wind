@@ -1,0 +1,19 @@
+string s = "a"
+s += "b"
+s++
+char c = 'a'
+c++
+float f = 1.5
+f %= 2.0
+const int K = 1
+K += 1
+int a = 1f
+int b = 10lul
+int d = 1.5u
+unsigned signed int e = 1
+short long g = 1
+unsigned double h = 1.0
+int size = sizeof(void)
+missing++
+void f2(void, int x) { }
+cout << a << b << d << e << g << h << size << f << c << s

@@ -99,13 +99,8 @@ void diag_add(Diags *diags, Severity severity, SrcLoc loc, const char *fmt, ...)
     vsnprintf(message, (size_t)len + 1, fmt, args);
     va_end(args);
 
-    if (diags->count == diags->cap) {
-        size_t cap = diags->cap ? diags->cap * 2 : 8;
-        diags->items = arena_grow(diags->arena, diags->items,
-                                  diags->count * sizeof(Diag), cap * sizeof(Diag));
-        diags->cap = cap;
-    }
-    diags->items[diags->count++] = (Diag){severity, loc, message};
+    Diag diag = {severity, loc, message};
+    ARENA_PUSH(diags->arena, diags->items, diags->count, diags->cap, diag);
     if (severity == SEV_ERROR) diags->error_count++;
 }
 

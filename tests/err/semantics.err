@@ -1,0 +1,57 @@
+tests/err/semantics.wind:1:8: error: integer literal does not fit in 'i8'
+tests/err/semantics.wind:2:4: warning: variable 'b' is never used
+tests/err/semantics.wind:2:9: error: negative literal does not fit in 'i8'
+tests/err/semantics.wind:3:4: warning: variable 'c' is never used
+tests/err/semantics.wind:3:9: error: negative literal does not fit in 'u8'
+tests/err/semantics.wind:4:9: error: float literal cannot be used as 'int'
+tests/err/semantics.wind:5:7: warning: variable 'e' is never used
+tests/err/semantics.wind:6:5: warning: variable 'f' is never used
+tests/err/semantics.wind:6:9: error: cannot initialize 'int' variable with 'string'
+tests/err/semantics.wind:7:4: warning: variable 'g' is never used
+tests/err/semantics.wind:7:8: error: mismatched types 'i8' and 'int' for operator '+'
+tests/err/semantics.wind:8:5: warning: variable 'h' is never used
+tests/err/semantics.wind:8:13: error: float literal cannot be used as 'int'
+tests/err/semantics.wind:9:6: warning: variable 'i' is never used
+tests/err/semantics.wind:9:10: error: cannot initialize 'bool' variable with 'int'
+tests/err/semantics.wind:10:8: warning: variable 's' is never used
+tests/err/semantics.wind:10:12: error: operator '+' is not defined for 'string'
+tests/err/semantics.wind:11:6: warning: variable 'ch' is never used
+tests/err/semantics.wind:11:11: error: character literal must be a single byte; use a string for more
+tests/err/semantics.wind:12:6: warning: variable 'em' is never used
+tests/err/semantics.wind:12:11: error: empty character literal
+tests/err/semantics.wind:13:5: warning: variable 'n' is never used
+tests/err/semantics.wind:13:9: error: invalid number literal '12abc'
+tests/err/semantics.wind:14:5: warning: variable 'big' is never used
+tests/err/semantics.wind:14:11: error: integer literal is too large
+tests/err/semantics.wind:15:11: warning: constant 'K' is never used
+tests/err/semantics.wind:15:15: error: a constant's value must be known at compile time; use a variable for this
+tests/err/semantics.wind:16:1: error: cannot assign to constant 'K'
+tests/err/semantics.wind:17:1: error: undefined name 'undefined'
+tests/err/semantics.wind:19:5: error: 'noret' can reach its end without returning a 'int' value
+tests/err/semantics.wind:19:5: warning: function 'noret' is never used
+tests/err/semantics.wind:20:19: error: 'v' returns 'void' and cannot return a value
+tests/err/semantics.wind:21:5: warning: function 'r' is never used
+tests/err/semantics.wind:21:11: error: 'r' must return a 'int' value
+tests/err/semantics.wind:22:1: error: 'add' takes 2 arguments, but 1 was given
+tests/err/semantics.wind:23:5: error: argument 1 of 'add' must be 'int', found 'string'
+tests/err/semantics.wind:24:5: warning: variable 'z' is never used
+tests/err/semantics.wind:24:9: error: cannot initialize 'int' variable with 'void'
+tests/err/semantics.wind:25:9: error: cannot print a 'void' value
+tests/err/semantics.wind:26:4: error: condition must be 'bool', found 'int'
+tests/err/semantics.wind:27:6: error: undefined label 'nowhere'
+tests/err/semantics.wind:28:1: warning: label 'dup' is never used
+tests/err/semantics.wind:29:1: error: label 'dup' is already defined at line 28
+tests/err/semantics.wind:31:6: warning: function 'usesTop' is never used
+tests/err/semantics.wind:31:31: error: undefined name 'x'
+tests/err/semantics.wind:32:6: warning: function 'nested' is never used
+tests/err/semantics.wind:32:21: error: functions can only be declared at the top level
+tests/err/semantics.wind:33:1: error: 'return' outside of a function
+tests/err/semantics.wind:34:5: error: 'add' is already defined at line 18
+tests/err/semantics.wind:35:9: error: 'add' is a function; call it with '()'
+tests/err/semantics.wind:36:1: error: undefined name 'unknownFn'
+tests/err/semantics.wind:37:1: error: 'd' is not a function
+tests/err/semantics.wind:38:5: warning: variable 'w' is never used
+tests/err/semantics.wind:38:9: error: cannot convert 'string' to 'int'
+tests/err/semantics.wind:39:5: warning: variable 'm' is never used
+tests/err/semantics.wind:39:13: error: float literal cannot be used as 'int'
+tests/err/semantics.wind:40:1: error: unterminated comment

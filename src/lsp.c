@@ -22,6 +22,8 @@
 enum {
     LSP_PARSE_ERROR = -32700,
     LSP_METHOD_NOT_FOUND = -32601,
+    LSP_COMPLETION_FUNCTION = 3,
+    LSP_COMPLETION_VARIABLE = 6,
     LSP_COMPLETION_KEYWORD = 14,
     LSP_COMPLETION_CONSTANT = 21,
     /* Guards against allocating for a corrupt Content-Length. */
@@ -210,30 +212,20 @@ static bool loc_contains(SrcLoc loc, size_t offset) {
     return offset >= loc.offset && offset <= loc.offset + loc.len;
 }
 
-static const Stmt *decl_of_ident(const Expr *expr, size_t offset, SrcLoc *at) {
-    if (expr->kind != EXPR_IDENT || !loc_contains(expr->loc, offset)) return NULL;
-    *at = expr->loc;
-    return expr->as.ident.decl;
-}
-
-/* Finds the constant named at offset, whether at its declaration or at a use.
+/* Finds the symbol named at offset, whether at its declaration or at a use.
    On success *at is the location of the name under the cursor. */
-static const Stmt *decl_at(const Program *program, size_t offset, SrcLoc *at) {
-    for (size_t i = 0; i < program->count; i++) {
-        const Stmt *stmt = program->stmts[i];
-        const Stmt *decl = NULL;
-        if (stmt->kind == STMT_CONST_DECL) {
-            if (loc_contains(stmt->loc, offset)) {
-                *at = stmt->loc;
-                return stmt;
-            }
-            decl = decl_of_ident(stmt->as.const_decl.init, offset, at);
-        } else {
-            for (size_t j = 0; j < stmt->as.cout.count && !decl; j++) {
-                decl = decl_of_ident(stmt->as.cout.args[j], offset, at);
-            }
+static const Symbol *symbol_at(const Unit *unit, size_t offset, SrcLoc *at) {
+    for (size_t i = 0; i < unit->ref_count; i++) {
+        if (loc_contains(unit->refs[i].loc, offset)) {
+            *at = unit->refs[i].loc;
+            return unit->refs[i].symbol;
         }
-        if (decl) return decl;
+    }
+    for (size_t i = 0; i < unit->symbols.count; i++) {
+        if (loc_contains(unit->symbols.items[i]->loc, offset)) {
+            *at = unit->symbols.items[i]->loc;
+            return unit->symbols.items[i];
+        }
     }
     return NULL;
 }
@@ -253,34 +245,59 @@ static Doc *request_target(Server *server, const Json *params, size_t *offset) {
     return doc;
 }
 
+/* Writes the symbol's declaration the way it would be spelled in source. */
+static void describe_symbol(Buf *buf, Str src, const Symbol *symbol) {
+    int len = (int)symbol->name.len;
+    const char *name = symbol->name.data;
+    switch (symbol->kind) {
+    case SYM_CONST: {
+        const Expr *init = symbol->decl->as.decl.init;
+        buf_printf(buf, "const %s %.*s = ", type_name(symbol->type), len, name);
+        buf_append(buf, src.data + init->loc.offset, init->loc.len);
+        break;
+    }
+    case SYM_VAR:
+    case SYM_PARAM:
+        buf_printf(buf, "%s %.*s", type_name(symbol->type), len, name);
+        break;
+    case SYM_LABEL:
+        buf_printf(buf, "%.*s:", len, name);
+        break;
+    case SYM_FUNC: {
+        const Stmt *func = symbol->decl;
+        buf_printf(buf, "%s %.*s(", type_name(symbol->type), len, name);
+        for (size_t i = 0; i < func->as.func.param_count; i++) {
+            const Param *param = &func->as.func.params[i];
+            buf_printf(buf, "%s%s %.*s", i ? ", " : "", type_name(param->type),
+                       (int)param->name.len, param->name.data);
+        }
+        buf_puts(buf, ")");
+        break;
+    }
+    }
+}
+
 static void handle_hover(Server *server, Arena *arena, const Json *id,
                          const Json *params) {
     size_t offset;
     SrcLoc at;
     Doc *doc = request_target(server, params, &offset);
-    const Stmt *decl = doc ? decl_at(&doc->unit.program, offset, &at) : NULL;
-    if (!decl) {
+    const Symbol *symbol = doc ? symbol_at(&doc->unit, offset, &at) : NULL;
+    if (!symbol) {
         send_null_result(arena, id);
         return;
     }
 
-    Str src = doc->unit.src;
-    Str name = decl->as.const_decl.name;
     Buf text = {.arena = arena};
-    buf_printf(&text, "```wind\nconst %s %.*s", type_name(decl->as.const_decl.type),
-               (int)name.len, name.data);
-    const Expr *literal = const_decl_literal(decl);
-    if (literal) {
-        buf_puts(&text, " = ");
-        buf_append(&text, src.data + literal->loc.offset, literal->loc.len);
-    }
+    buf_puts(&text, "```wind\n");
+    describe_symbol(&text, doc->unit.src, symbol);
     buf_puts(&text, "\n```");
 
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "{\"contents\":{\"kind\":\"markdown\",\"value\":");
     buf_json_string(&buf, (Str){text.data, text.len});
     buf_puts(&buf, "},\"range\":");
-    write_range(&buf, src, at);
+    write_range(&buf, doc->unit.src, at);
     buf_puts(&buf, "}");
     send_result(&buf);
 }
@@ -290,8 +307,8 @@ static void handle_definition(Server *server, Arena *arena, const Json *id,
     size_t offset;
     SrcLoc at;
     Doc *doc = request_target(server, params, &offset);
-    const Stmt *decl = doc ? decl_at(&doc->unit.program, offset, &at) : NULL;
-    if (!decl) {
+    const Symbol *symbol = doc ? symbol_at(&doc->unit, offset, &at) : NULL;
+    if (!symbol) {
         send_null_result(arena, id);
         return;
     }
@@ -299,9 +316,31 @@ static void handle_definition(Server *server, Arena *arena, const Json *id,
     buf_puts(&buf, "{\"uri\":");
     buf_json_string(&buf, (Str){doc->uri, strlen(doc->uri)});
     buf_puts(&buf, ",\"range\":");
-    write_range(&buf, doc->unit.src, decl->loc);
+    write_range(&buf, doc->unit.src, symbol->loc);
     buf_puts(&buf, "}");
     send_result(&buf);
+}
+
+/* The function whose body contains offset, or NULL for top-level code. */
+static const Stmt *function_at(const Program *program, size_t offset) {
+    for (size_t i = 0; i < program->top.count; i++) {
+        const Stmt *stmt = program->top.stmts[i];
+        if (stmt->kind == STMT_FUNC && offset > stmt->as.func.body.open.offset &&
+            offset <= stmt->as.func.body.close.offset) {
+            return stmt;
+        }
+    }
+    return NULL;
+}
+
+/* True if the symbol's name can be used at offset. Functions are visible
+   everywhere, and what is declared directly at the top level reaches into
+   the functions below it. */
+static bool visible_at(const Symbol *symbol, size_t offset, const Stmt *func) {
+    if (symbol->kind == SYM_LABEL) return false;
+    if (symbol->kind == SYM_FUNC) return true;
+    if (offset < symbol->visible_from || offset > symbol->visible_to) return false;
+    return symbol->func == func || symbol->global;
 }
 
 static void handle_completion(Server *server, Arena *arena, const Json *id,
@@ -311,19 +350,25 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
 
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "[");
-    for (size_t i = 0; i < wind_keyword_count; i++) {
+    for (size_t i = 0; i < keyword_count(); i++) {
         if (i) buf_puts(&buf, ",");
-        buf_printf(&buf, "{\"label\":\"%s\",\"kind\":%d}", wind_keywords[i],
+        buf_printf(&buf, "{\"label\":\"%s\",\"kind\":%d}", keyword_name(i),
                    LSP_COMPLETION_KEYWORD);
     }
-    /* Only constants declared above the cursor are in scope. */
-    for (size_t i = 0; doc && i < doc->unit.program.count; i++) {
-        const Stmt *stmt = doc->unit.program.stmts[i];
-        if (stmt->kind != STMT_CONST_DECL || stmt->loc.offset >= offset) continue;
+    const Stmt *func = doc ? function_at(&doc->unit.program, offset) : NULL;
+    for (size_t i = 0; doc && i < doc->unit.symbols.count; i++) {
+        const Symbol *symbol = doc->unit.symbols.items[i];
+        if (!visible_at(symbol, offset, func)) continue;
+        Buf detail = {.arena = arena};
+        describe_symbol(&detail, doc->unit.src, symbol);
         buf_puts(&buf, ",{\"label\":");
-        buf_json_string(&buf, stmt->as.const_decl.name);
-        buf_printf(&buf, ",\"kind\":%d,\"detail\":\"const %s\"}",
-                   LSP_COMPLETION_CONSTANT, type_name(stmt->as.const_decl.type));
+        buf_json_string(&buf, symbol->name);
+        buf_printf(&buf, ",\"kind\":%d,\"detail\":",
+                   symbol->kind == SYM_FUNC    ? LSP_COMPLETION_FUNCTION
+                   : symbol->kind == SYM_CONST ? LSP_COMPLETION_CONSTANT
+                                               : LSP_COMPLETION_VARIABLE);
+        buf_json_string(&buf, (Str){detail.data, detail.len});
+        buf_puts(&buf, "}");
     }
     buf_puts(&buf, "]");
     send_result(&buf);

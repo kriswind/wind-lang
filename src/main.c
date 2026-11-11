@@ -61,7 +61,9 @@ static void compile_to_c(const char *src_path, FILE *out) {
     Unit unit;
     analyze_file(&unit, src_path);
     if (unit.diags.error_count > 0) exit(1);
-    emit_c(&unit.program, out);
+    emit_c(&unit, out);
+    free((char *)unit.src.data);
+    unit_release(&unit);
 }
 
 static const char *temp_dir(void) {
@@ -100,10 +102,13 @@ static void build(const char *src_path, const char *out_path) {
         fatal("cannot write '%s': %s", c_path, strerror(errno));
     }
 
+    /* -fwrapv makes signed overflow wrap, as Wind defines it. -w hides C
+       warnings, which would describe generated code the user never wrote. */
     const char *cc = getenv("CC");
     if (!cc || !*cc) cc = "cc";
     char *argv[] = {
-        (char *)cc, "-std=c11", "-O2", "-o", (char *)out_path, c_path, NULL,
+        (char *)cc, "-std=c11", "-O2", "-w", "-fwrapv", "-o", (char *)out_path,
+        c_path,     NULL,
     };
     int code = spawn_and_wait(argv);
     unlink(c_path);

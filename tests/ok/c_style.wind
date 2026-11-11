@@ -1,0 +1,58 @@
+/* C spellings: type names, suffixes, ++/--, compound assignment, sizeof and
+   (void) parameter lists. */
+
+unsigned long total = 0UL;
+
+int twice(int n) {
+    return n * 2;
+}
+
+void report(void) {
+    cout << "total " << total << "\n";
+}
+
+double scale(double value, short by) {
+    double scaled = value;
+    scaled *= double(by);
+    return scaled;
+}
+
+int main(void) {
+    int i = 0;
+    i++;
+    ++i;
+    i += 10;
+    i -= 2;
+    i *= 3;
+    i /= 4;
+    i %= 5;
+    i--;
+    --i;
+    cout << i << "\n";
+
+    unsigned char byte_value = 250;
+    byte_value += 10;
+    long long big = 1LL;
+    big += 0x7FFFFFFFl;
+    unsigned u = 7u;
+    signed char tiny = -5;
+    long double wide = 1.5L;
+    float ratio = 2.5f;
+    ratio /= 2.0F;
+    size_t count = sizeof(int) + sizeof(char);
+    uint32_t mask = 0xFFu;
+    cout << byte_value << " " << big << " " << u << " " << tiny << " " << wide << " " <<
+         ratio << " " << count << " " << mask << "\n";
+
+    cout << sizeof(char) << sizeof(short) << sizeof(i32) << sizeof(long) << sizeof(u128) <<
+         sizeof(long double) << sizeof(bool) << sizeof(string) << " " <<
+         sizeof(ratio) << sizeof big << sizeof(tiny) << "\n";
+
+    i8 small = sizeof(double);
+    const int Bytes = 8;
+    total += 5ul;
+    total++;
+    report();
+    cout << scale(1.5, 4) << " " << twice(21) << " " << small + i8(Bytes) << "\n";
+    return 0;
+}

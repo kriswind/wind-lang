@@ -1,4 +1,4 @@
-// Constants are immutable, compile-time strings.
+// Constants are immutable, compile-time values.
 const string Greeting = "Hello from Wind!"
 const string s = "A string of characters"
 

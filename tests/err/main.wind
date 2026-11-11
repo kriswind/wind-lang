@@ -1,0 +1,6 @@
+int total = 1
+cout << "not allowed\n"
+string main(int argc) {
+    return "x"
+}
+total = 2

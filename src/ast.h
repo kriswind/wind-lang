@@ -2,59 +2,228 @@
 #define WIND_AST_H
 
 #include "common.h"
+#include "types.h"
 
-typedef enum {
-    /* The type of an expression that failed to check. It is compatible with
-       everything, so one mistake is reported once. */
-    TYPE_INVALID,
-    TYPE_STRING,
-} TypeKind;
-
+typedef struct Expr Expr;
 typedef struct Stmt Stmt;
+typedef struct Symbol Symbol;
+
+/* ---- Symbols ---- */
 
 typedef enum {
-    EXPR_STRING_LIT,
-    EXPR_IDENT,
-} ExprKind;
+    SYM_CONST,
+    SYM_VAR,
+    SYM_PARAM,
+    SYM_FUNC,
+    SYM_LABEL,
+} SymbolKind;
+
+/* A named thing a program declares. Created by unit_analyze. */
+struct Symbol {
+    SymbolKind kind;
+    Str name;
+    SrcLoc loc;    /* the name at its declaration */
+    TypeKind type; /* SYM_FUNC: the return type; SYM_LABEL: unused */
+    /* Unique within the unit; keeps generated C names from colliding. */
+    int id;
+    /* The declaring statement: STMT_CONST, STMT_VAR or STMT_FUNC. NULL for
+       parameters and labels. */
+    const Stmt *decl;
+    /* The function the symbol is declared in; NULL at the top level. */
+    const Stmt *func;
+    /* Declared directly at the top level, outside any block, and so visible
+       to the functions that follow it. */
+    bool global;
+    /* The source offsets between which the name can be referred to. */
+    size_t visible_from;
+    size_t visible_to;
+    bool used;
+};
 
 typedef struct {
+    Symbol **items;
+    size_t count;
+    size_t cap;
+} SymbolList;
+
+/* A place in the source that refers to a symbol. */
+typedef struct {
+    SrcLoc loc;
+    const Symbol *symbol;
+} Ref;
+
+/* ---- Expressions ---- */
+
+typedef enum {
+    EXPR_INT_LIT,
+    EXPR_FLOAT_LIT,
+    EXPR_CHAR_LIT,
+    EXPR_STRING_LIT,
+    EXPR_BOOL_LIT,
+    EXPR_IDENT,
+    EXPR_UNARY,
+    EXPR_BINARY,
+    EXPR_CALL,
+    EXPR_CAST,
+    /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
+    EXPR_SIZEOF,
+} ExprKind;
+
+typedef enum {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV,
+    OP_MOD,
+    OP_EQ,
+    OP_NE,
+    OP_LT,
+    OP_LE,
+    OP_GT,
+    OP_GE,
+    OP_AND,
+    OP_OR,
+    OP_NEG,
+    OP_NOT,
+} Op;
+
+struct Expr {
     ExprKind kind;
+    /* The whole expression when it fits on one line, else its first token. */
     SrcLoc loc;
     TypeKind type; /* set by unit_analyze */
     union {
-        Str string_lit;
+        U128 int_lit;
+        Str float_lit; /* spelling, without digit separators */
+        char char_lit;
+        Str string_lit; /* decoded bytes */
+        bool bool_lit;
         struct {
             Str name;
-            const Stmt *decl; /* set by unit_analyze; NULL if undefined */
+            const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
         } ident;
-    } as;
-} Expr;
-
-typedef enum {
-    STMT_CONST_DECL,
-    STMT_COUT,
-} StmtKind;
-
-struct Stmt {
-    StmtKind kind;
-    SrcLoc loc; /* const_decl: the declared name; cout: the keyword */
-    union {
         struct {
-            TypeKind type;
+            Op op;
+            Expr *operand;
+        } unary;
+        struct {
+            Op op;
+            Expr *left;
+            Expr *right;
+        } binary;
+        struct {
             Str name;
-            Expr *init;
-            bool used; /* set by unit_analyze */
-        } const_decl;
-        struct {
+            SrcLoc name_loc;
+            const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
             Expr **args;
             size_t count;
-        } cout;
+        } call;
+        struct {
+            TypeKind to;
+            Expr *operand;
+        } cast;
+        struct {
+            TypeKind type; /* used when operand is NULL */
+            Expr *operand;
+        } size_of;
     } as;
 };
+
+/* ---- Statements ---- */
+
+typedef enum {
+    STMT_CONST,
+    STMT_VAR,
+    STMT_ASSIGN,
+    STMT_EXPR,
+    STMT_COUT,
+    STMT_IF,
+    STMT_GOTO,
+    STMT_LABEL,
+    STMT_RETURN,
+    STMT_FUNC,
+} StmtKind;
 
 typedef struct {
     Stmt **stmts;
     size_t count;
+    SrcLoc open;  /* the '{' */
+    SrcLoc close; /* the '}' */
+} Block;
+
+typedef struct {
+    TypeKind type;
+    Str name;
+    SrcLoc loc;
+    Symbol *symbol; /* set by unit_analyze */
+} Param;
+
+struct Stmt {
+    StmtKind kind;
+    /* The declared, assigned or jumped-to name where there is one, else the
+       statement's keyword. */
+    SrcLoc loc;
+    union {
+        /* STMT_CONST, STMT_VAR */
+        struct {
+            TypeKind type;
+            Str name;
+            Expr *init; /* NULL for a variable left at its zero value */
+            Symbol *symbol;
+        } decl;
+        /* STMT_ASSIGN. "x += v", "x++" and "x--" are compound: the variable
+           is combined with value using op. */
+        struct {
+            Str name;
+            const Symbol *symbol;
+            Expr *value;
+            bool compound;
+            Op op;
+        } assign;
+        /* STMT_EXPR: always a call */
+        Expr *expr;
+        /* STMT_COUT */
+        struct {
+            Expr **args;
+            size_t count;
+        } cout;
+        /* STMT_IF. "else if" is an else block holding one if statement. */
+        struct {
+            Expr *cond;
+            Block then_block;
+            Block else_block;
+            bool has_else;
+        } if_;
+        /* STMT_GOTO, STMT_LABEL */
+        struct {
+            Str name;
+            Symbol *symbol;
+        } label;
+        /* STMT_RETURN */
+        struct {
+            Expr *value; /* NULL for a bare return */
+        } ret;
+        /* STMT_FUNC */
+        struct {
+            TypeKind ret;
+            Str name;
+            Param *params;
+            size_t param_count;
+            Block body;
+            Symbol *symbol;
+            SymbolList locals; /* variables declared anywhere in the body */
+        } func;
+    } as;
+};
+
+typedef struct {
+    Block top;
+    SymbolList globals; /* variables declared directly at the top level */
+    SymbolList locals;  /* variables declared in blocks of top-level code */
+    /* The function named main, which makes the file a C-style program: the
+       top level may only hold declarations, and main is the entry point.
+       NULL for a file whose top-level statements are the program. */
+    const Stmt *main;
 } Program;
 
 /* One analyzed source file. Everything it owns lives in its arena. */
@@ -63,6 +232,10 @@ typedef struct {
     Str src;
     Diags diags;
     Program program;
+    SymbolList symbols; /* every symbol, in declaration order */
+    Ref *refs;
+    size_t ref_count;
+    size_t ref_cap;
 } Unit;
 
 /* Parses and checks src, which must outlive the unit. Never fails: problems
@@ -72,14 +245,9 @@ typedef struct {
 void unit_analyze(Unit *unit, Str src);
 void unit_release(Unit *unit);
 
-const char *type_name(TypeKind type);
-
-/* The string literal a constant ultimately evaluates to, following
-   constant-to-constant initializers. NULL if the chain hits an undefined
-   name. */
-const Expr *const_decl_literal(const Stmt *decl);
+const char *op_text(Op op);
 
 Program parse_program(Str src, Arena *arena, Diags *diags);
-void check_program(Program *program, Arena *arena, Diags *diags);
+void check_program(Unit *unit);
 
 #endif

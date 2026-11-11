@@ -1,0 +1,24 @@
+// Sized number types never convert implicitly; T(x) converts explicitly.
+
+int factorial(int n) {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
+f64 average(f64 a, f64 b) {
+    return (a + b) / 2.0
+}
+
+u8 level = 250
+level = level + 10 // wraps at the width of u8
+cout << "u8 wraps to " << level << "\n"
+
+i128 huge = 170_141_183_460_469_231_731_687_303_715_884_105_727
+cout << "largest i128: " << huge << "\n"
+
+int count = factorial(10)
+cout << "10! = " << count << "\n"
+cout << "average: " << average(f64(count), 0.5) << "\n"
+
+char first = 'W'
+cout << first << " is byte " << int(first) << "\n"

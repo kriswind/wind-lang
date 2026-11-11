@@ -1,0 +1,74 @@
+/* A block comment
+   spanning lines */
+const int Limit = 5 /* inline */ + 0
+const string Sep = ", "
+
+int add(int a, int b) {
+    return a + b
+}
+
+int fact(int n) {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+
+bool even(int n) {
+    if n == 0 { return true }
+    return odd(n - 1)
+}
+bool odd(int n) {
+    if n == 0 { return false }
+    return even(n - 1)
+}
+
+void greet(string who, char mark) {
+    cout << "Hello, " << who << mark << "\n"
+}
+
+int i = 0
+loop:
+if i < Limit {
+    cout << i << Sep
+    i = i + 1
+    goto loop
+}
+cout << "\n"
+greet("Wind", '!')
+cout << add(2, 3) << " " << fact(20) << " " << even(10) << " " << odd(10) << "\n"
+
+i8 small = -128
+u8 b = 250
+b = b + 10
+byte bb = 0xFF
+i128 huge = 170141183460469231731687303715884105727
+u128 max = 340282366920938463463374607431768211455
+i128 neg = -170141183460469231731687303715884105728
+cout << small << " " << b << " " << bb << " " << huge << " " << max << " " << neg << "\n"
+i32 wrap = 2147483647
+wrap = wrap + 1
+cout << wrap << "\n"
+
+float f = 0.1
+f32 g = 0.1
+f16 h = 1.5
+f64 d = 1e100
+f128 q = 1.0
+q = q / 3.0
+float third = 1.0 / 3
+cout << f << " " << g << " " << h << " " << d << " " << q << " " << third << " " << f + 0.2 << "\n"
+cout << int(3.99 + f) << " " << f32(i) / 2.0 << " " << char(65 + i) << " " << int('a') << " " << 7 % 3 << " " << -7 / 2 << "\n"
+uint u = 1_000_000
+uintptr p = 0b1010
+string empty
+string s = "abc"
+bool same = s == "abc" && !(s != "abc") || false
+cout << u << " " << p << " [" << empty << "] " << same << " " << (empty == "") << " " << ('a' < 'b') << "\n"
+if i > 100 {
+    cout << "big\n"
+} else if i == 5 {
+    cout << "five\n"
+} else {
+    cout << "other\n"
+}
+int zero
+cout << zero << "\n"

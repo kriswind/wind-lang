@@ -84,15 +84,49 @@ check("definition", request("textDocument/definition", at(1, 21))["result"],
       {"uri": URI, "range": rng(0, 13, 17)})
 
 labels = [item["label"] for item in request("textDocument/completion", at(1, 5))["result"]]
-check("completion", labels, ["const", "string", "cout", "Name"])
+check("completion has keywords", [k for k in ("const", "if", "goto", "u128") if k not in labels], [])
+check("completion has constant", "Name" in labels, True)
 labels = [item["label"] for item in request("textDocument/completion", at(0, 0))["result"]]
-check("completion above declaration", labels, ["const", "string", "cout"])
+check("completion above declaration", "Name" in labels, False)
 
 notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 2},
                                   "contentChanges": [{"text": 'const string Unused = "x"\n'}]})
 check("diagnostics after change", read()["params"]["diagnostics"], [
     {"range": rng(0, 13, 19), "severity": 2, "source": "wind", "message": "constant 'Unused' is never used"},
 ])
+
+FUNCS = """const int Limit = 3
+int twice(int n) {
+    int doubled = n * 2
+    return doubled
+}
+int total = twice(Limit)
+again:
+cout << total
+goto again
+"""
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 3}, "contentChanges": [{"text": FUNCS}]})
+check("diagnostics for valid program", read()["params"]["diagnostics"], [])
+
+
+def hover_text(line, character):
+    return request("textDocument/hover", at(line, character))["result"]["contents"]["value"]
+
+
+check("hover function call", hover_text(5, 13), "```wind\nint twice(int n)\n```")
+check("hover parameter", hover_text(2, 18), "```wind\nint n\n```")
+check("hover variable", hover_text(7, 9), "```wind\nint total\n```")
+check("hover constant", hover_text(5, 19), "```wind\nconst int Limit = 3\n```")
+check("hover label", hover_text(8, 6), "```wind\nagain:\n```")
+check("definition of label", request("textDocument/definition", at(8, 6))["result"]["range"], rng(6, 0, 5))
+check("definition of function", request("textDocument/definition", at(5, 13))["result"]["range"], rng(1, 4, 9))
+
+inside = [item["label"] for item in request("textDocument/completion", at(3, 4))["result"]]
+check("completion inside function", [n in inside for n in ("n", "doubled", "Limit", "twice", "total", "again")],
+      [True, True, True, True, False, False])
+outside = [item["label"] for item in request("textDocument/completion", at(8, 0))["result"]]
+check("completion at top level", [n in outside for n in ("n", "doubled", "Limit", "twice", "total")],
+      [False, False, True, True, True])
 
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)

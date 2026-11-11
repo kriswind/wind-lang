@@ -4,13 +4,16 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define WIND_VERSION "0.1.0"
+#define WIND_VERSION "0.2.0"
 
 /* A length-delimited byte slice. Never assumed to be NUL-terminated. */
 typedef struct {
     const char *data;
     size_t len;
 } Str;
+
+/* Wide enough for any integer literal; i128 and u128 need all of it. */
+__extension__ typedef unsigned __int128 U128;
 
 bool str_eq(Str a, Str b);
 bool str_eq_cstr(Str a, const char *b);
@@ -27,8 +30,21 @@ void *arena_alloc(Arena *arena, size_t size);
 void *arena_grow(Arena *arena, void *old, size_t old_size, size_t new_size);
 void arena_release(Arena *arena);
 
-/* A region of one source line. line and col are 1-based; col, offset and len
-   count bytes. */
+/* Appends item to a growable arena-backed array given as its pointer, count
+   and capacity variables. */
+#define ARENA_PUSH(arena, items, count, cap, item)                            \
+    do {                                                                      \
+        if ((count) == (cap)) {                                               \
+            size_t new_cap_ = (cap) ? (cap) * 2 : 8;                          \
+            (items) = arena_grow((arena), (items), (count) * sizeof *(items), \
+                                 new_cap_ * sizeof *(items));                 \
+            (cap) = new_cap_;                                                 \
+        }                                                                     \
+        (items)[(count)++] = (item);                                          \
+    } while (0)
+
+/* A region of source text that starts and ends on one line. line and col are
+   1-based; col, offset and len count bytes. */
 typedef struct {
     size_t offset;
     size_t len;

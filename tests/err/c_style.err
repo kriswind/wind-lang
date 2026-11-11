@@ -1,0 +1,17 @@
+tests/err/c_style.wind:2:1: error: operator '+=' is not defined for 'string'
+tests/err/c_style.wind:3:1: error: operator '+=' is not defined for 'string'
+tests/err/c_style.wind:5:1: error: operator '+=' is not defined for 'char'
+tests/err/c_style.wind:7:1: error: operator '%=' is not defined for 'float'
+tests/err/c_style.wind:8:11: warning: constant 'K' is never used
+tests/err/c_style.wind:9:1: error: cannot assign to constant 'K'
+tests/err/c_style.wind:10:9: error: invalid number literal '1f'
+tests/err/c_style.wind:12:9: error: invalid number literal '1.5u'
+tests/err/c_style.wind:13:1: error: invalid type
+tests/err/c_style.wind:14:1: error: invalid type
+tests/err/c_style.wind:15:1: error: invalid type
+tests/err/c_style.wind:16:12: error: cannot take the size of 'void'
+tests/err/c_style.wind:17:1: error: undefined name 'missing'
+tests/err/c_style.wind:18:13: error: expected a name, found ','
+tests/err/c_style.wind:19:24: error: undefined name 'e'
+tests/err/c_style.wind:19:29: error: undefined name 'g'
+tests/err/c_style.wind:19:34: error: undefined name 'h'

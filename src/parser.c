@@ -1,37 +1,77 @@
+#include <string.h>
+
 #include "ast.h"
 #include "lexer.h"
 
 /*
  * Grammar:
  *
- *   program    = { statement terminator } EOF
- *   terminator = NEWLINE | ";" | EOF
- *   statement  = const_decl | cout_stmt
- *   const_decl = "const" type IDENT "=" expr
- *   cout_stmt  = "cout" "<<" expr { "<<" expr }
- *   type       = "string"
- *   expr       = STRING | IDENT
+ *   program    = { statement } EOF
+ *   block      = "{" { statement } "}"
+ *   statement  = ( const_decl | var_decl | assign | call | cout | goto
+ *                | return ) terminator
+ *              | if | func | label
+ *   terminator = NEWLINE | ";" | EOF | before "}"
  *
- * A newline directly after "=" or "<<" does not end the statement.
+ *   const_decl = "const" type IDENT "=" expr
+ *   var_decl   = type IDENT [ "=" expr ]
+ *   assign     = IDENT ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr
+ *              | IDENT ( "++" | "--" ) | ( "++" | "--" ) IDENT
+ *   cout       = "cout" "<<" expr { "<<" expr }
+ *   goto       = "goto" IDENT
+ *   label      = IDENT ":"
+ *   return     = "return" [ expr ]
+ *   if         = "if" expr block [ "else" ( if | block ) ]
+ *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
+ *   param      = type IDENT
+ *   type       = TYPE | a C spelling such as "unsigned long" (see parse_type)
+ *
+ *   expr       = or
+ *   or         = and { "||" and }
+ *   and        = compare { "&&" compare }
+ *   compare    = sum { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum }
+ *   sum        = term { ( "+" | "-" ) term }
+ *   term       = unary { ( "*" | "/" | "%" ) unary }
+ *   unary      = ( "-" | "!" ) unary | primary
+ *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | IDENT
+ *              | call | type "(" expr ")" | "(" expr ")"
+ *              | "sizeof" "(" type ")" | "sizeof" unary
+ *   call       = IDENT "(" [ expr { "," expr } ] ")"
+ *
+ * Functions may only appear at the top level. A newline does not end a
+ * statement directly after "=", "<<", "," or a binary operator, inside
+ * parentheses, or between an "if" condition or "}" and what follows it.
  *
  * Error handling: a parse function that fails reports one diagnostic and
- * returns NULL (or false). parse_program then drops the statement and
- * resynchronizes at the next statement boundary.
+ * returns NULL (or false). The statement is dropped and parsing resumes at
+ * the next statement boundary.
  */
 
 typedef struct {
     Lexer lexer;
     Token tok;
+    SrcLoc prev; /* the most recently consumed token */
     Arena *arena;
     Diags *diags;
 } Parser;
 
 static void next(Parser *p) {
+    p->prev = p->tok.loc;
     p->tok = lexer_next(&p->lexer);
 }
 
+static bool at(const Parser *p, TokenKind kind) {
+    return p->tok.kind == kind;
+}
+
+static bool accept(Parser *p, TokenKind kind) {
+    if (!at(p, kind)) return false;
+    next(p);
+    return true;
+}
+
 static void skip_newlines(Parser *p) {
-    while (p->tok.kind == TOK_NEWLINE) next(p);
+    while (at(p, TOK_NEWLINE)) next(p);
 }
 
 static void error_expected(Parser *p, const char *what) {
@@ -40,7 +80,7 @@ static void error_expected(Parser *p, const char *what) {
 }
 
 static bool expect(Parser *p, TokenKind kind, Token *out) {
-    if (p->tok.kind != kind) {
+    if (!at(p, kind)) {
         error_expected(p, token_kind_name(kind));
         return false;
     }
@@ -49,93 +89,513 @@ static bool expect(Parser *p, TokenKind kind, Token *out) {
     return true;
 }
 
-static bool parse_type(Parser *p, TypeKind *out) {
-    if (p->tok.kind != TOK_KW_STRING) {
-        error_expected(p, "a type");
-        return false;
-    }
-    next(p);
-    *out = TYPE_STRING;
-    return true;
+/* The region from the start of one token to the end of another, cut down to
+   the first token when they are on different lines. */
+static SrcLoc span(SrcLoc start, SrcLoc end) {
+    if (end.line == start.line) start.len = end.offset + end.len - start.offset;
+    return start;
 }
 
-static Expr *parse_expr(Parser *p) {
-    if (p->tok.kind != TOK_STRING && p->tok.kind != TOK_IDENT) {
-        error_expected(p, "an expression");
-        return NULL;
-    }
+static Expr *new_expr(Parser *p, ExprKind kind, SrcLoc loc) {
     Expr *expr = arena_alloc(p->arena, sizeof *expr);
-    expr->loc = p->tok.loc;
+    memset(expr, 0, sizeof *expr);
+    expr->kind = kind;
+    expr->loc = loc;
     expr->type = TYPE_INVALID;
-    if (p->tok.kind == TOK_STRING) {
-        expr->kind = EXPR_STRING_LIT;
-        expr->as.string_lit = p->tok.text;
-    } else {
-        expr->kind = EXPR_IDENT;
-        expr->as.ident.name = p->tok.text;
-        expr->as.ident.decl = NULL;
-    }
-    next(p);
     return expr;
 }
 
-static Stmt *parse_const_decl(Parser *p) {
-    TypeKind type;
-    Token name;
-    if (!expect(p, TOK_KW_CONST, NULL)) return NULL;
-    if (!parse_type(p, &type)) return NULL;
-    if (!expect(p, TOK_IDENT, &name)) return NULL;
-    if (!expect(p, TOK_ASSIGN, NULL)) return NULL;
-    skip_newlines(p);
-    Expr *init = parse_expr(p);
-    if (!init) return NULL;
-
+static Stmt *new_stmt(Parser *p, StmtKind kind, SrcLoc loc) {
     Stmt *stmt = arena_alloc(p->arena, sizeof *stmt);
-    stmt->kind = STMT_CONST_DECL;
-    stmt->loc = name.loc;
-    stmt->as.const_decl.type = type;
-    stmt->as.const_decl.name = name.text;
-    stmt->as.const_decl.init = init;
-    stmt->as.const_decl.used = false;
+    memset(stmt, 0, sizeof *stmt);
+    stmt->kind = kind;
+    stmt->loc = loc;
+    return stmt;
+}
+
+/* ---- Types ---- */
+
+static bool at_type(const Parser *p) {
+    return at(p, TOK_TYPE) || at(p, TOK_KW_UNSIGNED) || at(p, TOK_KW_SIGNED) ||
+           at(p, TOK_KW_LONG) || at(p, TOK_KW_SHORT);
+}
+
+/*
+ * Parses a type name. Besides Wind's own names this accepts C's multi-word
+ * spellings and maps them onto Wind types:
+ *
+ *   short, short int                   i16     unsigned short       u16
+ *   long, long int, long long          i64     unsigned long (long) u64
+ *   signed, signed int                 int     unsigned (int)       uint
+ *   signed char                        i8      unsigned char        u8
+ *   long double                        f128
+ */
+static bool parse_type(Parser *p, TypeKind *out) {
+    SrcLoc start = p->tok.loc;
+    bool is_unsigned = false, is_signed = false;
+    int shorts = 0, longs = 0;
+    for (;;) {
+        if (accept(p, TOK_KW_UNSIGNED)) is_unsigned = true;
+        else if (accept(p, TOK_KW_SIGNED)) is_signed = true;
+        else if (accept(p, TOK_KW_SHORT)) shorts++;
+        else if (accept(p, TOK_KW_LONG)) longs++;
+        else break;
+    }
+    bool modified = is_unsigned || is_signed || shorts || longs;
+    if (!modified) {
+        Token type;
+        if (!at(p, TOK_TYPE)) {
+            error_expected(p, "a type");
+            return false;
+        }
+        type = p->tok;
+        next(p);
+        *out = type.type;
+        return true;
+    }
+
+    TypeKind base = TYPE_INT;
+    if (at(p, TOK_TYPE)) {
+        base = p->tok.type;
+        next(p);
+    }
+    bool valid = !(is_unsigned && is_signed) && shorts <= 1 && longs <= 2 &&
+                 !(shorts && longs);
+    if (base == TYPE_INT) {
+        if (shorts) *out = is_unsigned ? TYPE_U16 : TYPE_I16;
+        else if (longs) *out = is_unsigned ? TYPE_U64 : TYPE_I64;
+        else *out = is_unsigned ? TYPE_UINT : TYPE_INT;
+    } else if (base == TYPE_CHAR && !shorts && !longs) {
+        *out = is_unsigned ? TYPE_U8 : TYPE_I8;
+    } else if (base == TYPE_F64 && longs == 1 && !shorts && !is_unsigned && !is_signed) {
+        *out = TYPE_F128;
+    } else {
+        valid = false;
+    }
+    if (!valid) {
+        diag_add(p->diags, SEV_ERROR, span(start, p->prev), "invalid type");
+        return false;
+    }
+    return true;
+}
+
+/* ---- Expressions ---- */
+
+static Expr *parse_expr(Parser *p);
+static Expr *parse_unary(Parser *p);
+
+/* Called at "sizeof". Its operand is a parenthesized type or an expression. */
+static Expr *parse_sizeof(Parser *p) {
+    Token tok = p->tok;
+    Expr *expr = new_expr(p, EXPR_SIZEOF, tok.loc);
+    next(p);
+    if (accept(p, TOK_LPAREN)) {
+        skip_newlines(p);
+        if (at_type(p)) {
+            if (!parse_type(p, &expr->as.size_of.type)) return NULL;
+        } else {
+            expr->as.size_of.operand = parse_expr(p);
+            if (!expr->as.size_of.operand) return NULL;
+        }
+        skip_newlines(p);
+        if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+    } else {
+        expr->as.size_of.operand = parse_unary(p);
+        if (!expr->as.size_of.operand) return NULL;
+    }
+    expr->loc = span(tok.loc, p->prev);
+    return expr;
+}
+
+/* Called at the "(" that follows the callee's name. */
+static Expr *parse_call(Parser *p, Token name) {
+    Expr *call = new_expr(p, EXPR_CALL, name.loc);
+    call->as.call.name = name.text;
+    call->as.call.name_loc = name.loc;
+    size_t cap = 0;
+
+    next(p);
+    skip_newlines(p);
+    if (!at(p, TOK_RPAREN)) {
+        for (;;) {
+            Expr *arg = parse_expr(p);
+            if (!arg) return NULL;
+            ARENA_PUSH(p->arena, call->as.call.args, call->as.call.count, cap, arg);
+            skip_newlines(p);
+            if (!accept(p, TOK_COMMA)) break;
+            skip_newlines(p);
+        }
+    }
+    if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+    call->loc = span(name.loc, p->prev);
+    return call;
+}
+
+static Expr *parse_primary(Parser *p) {
+    Token tok = p->tok;
+    Expr *expr;
+    if (at_type(p)) {
+        TypeKind to;
+        if (!parse_type(p, &to)) return NULL;
+        if (!expect(p, TOK_LPAREN, NULL)) return NULL;
+        skip_newlines(p);
+        Expr *operand = parse_expr(p);
+        if (!operand) return NULL;
+        skip_newlines(p);
+        if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+        expr = new_expr(p, EXPR_CAST, span(tok.loc, p->prev));
+        expr->as.cast.to = to;
+        expr->as.cast.operand = operand;
+        return expr;
+    }
+    switch (tok.kind) {
+    case TOK_KW_SIZEOF:
+        return parse_sizeof(p);
+    case TOK_INT:
+        next(p);
+        expr = new_expr(p, EXPR_INT_LIT, tok.loc);
+        expr->as.int_lit = tok.int_value;
+        return expr;
+    case TOK_FLOAT:
+        next(p);
+        expr = new_expr(p, EXPR_FLOAT_LIT, tok.loc);
+        expr->as.float_lit = tok.text;
+        return expr;
+    case TOK_CHAR:
+        next(p);
+        expr = new_expr(p, EXPR_CHAR_LIT, tok.loc);
+        expr->as.char_lit = (char)tok.int_value;
+        return expr;
+    case TOK_STRING:
+        next(p);
+        expr = new_expr(p, EXPR_STRING_LIT, tok.loc);
+        expr->as.string_lit = tok.text;
+        return expr;
+    case TOK_KW_TRUE:
+    case TOK_KW_FALSE:
+        next(p);
+        expr = new_expr(p, EXPR_BOOL_LIT, tok.loc);
+        expr->as.bool_lit = tok.kind == TOK_KW_TRUE;
+        return expr;
+    case TOK_IDENT:
+        next(p);
+        if (at(p, TOK_LPAREN)) return parse_call(p, tok);
+        expr = new_expr(p, EXPR_IDENT, tok.loc);
+        expr->as.ident.name = tok.text;
+        return expr;
+    case TOK_LPAREN:
+        next(p);
+        skip_newlines(p);
+        expr = parse_expr(p);
+        if (!expr) return NULL;
+        skip_newlines(p);
+        if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+        expr->loc = span(tok.loc, p->prev);
+        return expr;
+    default:
+        error_expected(p, "an expression");
+        return NULL;
+    }
+}
+
+static Expr *parse_unary(Parser *p) {
+    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT)) return parse_primary(p);
+    Token tok = p->tok;
+    next(p);
+    Expr *operand = parse_unary(p);
+    if (!operand) return NULL;
+    Expr *expr = new_expr(p, EXPR_UNARY, span(tok.loc, operand->loc));
+    expr->as.unary.op = tok.kind == TOK_MINUS ? OP_NEG : OP_NOT;
+    expr->as.unary.operand = operand;
+    return expr;
+}
+
+/* Returns the binding strength of a binary operator token, or 0 if the token
+   is not one. Higher binds tighter. */
+static int binary_precedence(TokenKind kind, Op *op) {
+    switch (kind) {
+    case TOK_OR:      *op = OP_OR;  return 1;
+    case TOK_AND:     *op = OP_AND; return 2;
+    case TOK_EQ:      *op = OP_EQ;  return 3;
+    case TOK_NE:      *op = OP_NE;  return 3;
+    case TOK_LT:      *op = OP_LT;  return 3;
+    case TOK_LE:      *op = OP_LE;  return 3;
+    case TOK_GT:      *op = OP_GT;  return 3;
+    case TOK_GE:      *op = OP_GE;  return 3;
+    case TOK_PLUS:    *op = OP_ADD; return 4;
+    case TOK_MINUS:   *op = OP_SUB; return 4;
+    case TOK_STAR:    *op = OP_MUL; return 5;
+    case TOK_SLASH:   *op = OP_DIV; return 5;
+    case TOK_PERCENT: *op = OP_MOD; return 5;
+    default:          return 0;
+    }
+}
+
+static Expr *parse_binary(Parser *p, int min_precedence) {
+    Expr *left = parse_unary(p);
+    if (!left) return NULL;
+    for (;;) {
+        Op op;
+        int precedence = binary_precedence(p->tok.kind, &op);
+        if (precedence == 0 || precedence < min_precedence) return left;
+        next(p);
+        skip_newlines(p);
+        Expr *right = parse_binary(p, precedence + 1);
+        if (!right) return NULL;
+        Expr *expr = new_expr(p, EXPR_BINARY, span(left->loc, right->loc));
+        expr->as.binary.op = op;
+        expr->as.binary.left = left;
+        expr->as.binary.right = right;
+        left = expr;
+    }
+}
+
+static Expr *parse_expr(Parser *p) {
+    return parse_binary(p, 1);
+}
+
+/* ---- Statements ---- */
+
+static bool parse_block(Parser *p, Block *block);
+static Stmt *parse_if(Parser *p);
+
+static bool at_terminator(const Parser *p) {
+    return at(p, TOK_NEWLINE) || at(p, TOK_SEMI) || at(p, TOK_EOF) ||
+           at(p, TOK_RBRACE);
+}
+
+static bool at_statement_keyword(const Parser *p) {
+    switch (p->tok.kind) {
+    case TOK_KW_CONST:
+    case TOK_KW_COUT:
+    case TOK_KW_IF:
+    case TOK_KW_GOTO:
+    case TOK_KW_RETURN:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Called after the type and name of a declaration. */
+static Stmt *parse_decl_rest(Parser *p, StmtKind kind, TypeKind type, Token name) {
+    Expr *init = NULL;
+    if (kind == STMT_CONST || at(p, TOK_ASSIGN)) {
+        if (!expect(p, TOK_ASSIGN, NULL)) return NULL;
+        skip_newlines(p);
+        init = parse_expr(p);
+        if (!init) return NULL;
+    }
+    if (type == TYPE_VOID) {
+        diag_add(p->diags, SEV_ERROR, name.loc, "'%.*s' cannot have type 'void'",
+                 (int)name.text.len, name.text.data);
+        return NULL;
+    }
+    Stmt *stmt = new_stmt(p, kind, name.loc);
+    stmt->as.decl.type = type;
+    stmt->as.decl.name = name.text;
+    stmt->as.decl.init = init;
+    return stmt;
+}
+
+/* Called at the "(" that follows the function's return type and name. */
+static Stmt *parse_func(Parser *p, TypeKind ret, Token name, bool top_level) {
+    Stmt *stmt = new_stmt(p, STMT_FUNC, name.loc);
+    stmt->as.func.ret = ret;
+    stmt->as.func.name = name.text;
+    size_t cap = 0;
+
+    next(p);
+    skip_newlines(p);
+    if (!at(p, TOK_RPAREN)) {
+        for (;;) {
+            TypeKind type;
+            Token param_name;
+            if (!parse_type(p, &type)) return NULL;
+            /* C's "(void)" for a function without parameters. */
+            if (type == TYPE_VOID && stmt->as.func.param_count == 0 &&
+                at(p, TOK_RPAREN)) {
+                break;
+            }
+            if (!expect(p, TOK_IDENT, &param_name)) return NULL;
+            if (type == TYPE_VOID) {
+                diag_add(p->diags, SEV_ERROR, param_name.loc,
+                         "'%.*s' cannot have type 'void'", (int)param_name.text.len,
+                         param_name.text.data);
+                type = TYPE_INVALID;
+            }
+            Param param = {type, param_name.text, param_name.loc, NULL};
+            ARENA_PUSH(p->arena, stmt->as.func.params, stmt->as.func.param_count, cap,
+                       param);
+            skip_newlines(p);
+            if (!accept(p, TOK_COMMA)) break;
+            skip_newlines(p);
+        }
+    }
+    if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+    if (!parse_block(p, &stmt->as.func.body)) return NULL;
+
+    if (!top_level) {
+        diag_add(p->diags, SEV_ERROR, name.loc,
+                 "functions can only be declared at the top level");
+        return NULL;
+    }
     return stmt;
 }
 
 static Stmt *parse_cout(Parser *p) {
-    Token keyword;
-    if (!expect(p, TOK_KW_COUT, &keyword)) return NULL;
-
-    Expr **args = NULL;
-    size_t count = 0, cap = 0;
+    Stmt *stmt = new_stmt(p, STMT_COUT, p->tok.loc);
+    size_t cap = 0;
+    next(p);
     do {
         if (!expect(p, TOK_SHL, NULL)) return NULL;
         skip_newlines(p);
         Expr *arg = parse_expr(p);
         if (!arg) return NULL;
-        if (count == cap) {
-            size_t new_cap = cap ? cap * 2 : 4;
-            args = arena_grow(p->arena, args, count * sizeof *args,
-                              new_cap * sizeof *args);
-            cap = new_cap;
-        }
-        args[count++] = arg;
-    } while (p->tok.kind == TOK_SHL);
-
-    Stmt *stmt = arena_alloc(p->arena, sizeof *stmt);
-    stmt->kind = STMT_COUT;
-    stmt->loc = keyword.loc;
-    stmt->as.cout.args = args;
-    stmt->as.cout.count = count;
+        ARENA_PUSH(p->arena, stmt->as.cout.args, stmt->as.cout.count, cap, arg);
+    } while (at(p, TOK_SHL));
     return stmt;
 }
 
-static bool at_statement_start(const Parser *p) {
-    return p->tok.kind == TOK_KW_CONST || p->tok.kind == TOK_KW_COUT;
+static Stmt *parse_if(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_IF, p->tok.loc);
+    next(p);
+    stmt->as.if_.cond = parse_expr(p);
+    if (!stmt->as.if_.cond) return NULL;
+    if (!parse_block(p, &stmt->as.if_.then_block)) return NULL;
+
+    /* Newlines consumed here would only have ended the statement anyway. */
+    skip_newlines(p);
+    if (!accept(p, TOK_KW_ELSE)) return stmt;
+    stmt->as.if_.has_else = true;
+    if (at(p, TOK_KW_IF)) {
+        Stmt *nested = parse_if(p);
+        if (!nested) return NULL;
+        Block *block = &stmt->as.if_.else_block;
+        block->stmts = arena_alloc(p->arena, sizeof *block->stmts);
+        block->stmts[0] = nested;
+        block->count = 1;
+        block->open = nested->loc;
+        block->close = p->prev;
+        return stmt;
+    }
+    if (!parse_block(p, &stmt->as.if_.else_block)) return NULL;
+    return stmt;
 }
 
-static Stmt *parse_statement(Parser *p) {
-    switch (p->tok.kind) {
-    case TOK_KW_CONST: return parse_const_decl(p);
-    case TOK_KW_COUT:  return parse_cout(p);
+static bool compound_assign_op(TokenKind kind, Op *op) {
+    switch (kind) {
+    case TOK_PLUS_EQ:    *op = OP_ADD; return true;
+    case TOK_MINUS_EQ:   *op = OP_SUB; return true;
+    case TOK_STAR_EQ:    *op = OP_MUL; return true;
+    case TOK_SLASH_EQ:   *op = OP_DIV; return true;
+    case TOK_PERCENT_EQ: *op = OP_MOD; return true;
+    default:             return false;
+    }
+}
+
+/* "x++" and "x--" are "x += 1" and "x -= 1". step is the "++" or "--". */
+static Stmt *new_step(Parser *p, Token name, Token step) {
+    Stmt *stmt = new_stmt(p, STMT_ASSIGN, name.loc);
+    stmt->as.assign.name = name.text;
+    stmt->as.assign.compound = true;
+    stmt->as.assign.op = step.kind == TOK_INC ? OP_ADD : OP_SUB;
+    stmt->as.assign.value = new_expr(p, EXPR_INT_LIT, step.loc);
+    stmt->as.assign.value->as.int_lit = 1;
+    return stmt;
+}
+
+/* *needs_terminator is cleared for statements that end themselves: a label,
+   and anything closed by a "}". */
+static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) {
+    Token tok = p->tok;
+    Stmt *stmt;
+    Op op;
+    if (at_type(p)) {
+        TypeKind type;
+        Token name;
+        if (!parse_type(p, &type)) return NULL;
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        if (at(p, TOK_LPAREN)) {
+            *needs_terminator = false;
+            return parse_func(p, type, name, top_level);
+        }
+        return parse_decl_rest(p, STMT_VAR, type, name);
+    }
+    switch (tok.kind) {
+    case TOK_KW_CONST: {
+        TypeKind type;
+        Token name;
+        next(p);
+        if (!parse_type(p, &type)) return NULL;
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        return parse_decl_rest(p, STMT_CONST, type, name);
+    }
+    case TOK_INC:
+    case TOK_DEC: {
+        Token name;
+        next(p);
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        return new_step(p, name, tok);
+    }
+    case TOK_KW_COUT:
+        return parse_cout(p);
+    case TOK_KW_IF:
+        *needs_terminator = false;
+        return parse_if(p);
+    case TOK_KW_GOTO: {
+        Token name;
+        next(p);
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        stmt = new_stmt(p, STMT_GOTO, name.loc);
+        stmt->as.label.name = name.text;
+        return stmt;
+    }
+    case TOK_KW_RETURN:
+        next(p);
+        stmt = new_stmt(p, STMT_RETURN, tok.loc);
+        if (!at_terminator(p)) {
+            stmt->as.ret.value = parse_expr(p);
+            if (!stmt->as.ret.value) return NULL;
+        }
+        return stmt;
+    case TOK_IDENT:
+        next(p);
+        if (accept(p, TOK_COLON)) {
+            *needs_terminator = false;
+            stmt = new_stmt(p, STMT_LABEL, tok.loc);
+            stmt->as.label.name = tok.text;
+            return stmt;
+        }
+        if (accept(p, TOK_ASSIGN)) {
+            skip_newlines(p);
+            stmt = new_stmt(p, STMT_ASSIGN, tok.loc);
+            stmt->as.assign.name = tok.text;
+            stmt->as.assign.value = parse_expr(p);
+            return stmt->as.assign.value ? stmt : NULL;
+        }
+        if (at(p, TOK_INC) || at(p, TOK_DEC)) {
+            Token step = p->tok;
+            next(p);
+            return new_step(p, tok, step);
+        }
+        if (compound_assign_op(p->tok.kind, &op)) {
+            next(p);
+            skip_newlines(p);
+            stmt = new_stmt(p, STMT_ASSIGN, tok.loc);
+            stmt->as.assign.name = tok.text;
+            stmt->as.assign.compound = true;
+            stmt->as.assign.op = op;
+            stmt->as.assign.value = parse_expr(p);
+            return stmt->as.assign.value ? stmt : NULL;
+        }
+        if (at(p, TOK_LPAREN)) {
+            stmt = new_stmt(p, STMT_EXPR, tok.loc);
+            stmt->as.expr = parse_call(p, tok);
+            return stmt->as.expr ? stmt : NULL;
+        }
+        error_expected(p, "an assignment, '(' or ':' after a name");
+        return NULL;
     default:
         error_expected(p, "a statement");
         /* Consumed so that resynchronizing always makes progress. */
@@ -144,19 +604,66 @@ static Stmt *parse_statement(Parser *p) {
     }
 }
 
-static bool at_terminator(const Parser *p) {
-    return p->tok.kind == TOK_NEWLINE || p->tok.kind == TOK_SEMI ||
-           p->tok.kind == TOK_EOF;
-}
-
-/* Skips the rest of a broken statement. Stopping at a statement keyword keeps
-   a following statement intact when the broken one swallowed its newline. */
+/* Skips the rest of a broken statement, including any braced blocks that
+   belong to it. Stopping at a statement keyword keeps a following statement
+   intact when the broken one swallowed its newline. */
 static void synchronize(Parser *p) {
-    while (!at_terminator(p) && !at_statement_start(p)) next(p);
+    int depth = 0;
+    for (;;) {
+        if (at(p, TOK_EOF)) return;
+        if (at(p, TOK_LBRACE)) {
+            depth++;
+        } else if (at(p, TOK_RBRACE)) {
+            if (depth == 0) return;
+            depth--;
+        } else if (depth == 0 && (at(p, TOK_NEWLINE) || at(p, TOK_SEMI) ||
+                                  at_statement_keyword(p))) {
+            return;
+        }
+        next(p);
+    }
 }
 
-static void skip_terminators(Parser *p) {
-    while (p->tok.kind == TOK_NEWLINE || p->tok.kind == TOK_SEMI) next(p);
+/* Parses statements up to the "}" that closes the enclosing block, or to the
+   end of the file at the top level. */
+static void parse_statements(Parser *p, Block *block, bool top_level) {
+    size_t cap = 0;
+    for (;;) {
+        while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
+        if (at(p, TOK_EOF)) return;
+        if (at(p, TOK_RBRACE)) {
+            if (!top_level) return;
+            error_expected(p, "a statement");
+            next(p);
+            continue;
+        }
+        bool needs_terminator = true;
+        Stmt *stmt = parse_statement(p, top_level, &needs_terminator);
+        if (!stmt) {
+            synchronize(p);
+            continue;
+        }
+        if (needs_terminator && !at_terminator(p)) {
+            error_expected(p, "end of statement");
+            synchronize(p);
+        }
+        ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt);
+    }
+}
+
+static bool parse_block(Parser *p, Block *block) {
+    Token open;
+    skip_newlines(p);
+    if (!expect(p, TOK_LBRACE, &open)) return false;
+    block->open = open.loc;
+    parse_statements(p, block, false);
+    block->close = p->tok.loc;
+    if (!at(p, TOK_RBRACE)) {
+        diag_add(p->diags, SEV_ERROR, open.loc, "this '{' is never closed");
+        return false;
+    }
+    next(p);
+    return true;
 }
 
 Program parse_program(Str src, Arena *arena, Diags *diags) {
@@ -164,29 +671,9 @@ Program parse_program(Str src, Arena *arena, Diags *diags) {
     lexer_init(&p.lexer, src, arena, diags);
     next(&p);
 
-    Program program = {0};
-    size_t cap = 0;
-    skip_terminators(&p);
-    while (p.tok.kind != TOK_EOF) {
-        Stmt *stmt = parse_statement(&p);
-        if (!stmt) {
-            synchronize(&p);
-        } else {
-            if (!at_terminator(&p)) {
-                error_expected(&p, "end of statement");
-                synchronize(&p);
-            }
-            if (program.count == cap) {
-                size_t new_cap = cap ? cap * 2 : 16;
-                program.stmts =
-                    arena_grow(arena, program.stmts,
-                               program.count * sizeof *program.stmts,
-                               new_cap * sizeof *program.stmts);
-                cap = new_cap;
-            }
-            program.stmts[program.count++] = stmt;
-        }
-        skip_terminators(&p);
-    }
+    Program program;
+    memset(&program, 0, sizeof program);
+    parse_statements(&p, &program.top, true);
+    program.top.close = p.tok.loc;
     return program;
 }

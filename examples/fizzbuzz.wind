@@ -1,0 +1,24 @@
+/* FizzBuzz: functions, if/else and a goto loop. */
+
+const int Limit = 15
+
+void say(int n) {
+    if n % 15 == 0 {
+        cout << "FizzBuzz"
+    } else if n % 3 == 0 {
+        cout << "Fizz"
+    } else if n % 5 == 0 {
+        cout << "Buzz"
+    } else {
+        cout << n
+    }
+    cout << "\n"
+}
+
+int i = 1
+next:
+if i <= Limit {
+    say(i)
+    i = i + 1
+    goto next
+}

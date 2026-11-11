@@ -8,25 +8,54 @@ contexts:
   main:
     - match: '//.*$'
       scope: comment.line.double-slash.wind
+    - match: '/\*'
+      scope: punctuation.definition.comment.begin.wind
+      push: block_comment
     - match: '"'
       scope: punctuation.definition.string.begin.wind
       push: string
+    - match: "'(\\\\[ntr0\\\\\"']|[^\\\\'])'"
+      scope: constant.character.wind
     - match: '\bconst\b'
       scope: storage.modifier.wind
-    - match: '\bstring\b'
+    - match: '\b(if|else|goto|return)\b'
+      scope: keyword.control.wind
+    - match: '\bsizeof\b'
+      scope: keyword.operator.word.wind
+    - match: '\b(true|false)\b'
+      scope: constant.language.wind
+    - match: '\b(void|bool|string|char|byte|int|i8|i16|i32|i64|i128|uint|u8|u16|u32|u64|u128|uintptr|float|f16|f32|f64|f128|unsigned|signed|long|short|double|u?int(8|16|32|64)_t|u?intptr_t|ptrdiff_t|ssize_t|size_t)\b'
       scope: storage.type.wind
     - match: '\bcout\b'
       scope: support.function.wind
-    - match: '<<'
+    - match: '^\s*([A-Za-z_]\w*)(:)'
+      captures:
+        1: entity.name.label.wind
+        2: punctuation.separator.wind
+    - match: '\b[A-Za-z_]\w*(?=\s*\()'
+      scope: variable.function.wind
+    - match: '\b\d[0-9_]*\.\d[0-9_]*([eE][-+]?\d+)?[fFlL]?\b'
+      scope: constant.numeric.float.wind
+    - match: '\b\d[0-9_]*[eE][-+]?\d+[fFlL]?\b'
+      scope: constant.numeric.float.wind
+    - match: '\b(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[0-9_]*)[uUlL]*\b'
+      scope: constant.numeric.integer.wind
+    - match: '<<|&&|\|\||\+\+|--|[-+*/%=!<>]=|[-+*/%<>!]'
       scope: keyword.operator.wind
     - match: '='
       scope: keyword.operator.assignment.wind
     - match: ';'
       scope: punctuation.terminator.wind
 
+  block_comment:
+    - meta_scope: comment.block.wind
+    - match: '\*/'
+      scope: punctuation.definition.comment.end.wind
+      pop: true
+
   string:
     - meta_scope: string.quoted.double.wind
-    - match: '\\[ntr0\\"]'
+    - match: '\\[ntr0\\"'']'
       scope: constant.character.escape.wind
     - match: '\\.'
       scope: invalid.illegal.escape.wind

@@ -1,0 +1,26 @@
+/* A file with main() is laid out like a C program: declarations at the top
+   level, and main as the entry point. */
+
+const string Title = "counter"
+int calls
+int start = base() + 1
+
+int base() {
+    return 9
+}
+
+void bump(int by) {
+    calls = calls + 1
+    start = start + by
+}
+
+int main() {
+    bump(5)
+    bump(5)
+    // Parentheses around a condition are optional.
+    if (calls == 2) {
+        cout << Title << ": " << start << " after " << calls << " calls\n"
+    }
+    if calls != 2 { return 1 }
+    return 0
+}

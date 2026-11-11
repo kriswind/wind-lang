@@ -1,0 +1,40 @@
+i8 a = 128
+i8 b = -129
+u8 c = -1
+int d = 1.5
+float e = 1
+int f = "s"
+i8 g = a + d
+int h = 1 + 2.5
+bool i = 1
+string s = "x" + "y"
+char ch = 'ab'
+char em = ''
+int n = 12abc
+int big = 999999999999999999999999999999999999999999
+const int K = d
+K = 3
+undefined = 1
+int add(int x, int y) { return x }
+int noret(int x) { if x > 0 { return 1 } }
+void v() { return 1 }
+int r() { return }
+add(1)
+add("a", 2)
+int z = v()
+cout << v()
+if d { }
+goto nowhere
+dup:
+dup:
+int top = 1
+void usesTop() { cout << top; x = 1 }
+void nested() { int inner() { return 1 } }
+return 5
+int add = 3
+cout << add
+unknownFn(1)
+d(2)
+int w = int("s")
+int m = 5 % 2.0
+/* unterminated

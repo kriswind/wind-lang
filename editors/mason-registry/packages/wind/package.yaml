@@ -12,7 +12,7 @@ categories:
   - Compiler
 
 source:
-  id: pkg:github/kriswind/wind-lang@v0.1.0
+  id: pkg:github/kriswind/wind-lang@v0.2.0
   build:
     run: make
 
