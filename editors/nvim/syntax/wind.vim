@@ -16,7 +16,7 @@ syn keyword windType unsigned signed long short double
 syn keyword windType int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t
 syn keyword windType intptr_t uintptr_t ptrdiff_t ssize_t size_t
 
-syn match windOperator "<<\|>>\|&&\|||\|++\|--\|[-+*/%=!<>]=\|[-+*/%=<>!]"
+syn match windOperator "<<=\|>>=\|<<\|>>\|&&\|||\|++\|--\|[-+*/%=!<>&|^]=\|[-+*/%=<>!&|^~]"
 syn match windLabel "^\s*\zs\h\w*\ze:"
 syn match windFunction "\h\w*\ze\s*("
 

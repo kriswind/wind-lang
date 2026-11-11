@@ -138,6 +138,15 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_STAR_EQ:   return "'*='";
     case TOK_SLASH_EQ:  return "'/='";
     case TOK_PERCENT_EQ: return "'%='";
+    case TOK_AMP:       return "'&'";
+    case TOK_PIPE:      return "'|'";
+    case TOK_CARET:     return "'^'";
+    case TOK_TILDE:     return "'~'";
+    case TOK_AMP_EQ:    return "'&='";
+    case TOK_PIPE_EQ:   return "'|='";
+    case TOK_CARET_EQ:  return "'^='";
+    case TOK_SHL_EQ:    return "'<<='";
+    case TOK_SHR_EQ:    return "'>>='";
     }
     return "token";
 }
@@ -459,10 +468,26 @@ Token lexer_next(Lexer *lexer) {
         case '=': tok.kind = match(lexer, '=') ? TOK_EQ : TOK_ASSIGN; break;
         case '!': tok.kind = match(lexer, '=') ? TOK_NE : TOK_NOT;    break;
         case '>':
-            tok.kind = match(lexer, '>') ? TOK_SHR : match(lexer, '=') ? TOK_GE : TOK_GT;
+            if (match(lexer, '>')) {
+                tok.kind = match(lexer, '=') ? TOK_SHR_EQ : TOK_SHR;
+            } else {
+                tok.kind = match(lexer, '=') ? TOK_GE : TOK_GT;
+            }
             break;
         case '<':
-            tok.kind = match(lexer, '<') ? TOK_SHL : match(lexer, '=') ? TOK_LE : TOK_LT;
+            if (match(lexer, '<')) {
+                tok.kind = match(lexer, '=') ? TOK_SHL_EQ : TOK_SHL;
+            } else {
+                tok.kind = match(lexer, '=') ? TOK_LE : TOK_LT;
+            }
+            break;
+        case '^': tok.kind = match(lexer, '=') ? TOK_CARET_EQ : TOK_CARET; break;
+        case '~': tok.kind = TOK_TILDE; break;
+        case '&':
+            tok.kind = match(lexer, '&') ? TOK_AND : match(lexer, '=') ? TOK_AMP_EQ : TOK_AMP;
+            break;
+        case '|':
+            tok.kind = match(lexer, '|') ? TOK_OR : match(lexer, '=') ? TOK_PIPE_EQ : TOK_PIPE;
             break;
         case '"':
             tok.kind = TOK_STRING;
@@ -472,16 +497,6 @@ Token lexer_next(Lexer *lexer) {
             tok.kind = TOK_CHAR;
             tok.int_value = (unsigned char)lex_char_body(lexer, tok.loc);
             break;
-        case '&':
-        case '|':
-            if (match(lexer, c)) {
-                tok.kind = c == '&' ? TOK_AND : TOK_OR;
-                break;
-            }
-            tok.loc.len = 1;
-            diag_add(lexer->diags, SEV_ERROR, tok.loc,
-                     "unexpected character '%c' (did you mean '%c%c'?)", c, c, c);
-            continue;
         default:
             /* A multi-byte UTF-8 character is reported once, as a whole. */
             while (is_utf8_continuation(peek(lexer))) advance(lexer);

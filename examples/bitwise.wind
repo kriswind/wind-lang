@@ -1,0 +1,122 @@
+/* Bitwise operators at work: a checksum, a hex printer, bit counting, colour
+   packing and a small random number generator. */
+
+const string HexDigits = "0123456789abcdef"
+
+// Prints a 32-bit value as eight hex digits, most significant first.
+void print_hex(u32 value) {
+    int shift = 28
+next:
+    if shift >= 0 {
+        cout << HexDigits[(value >> shift) & 0xF]
+        shift -= 4
+        goto next
+    }
+}
+
+// CRC-32 (the checksum used by zip and PNG), computed one bit at a time.
+u32 crc32(string text) {
+    u32 crc = ~0
+    int i = 0
+next_byte:
+    if i < len(text) {
+        crc ^= u32(text[i])
+        int bit = 0
+next_bit:
+        if bit < 8 {
+            // Shift one bit out; if it was set, fold the polynomial back in.
+            u32 mask = ~((crc & 1) - 1)
+            crc = (crc >> 1) ^ (0xEDB88320 & mask)
+            bit++
+            goto next_bit
+        }
+        i++
+        goto next_byte
+    }
+    return ~crc
+}
+
+// Counts the set bits by clearing the lowest one until none are left.
+int popcount(u32 value) {
+    int count = 0
+    u32 rest = value
+next:
+    if rest != 0 {
+        rest &= rest - 1
+        count++
+        goto next
+    }
+    return count
+}
+
+// Mirrors the 32 bits of a value: bit 0 becomes bit 31, and so on.
+u32 reverse_bits(u32 value) {
+    u32 result = 0
+    u32 rest = value
+    int i = 0
+next:
+    if i < 32 {
+        result = (result << 1) | (rest & 1)
+        rest >>= 1
+        i++
+        goto next
+    }
+    return result
+}
+
+// Packs 8-bit red, green and blue into 16 bits: 5 for red, 6 for green and
+// 5 for blue, the layout many small displays use.
+u16 pack_rgb565(u8 red, u8 green, u8 blue) {
+    return (u16(red >> 3) << 11) | (u16(green >> 2) << 5) | u16(blue >> 3)
+}
+
+// xorshift32: a tiny pseudo-random generator built from three shifts.
+u32 xorshift(u32 state) {
+    u32 x = state
+    x ^= x << 13
+    x ^= x >> 17
+    x ^= x << 5
+    return x
+}
+
+int main() {
+    cout << "crc32(\"123456789\") = 0x"
+    print_hex(crc32("123456789"))
+    cout << "\n"
+
+    u32 sample = 0xF0F01234
+    cout << "0x"
+    print_hex(sample)
+    cout << " has " << popcount(sample) << " bits set; reversed it is 0x"
+    print_hex(reverse_bits(sample))
+    cout << "\n"
+
+    u16 orange = pack_rgb565(255, 165, 0)
+    cout << "orange as RGB565 = 0x"
+    print_hex(u32(orange))
+    cout << ", green field = " << ((orange >> 5) & 0x3F) << "\n"
+
+    // Flags: set, test, toggle and clear individual bits.
+    const u8 Read = 1 << 0
+    const u8 Write = 1 << 1
+    const u8 Execute = 1 << 2
+    u8 permissions = Read | Write
+    permissions ^= Execute
+    permissions &= ~Write
+    cout << "can read: " << (permissions & Read != 0)
+    cout << ", can write: " << (permissions & Write != 0)
+    cout << ", can execute: " << (permissions & Execute != 0) << "\n"
+
+    u32 seed = 2463534242
+    u32 rolls[5]
+    int i = 0
+roll:
+    if i < len(rolls) {
+        seed = xorshift(seed)
+        rolls[i] = seed % 6 + 1
+        i++
+        goto roll
+    }
+    cout << "five dice: " << rolls << "\n"
+    return 0
+}

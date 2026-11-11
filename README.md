@@ -171,7 +171,7 @@ int count = 3        // variable
 string name          // variable with the zero value ("" here)
 const f64 Pi = 3.14  // constant
 count = count + 1
-count += 2           // also -=, *=, /=, %=
+count += 2           // also -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
 count++              // also count--, ++count, --count
 ```
 
@@ -249,9 +249,26 @@ and their elements cannot themselves be arrays.
 | `==` `!=` | any two values of one type | `bool` |
 | `<` `<=` `>` `>=` | numbers, `char` | `bool` |
 | `&&` `\|\|` `!` | `bool` | `bool` |
+| `&` `\|` `^` (and, or, xor) | integers | same type |
+| unary `~` (not) | integers | same type |
+| `<<` `>>` (shifts) | an integer, shifted by any integer | type of the value shifted |
 
-From tightest to loosest: unary, `* / %`, `+ -`, comparisons, `&&`, `||`.
-Integer arithmetic wraps at the width of its type.
+From tightest to loosest: unary, `* / %`, `+ -`, `<< >>`, `&`, `^`, `|`,
+comparisons, `&&`, `||`. Integer arithmetic wraps at the width of its type.
+
+The bitwise operators differ from C in three ways:
+
+- **They bind tighter than comparisons.** `x & 1 == 0` tests whether the
+  masked value is zero; in C it would mean `x & (1 == 0)`.
+- **Narrow types are not widened.** `u8 << 1` is a `u8`, and bits shifted
+  past its width are discarded.
+- **Every shift is defined.** `>>` copies the sign bit for signed types and
+  shifts in zeros for unsigned ones. Shifting by a negative amount, or by
+  the width or more, shifts every bit out: the result is 0, or -1 for a
+  negative signed value shifted right.
+
+In a `cout` statement `<<` separates the values, so a shift there goes in
+parentheses: `cout << (flags << 2)`.
 
 ### Control flow
 

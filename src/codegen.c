@@ -24,6 +24,8 @@
  *   pointer and a length, defined once per element type. Every index goes
  *   through wind_index, which counts a negative index back from the end and
  *   stops the program if the index is out of range.
+ * - Shifts go through helpers that give every shift amount a defined
+ *   result, where C leaves an oversized or negative one undefined.
  * - Only the runtime support a program uses is emitted. The program is
  *   generated first, into memory, recording each runtime type and helper it
  *   mentions; the matching definitions are then written ahead of it.
@@ -37,6 +39,12 @@
 /* Listed so that each helper comes after the ones its definition calls. */
 typedef enum {
     HELPER_NONE, /* ends a helper's list of needs */
+    HELPER_SHL,
+    HELPER_SHR_UNSIGNED,
+    HELPER_SHR_SIGNED,
+    HELPER_SHL_128,
+    HELPER_SHR_U128,
+    HELPER_SHR_I128,
     HELPER_INDEX,
     HELPER_STRING_AT,
     HELPER_ARGS,
@@ -140,6 +148,43 @@ typedef struct {
 } HelperInfo;
 
 static const HelperInfo helpers[HELPER_COUNT] = {
+    /* The shift helpers work on the widest type; the caller converts the
+       result back, which also discards the bits a narrower type cannot
+       hold. An amount that is negative or not less than the width shifts
+       every bit out. */
+    [HELPER_SHL] = {
+        "static unsigned long long wind_shl(unsigned long long v, long long n) {\n"
+        "    return (n < 0 || n >= 64) ? 0 : v << n;\n"
+        "}\n",
+        0, {0}, {0}},
+    [HELPER_SHR_UNSIGNED] = {
+        "static unsigned long long wind_shr_unsigned(unsigned long long v, long long n) {\n"
+        "    return (n < 0 || n >= 64) ? 0 : v >> n;\n"
+        "}\n",
+        0, {0}, {0}},
+    [HELPER_SHR_SIGNED] = {
+        "/* Copies of the sign bit are shifted in. */\n"
+        "static long long wind_shr_signed(long long v, long long n) {\n"
+        "    if (n < 0 || n >= 64) return v < 0 ? -1 : 0;\n"
+        "    return v >> n;\n"
+        "}\n",
+        0, {0}, {0}},
+    [HELPER_SHL_128] = {
+        "static wind_u128 wind_shl_128(wind_u128 v, long long n) {\n"
+        "    return (n < 0 || n >= 128) ? 0 : v << n;\n"
+        "}\n",
+        0, {0}, {TYPE_U128}},
+    [HELPER_SHR_U128] = {
+        "static wind_u128 wind_shr_u128(wind_u128 v, long long n) {\n"
+        "    return (n < 0 || n >= 128) ? 0 : v >> n;\n"
+        "}\n",
+        0, {0}, {TYPE_U128}},
+    [HELPER_SHR_I128] = {
+        "static wind_i128 wind_shr_i128(wind_i128 v, long long n) {\n"
+        "    if (n < 0 || n >= 128) return v < 0 ? -1 : 0;\n"
+        "    return v >> n;\n"
+        "}\n",
+        0, {0}, {TYPE_I128}},
     [HELPER_INDEX] = {
         "/* Turns an index into a position among len elements. A negative index\n"
         "   counts back from the end, so -1 is the last element. An index that is\n"
@@ -530,6 +575,32 @@ static void emit_float_literal(const Expr *expr, FILE *out) {
             expr->as.float_lit.data, suffix);
 }
 
+/* Emits the start of a shift of a value of the given type: everything up to
+   the value itself. emit_shift_end completes it. */
+static void emit_shift_start(Op op, TypeKind type, FILE *out) {
+    bool wide = type == TYPE_I128 || type == TYPE_U128;
+    Helper helper;
+    const char *call;
+    if (op == OP_SHL) {
+        helper = wide ? HELPER_SHL_128 : HELPER_SHL;
+        call = wide ? "wind_shl_128((wind_u128)(" : "wind_shl((unsigned long long)(";
+    } else if (type_is_signed(type)) {
+        helper = wide ? HELPER_SHR_I128 : HELPER_SHR_SIGNED;
+        call = wide ? "wind_shr_i128((wind_i128)(" : "wind_shr_signed((long long)(";
+    } else {
+        helper = wide ? HELPER_SHR_U128 : HELPER_SHR_UNSIGNED;
+        call = wide ? "wind_shr_u128((wind_u128)(" : "wind_shr_unsigned((unsigned long long)(";
+    }
+    used.helpers[helper] = true;
+    fprintf(out, "((%s)%s", c_type(type), call);
+}
+
+static void emit_shift_end(const Expr *amount, FILE *out) {
+    fputs("), (long long)(", out);
+    emit_expr(amount, out);
+    fputs(")))", out);
+}
+
 static void emit_binary(const Expr *expr, FILE *out) {
     Op op = expr->as.binary.op;
     const Expr *left = expr->as.binary.left;
@@ -542,6 +613,12 @@ static void emit_binary(const Expr *expr, FILE *out) {
         fputs(", ", out);
         emit_expr(right, out);
         fputs("))", out);
+        return;
+    }
+    if (op_is_shift(op)) {
+        emit_shift_start(op, expr->type, out);
+        emit_expr(left, out);
+        emit_shift_end(right, out);
         return;
     }
     fprintf(out, "((%s)(", c_type(expr->type));
@@ -817,6 +894,20 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         break;
     case STMT_ASSIGN:
         indent(depth, out);
+        if (stmt->as.assign.index && stmt->as.assign.compound &&
+            op_is_shift(stmt->as.assign.op)) {
+            /* The element is reached through a pointer so that its index is
+               evaluated once. */
+            TypeKind type = stmt->as.assign.symbol->type;
+            fprintf(out, "{ %s *element = &", c_type(type));
+            emit_element(stmt->as.assign.symbol, stmt->as.assign.index, out);
+            fputs("; *element = ", out);
+            emit_shift_start(stmt->as.assign.op, type, out);
+            fputs("*element", out);
+            emit_shift_end(stmt->as.assign.value, out);
+            fputs("; }\n", out);
+            break;
+        }
         if (stmt->as.assign.index) {
             /* C's own compound operator is used so that the index is
                evaluated once; it wraps at the element's width as well. */
@@ -828,7 +919,11 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         }
         emit_symbol(stmt->as.assign.symbol, out);
         fputs(" = ", out);
-        if (stmt->as.assign.compound) {
+        if (stmt->as.assign.compound && op_is_shift(stmt->as.assign.op)) {
+            emit_shift_start(stmt->as.assign.op, stmt->as.assign.symbol->type, out);
+            emit_symbol(stmt->as.assign.symbol, out);
+            emit_shift_end(stmt->as.assign.value, out);
+        } else if (stmt->as.assign.compound) {
             fprintf(out, "((%s)(", c_type(stmt->as.assign.symbol->type));
             emit_symbol(stmt->as.assign.symbol, out);
             fprintf(out, " %s ", op_text(stmt->as.assign.op));

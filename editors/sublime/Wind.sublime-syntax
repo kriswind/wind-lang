@@ -40,7 +40,7 @@ contexts:
       scope: constant.numeric.float.wind
     - match: '\b(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[0-9_]*)[uUlL]*\b'
       scope: constant.numeric.integer.wind
-    - match: '<<|>>|&&|\|\||\+\+|--|[-+*/%=!<>]=|[-+*/%<>!]'
+    - match: '<<=|>>=|<<|>>|&&|\|\||\+\+|--|[-+*/%=!<>&|^]=|[-+*/%<>!&|^~]'
       scope: keyword.operator.wind
     - match: '='
       scope: keyword.operator.assignment.wind

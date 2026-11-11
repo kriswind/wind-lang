@@ -60,6 +60,15 @@ typedef enum {
     TOK_STAR_EQ,
     TOK_SLASH_EQ,
     TOK_PERCENT_EQ,
+    TOK_AMP,
+    TOK_PIPE,
+    TOK_CARET,
+    TOK_TILDE,
+    TOK_AMP_EQ,
+    TOK_PIPE_EQ,
+    TOK_CARET_EQ,
+    TOK_SHL_EQ,
+    TOK_SHR_EQ,
 } TokenKind;
 
 typedef struct {

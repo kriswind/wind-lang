@@ -1,0 +1,24 @@
+int i = 6
+float f = 1.5
+bool b = true
+string s = "x"
+u8 small = 1
+i128 wide = 1
+int r1 = f & 1
+int r2 = i | f
+bool r3 = b & b
+int r4 = i ^ small
+int r5 = ~f
+int r6 = ~b
+int r7 = i << f
+int r8 = i << wide
+float r9 = f >> 1
+int r10 = s << 1
+f <<= 1
+i <<= s
+i &= f
+s |= s
+b ^= b
+int table[1 << 70]
+int r11 = i &
+cout << r1 << r2 << r3 << r4 << r5 << r6 << r7 << r8 << r9 << r10 << r11 << table[0]

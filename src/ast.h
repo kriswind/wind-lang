@@ -98,6 +98,12 @@ typedef enum {
     OP_OR,
     OP_NEG,
     OP_NOT,
+    OP_BIT_AND,
+    OP_BIT_OR,
+    OP_BIT_XOR,
+    OP_SHL,
+    OP_SHR,
+    OP_BIT_NOT,
 } Op;
 
 struct Expr {
@@ -291,6 +297,7 @@ void unit_analyze(Unit *unit, Str src);
 void unit_release(Unit *unit);
 
 const char *op_text(Op op);
+bool op_is_shift(Op op);
 
 Program parse_program(Str src, Arena *arena, Diags *diags);
 void check_program(Unit *unit);

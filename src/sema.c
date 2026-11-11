@@ -63,6 +63,12 @@ const char *op_text(Op op) {
     case OP_OR:  return "||";
     case OP_NEG: return "-";
     case OP_NOT: return "!";
+    case OP_BIT_AND: return "&";
+    case OP_BIT_OR:  return "|";
+    case OP_BIT_XOR: return "^";
+    case OP_SHL:     return "<<";
+    case OP_SHR:     return ">>";
+    case OP_BIT_NOT: return "~";
     }
     return "?";
 }
@@ -253,6 +259,19 @@ static bool is_arithmetic(Op op) {
            op == OP_MOD;
 }
 
+static bool is_bitwise(Op op) {
+    return op == OP_BIT_AND || op == OP_BIT_OR || op == OP_BIT_XOR;
+}
+
+bool op_is_shift(Op op) {
+    return op == OP_SHL || op == OP_SHR;
+}
+
+/* True for the binary operators that produce a number from numbers. */
+static bool is_numeric_op(Op op) {
+    return is_arithmetic(op) || is_bitwise(op) || op_is_shift(op);
+}
+
 /* True for an expression built only from number literals and arithmetic,
    which has no type of its own and adopts the one its context needs. */
 static bool is_untyped(const Expr *expr) {
@@ -262,9 +281,10 @@ static bool is_untyped(const Expr *expr) {
     case EXPR_SIZEOF:
         return true;
     case EXPR_UNARY:
-        return expr->as.unary.op == OP_NEG && is_untyped(expr->as.unary.operand);
+        return (expr->as.unary.op == OP_NEG || expr->as.unary.op == OP_BIT_NOT) &&
+               is_untyped(expr->as.unary.operand);
     case EXPR_BINARY:
-        return is_arithmetic(expr->as.binary.op) &&
+        return is_numeric_op(expr->as.binary.op) &&
                is_untyped(expr->as.binary.left) && is_untyped(expr->as.binary.right);
     default:
         return false;
@@ -324,6 +344,15 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         }
         return TYPE_BOOL;
     }
+    if (expr->as.unary.op == OP_BIT_NOT) {
+        TypeKind type = check_expr(c, operand, hint);
+        if (type != TYPE_INVALID && !type_is_integer(type)) {
+            error(c, operand->loc, "operator '~' needs an integer operand, found '%s'",
+                  type_name(type));
+            return TYPE_INVALID;
+        }
+        return type;
+    }
     /* A negated literal is range-checked as one value, so that the most
        negative number of a type can be written. */
     if (operand->kind == EXPR_INT_LIT) {
@@ -337,6 +366,18 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         return TYPE_INVALID;
     }
     return type;
+}
+
+/* A shift amount is an integer of any type narrow enough to be passed to
+   the shift helpers. */
+static void check_shift_amount(Checker *c, Expr *amount) {
+    TypeKind type = check_expr(c, amount, TYPE_INVALID);
+    if (type == TYPE_INVALID) return;
+    if (!type_is_integer(type) || type == TYPE_I128 || type == TYPE_U128) {
+        error(c, amount->loc,
+              "a shift amount must be an integer of at most 64 bits, found '%s'",
+              type_name(type));
+    }
 }
 
 static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
@@ -356,7 +397,20 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
         return TYPE_BOOL;
     }
 
-    bool arithmetic = is_arithmetic(op);
+    if (op_is_shift(op)) {
+        /* The result has the type of the value being shifted. The amount is
+           checked on its own and may be of a different integer type. */
+        TypeKind type = check_expr(c, left, hint);
+        check_shift_amount(c, right);
+        if (type != TYPE_INVALID && !type_is_integer(type)) {
+            error(c, left->loc, "operator '%s' is not defined for '%s'", op_text(op),
+                  type_name(type));
+            return TYPE_INVALID;
+        }
+        return type;
+    }
+
+    bool arithmetic = is_arithmetic(op) || is_bitwise(op);
     check_operands(c, left, right, arithmetic ? hint : TYPE_INVALID);
     TypeKind result = arithmetic ? left->type : TYPE_BOOL;
     TypeKind type = left->type;
@@ -373,7 +427,7 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     bool defined;
     if (op == OP_EQ || op == OP_NE) {
         defined = type != TYPE_VOID;
-    } else if (op == OP_MOD) {
+    } else if (op == OP_MOD || is_bitwise(op)) {
         defined = type_is_integer(type);
     } else if (arithmetic) {
         defined = type_is_numeric(type);
@@ -586,8 +640,12 @@ static bool eval_const_int(const Expr *expr, long long *out) {
     case EXPR_CAST:
         return eval_const_int(expr->as.cast.operand, out);
     case EXPR_UNARY:
-        if (expr->as.unary.op != OP_NEG) return false;
         if (!eval_const_int(expr->as.unary.operand, &right)) return false;
+        if (expr->as.unary.op == OP_BIT_NOT) {
+            *out = ~right;
+            return true;
+        }
+        if (expr->as.unary.op != OP_NEG) return false;
         return !__builtin_sub_overflow(0LL, right, out);
     case EXPR_BINARY:
         if (!eval_const_int(expr->as.binary.left, &left) ||
@@ -602,6 +660,20 @@ static bool eval_const_int(const Expr *expr, long long *out) {
         case OP_MOD:
             if (right == 0 || right == -1) return false;
             *out = expr->as.binary.op == OP_DIV ? left / right : left % right;
+            return true;
+        case OP_BIT_AND: *out = left & right; return true;
+        case OP_BIT_OR:  *out = left | right; return true;
+        case OP_BIT_XOR: *out = left ^ right; return true;
+        case OP_SHL:
+        case OP_SHR:
+            /* Kept to amounts and values that cannot overflow here. */
+            if (left < 0 || right < 0 || right > 62) return false;
+            if (expr->as.binary.op == OP_SHR) {
+                *out = left >> right;
+                return true;
+            }
+            if (left > (0x7fffffffffffffffLL >> right)) return false;
+            *out = left << right;
             return true;
         default:
             return false;
@@ -741,12 +813,21 @@ static void check_assign(Checker *c, Stmt *stmt) {
     } else if (index) {
         check_expr(c, index, TYPE_INT);
     }
+    Op op = stmt->as.assign.op;
+    bool compound = stmt->as.assign.compound;
+    if (compound && op_is_shift(op)) {
+        check_shift_amount(c, stmt->as.assign.value);
+        if (expected != TYPE_INVALID && !type_is_integer(expected)) {
+            error(c, stmt->loc, "operator '%s=' is not defined for '%s'", op_text(op),
+                  type_name(expected));
+        }
+        return;
+    }
     TypeKind found = check_expr(c, stmt->as.assign.value, expected);
     if (expected == TYPE_INVALID) return;
 
-    Op op = stmt->as.assign.op;
-    if (stmt->as.assign.compound &&
-        !(op == OP_MOD ? type_is_integer(expected) : type_is_numeric(expected))) {
+    bool needs_integer = op == OP_MOD || is_bitwise(op);
+    if (compound && !(needs_integer ? type_is_integer(expected) : type_is_numeric(expected))) {
         error(c, stmt->loc, "operator '%s=' is not defined for '%s'", op_text(op),
               type_name(expected));
     } else if (found != TYPE_INVALID && found != expected) {

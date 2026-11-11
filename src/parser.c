@@ -16,7 +16,8 @@
  *   const_decl = "const" type IDENT "=" expr
  *   var_decl   = type IDENT [ "=" expr ]
  *              | type IDENT "[" [ expr ] "]" [ "=" "{" [ expr { "," expr } ] "}" ]
- *   assign     = place ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr
+ *   assign     = place ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|="
+ *                      | "^=" | "<<=" | ">>=" ) expr
  *              | place ( "++" | "--" ) | ( "++" | "--" ) place
  *   place      = IDENT [ "[" expr "]" ]
  *   cout       = "cout" "<<" expr { "<<" expr }
@@ -33,15 +34,22 @@
  *   expr       = or
  *   or         = and { "||" and }
  *   and        = compare { "&&" compare }
- *   compare    = sum { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum }
+ *   compare    = bit_or { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) bit_or }
+ *   bit_or     = bit_xor { "|" bit_xor }
+ *   bit_xor    = bit_and { "^" bit_and }
+ *   bit_and    = shift { "&" shift }
+ *   shift      = sum { ( "<<" | ">>" ) sum }
  *   sum        = term { ( "+" | "-" ) term }
  *   term       = unary { ( "*" | "/" | "%" ) unary }
- *   unary      = ( "-" | "!" ) unary | postfix
+ *   unary      = ( "-" | "!" | "~" ) unary | postfix
  *   postfix    = primary { "[" expr "]" }
  *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | IDENT
  *              | call | type "(" expr ")" | "(" expr ")"
  *              | "sizeof" "(" type ")" | "sizeof" unary | "cin"
  *   call       = IDENT "(" [ expr { "," expr } ] ")"
+ *
+ * In a cout statement "<<" separates the values, so a shift there must be
+ * inside parentheses (or brackets, or a call's arguments).
  *
  * Functions may only appear at the top level. A newline does not end a
  * statement directly after "=", "<<", ">>", "," or a binary operator, inside
@@ -56,6 +64,9 @@ typedef struct {
     Lexer lexer;
     Token tok;
     SrcLoc prev; /* the most recently consumed token */
+    /* Set while parsing the values of a cout statement, where "<<" and ">>"
+       are not operators. */
+    bool no_shift;
     Arena *arena;
     Diags *diags;
 } Parser;
@@ -189,6 +200,16 @@ static bool parse_type(Parser *p, TypeKind *out) {
 static Expr *parse_expr(Parser *p);
 static Expr *parse_unary(Parser *p);
 
+/* Parses an expression enclosed by brackets of some kind, inside which
+   shifts are operators again even within a cout statement. */
+static Expr *parse_enclosed_expr(Parser *p) {
+    bool saved = p->no_shift;
+    p->no_shift = false;
+    Expr *expr = parse_expr(p);
+    p->no_shift = saved;
+    return expr;
+}
+
 /* Called at "sizeof". Its operand is a parenthesized type or an expression. */
 static Expr *parse_sizeof(Parser *p) {
     Token tok = p->tok;
@@ -199,7 +220,7 @@ static Expr *parse_sizeof(Parser *p) {
         if (at_type(p)) {
             if (!parse_type(p, &expr->as.size_of.type)) return NULL;
         } else {
-            expr->as.size_of.operand = parse_expr(p);
+            expr->as.size_of.operand = parse_enclosed_expr(p);
             if (!expr->as.size_of.operand) return NULL;
         }
         skip_newlines(p);
@@ -223,7 +244,7 @@ static Expr *parse_call(Parser *p, Token name) {
     skip_newlines(p);
     if (!at(p, TOK_RPAREN)) {
         for (;;) {
-            Expr *arg = parse_expr(p);
+            Expr *arg = parse_enclosed_expr(p);
             if (!arg) return NULL;
             ARENA_PUSH(p->arena, call->as.call.args, call->as.call.count, cap, arg);
             skip_newlines(p);
@@ -244,7 +265,7 @@ static Expr *parse_primary(Parser *p) {
         if (!parse_type(p, &to)) return NULL;
         if (!expect(p, TOK_LPAREN, NULL)) return NULL;
         skip_newlines(p);
-        Expr *operand = parse_expr(p);
+        Expr *operand = parse_enclosed_expr(p);
         if (!operand) return NULL;
         skip_newlines(p);
         if (!expect(p, TOK_RPAREN, NULL)) return NULL;
@@ -294,7 +315,7 @@ static Expr *parse_primary(Parser *p) {
     case TOK_LPAREN:
         next(p);
         skip_newlines(p);
-        expr = parse_expr(p);
+        expr = parse_enclosed_expr(p);
         if (!expr) return NULL;
         skip_newlines(p);
         if (!expect(p, TOK_RPAREN, NULL)) return NULL;
@@ -310,7 +331,7 @@ static Expr *parse_primary(Parser *p) {
 static Expr *parse_index(Parser *p, Expr *base) {
     next(p);
     skip_newlines(p);
-    Expr *index = parse_expr(p);
+    Expr *index = parse_enclosed_expr(p);
     if (!index) return NULL;
     skip_newlines(p);
     if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
@@ -327,34 +348,42 @@ static Expr *parse_postfix(Parser *p) {
 }
 
 static Expr *parse_unary(Parser *p) {
-    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT)) return parse_postfix(p);
+    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT) && !at(p, TOK_TILDE)) return parse_postfix(p);
     Token tok = p->tok;
     next(p);
     Expr *operand = parse_unary(p);
     if (!operand) return NULL;
     Expr *expr = new_expr(p, EXPR_UNARY, span(tok.loc, operand->loc));
-    expr->as.unary.op = tok.kind == TOK_MINUS ? OP_NEG : OP_NOT;
+    expr->as.unary.op = tok.kind == TOK_MINUS ? OP_NEG
+                        : tok.kind == TOK_NOT ? OP_NOT
+                                              : OP_BIT_NOT;
     expr->as.unary.operand = operand;
     return expr;
 }
 
 /* Returns the binding strength of a binary operator token, or 0 if the token
-   is not one. Higher binds tighter. */
-static int binary_precedence(TokenKind kind, Op *op) {
-    switch (kind) {
-    case TOK_OR:      *op = OP_OR;  return 1;
-    case TOK_AND:     *op = OP_AND; return 2;
-    case TOK_EQ:      *op = OP_EQ;  return 3;
-    case TOK_NE:      *op = OP_NE;  return 3;
-    case TOK_LT:      *op = OP_LT;  return 3;
-    case TOK_LE:      *op = OP_LE;  return 3;
-    case TOK_GT:      *op = OP_GT;  return 3;
-    case TOK_GE:      *op = OP_GE;  return 3;
-    case TOK_PLUS:    *op = OP_ADD; return 4;
-    case TOK_MINUS:   *op = OP_SUB; return 4;
-    case TOK_STAR:    *op = OP_MUL; return 5;
-    case TOK_SLASH:   *op = OP_DIV; return 5;
-    case TOK_PERCENT: *op = OP_MOD; return 5;
+   is not one. Higher binds tighter. Unlike in C, the bitwise operators bind
+   tighter than comparisons, so "x & 1 == 0" compares the masked value. */
+static int binary_precedence(const Parser *p, Op *op) {
+    switch (p->tok.kind) {
+    case TOK_OR:      *op = OP_OR;      return 1;
+    case TOK_AND:     *op = OP_AND;     return 2;
+    case TOK_EQ:      *op = OP_EQ;      return 3;
+    case TOK_NE:      *op = OP_NE;      return 3;
+    case TOK_LT:      *op = OP_LT;      return 3;
+    case TOK_LE:      *op = OP_LE;      return 3;
+    case TOK_GT:      *op = OP_GT;      return 3;
+    case TOK_GE:      *op = OP_GE;      return 3;
+    case TOK_PIPE:    *op = OP_BIT_OR;  return 4;
+    case TOK_CARET:   *op = OP_BIT_XOR; return 5;
+    case TOK_AMP:     *op = OP_BIT_AND; return 6;
+    case TOK_SHL:     *op = OP_SHL;     return p->no_shift ? 0 : 7;
+    case TOK_SHR:     *op = OP_SHR;     return p->no_shift ? 0 : 7;
+    case TOK_PLUS:    *op = OP_ADD;     return 8;
+    case TOK_MINUS:   *op = OP_SUB;     return 8;
+    case TOK_STAR:    *op = OP_MUL;     return 9;
+    case TOK_SLASH:   *op = OP_DIV;     return 9;
+    case TOK_PERCENT: *op = OP_MOD;     return 9;
     default:          return 0;
     }
 }
@@ -364,7 +393,7 @@ static Expr *parse_binary(Parser *p, int min_precedence) {
     if (!left) return NULL;
     for (;;) {
         Op op;
-        int precedence = binary_precedence(p->tok.kind, &op);
+        int precedence = binary_precedence(p, &op);
         if (precedence == 0 || precedence < min_precedence) return left;
         next(p);
         skip_newlines(p);
@@ -531,14 +560,20 @@ static Stmt *parse_cout(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_COUT, p->tok.loc);
     size_t cap = 0;
     next(p);
+    bool ok = true;
+    p->no_shift = true;
     do {
-        if (!expect(p, TOK_SHL, NULL)) return NULL;
-        skip_newlines(p);
-        Expr *arg = parse_expr(p);
-        if (!arg) return NULL;
-        ARENA_PUSH(p->arena, stmt->as.cout.args, stmt->as.cout.count, cap, arg);
-    } while (at(p, TOK_SHL));
-    return stmt;
+        Expr *arg = NULL;
+        ok = expect(p, TOK_SHL, NULL);
+        if (ok) {
+            skip_newlines(p);
+            arg = parse_expr(p);
+            ok = arg != NULL;
+        }
+        if (ok) ARENA_PUSH(p->arena, stmt->as.cout.args, stmt->as.cout.count, cap, arg);
+    } while (ok && at(p, TOK_SHL));
+    p->no_shift = false;
+    return ok ? stmt : NULL;
 }
 
 /* Parses the optional "[index]" of an assignment target. Returns false on
@@ -547,7 +582,7 @@ static bool parse_place_index(Parser *p, Expr **index) {
     *index = NULL;
     if (!accept(p, TOK_LBRACKET)) return true;
     skip_newlines(p);
-    *index = parse_expr(p);
+    *index = parse_enclosed_expr(p);
     if (!*index) return false;
     skip_newlines(p);
     return expect(p, TOK_RBRACKET, NULL);
@@ -621,6 +656,11 @@ static bool compound_assign_op(TokenKind kind, Op *op) {
     case TOK_STAR_EQ:    *op = OP_MUL; return true;
     case TOK_SLASH_EQ:   *op = OP_DIV; return true;
     case TOK_PERCENT_EQ: *op = OP_MOD; return true;
+    case TOK_AMP_EQ:     *op = OP_BIT_AND; return true;
+    case TOK_PIPE_EQ:    *op = OP_BIT_OR;  return true;
+    case TOK_CARET_EQ:   *op = OP_BIT_XOR; return true;
+    case TOK_SHL_EQ:     *op = OP_SHL;     return true;
+    case TOK_SHR_EQ:     *op = OP_SHR;     return true;
     default:             return false;
     }
 }
