@@ -1,4 +1,12 @@
-
 void main() {
-	cout << "Hello" << "\n"
+	cout << "Hello test" << "\n"
+
+	u32 start = 0
+	const u32 max  = 5
+	loop:
+	if start < max {
+		cout << "Current Value: " << start << "\n"
+		start++
+		goto loop
+	}
 }
