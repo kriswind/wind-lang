@@ -1,0 +1,6 @@
+int i = 5
+while: if i <= 0 { goto exit }
+cout << "I value: " << i << "\n"
+i--
+goto while
+exit: cout << "End of loop\n"
