@@ -23,7 +23,15 @@ struct Symbol {
     SymbolKind kind;
     Str name;
     SrcLoc loc;    /* the name at its declaration */
-    TypeKind type; /* SYM_FUNC: the return type; SYM_LABEL: unused */
+    /* SYM_FUNC: the return type; SYM_LABEL: unused; an array: the type of
+       its elements. */
+    TypeKind type;
+    /* An array is either fixed (declared with a length, which it owns) or a
+       slice (an array parameter: a view of someone else's elements, with a
+       length known only at run time). */
+    bool is_array;
+    bool is_slice;
+    size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
     /* The declaring statement: STMT_CONST, STMT_VAR or STMT_FUNC. NULL for
@@ -67,6 +75,9 @@ typedef enum {
     EXPR_CAST,
     /* "cin" used as a value: whether the most recent read succeeded. */
     EXPR_CIN_OK,
+    EXPR_INDEX,
+    /* The built-in len(x); a call to "len" becomes this during analysis. */
+    EXPR_LEN,
     /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
     EXPR_SIZEOF,
 } ExprKind;
@@ -128,6 +139,14 @@ struct Expr {
             TypeKind type; /* used when operand is NULL */
             Expr *operand;
         } size_of;
+        struct {
+            /* An identifier naming an array, or any string expression. */
+            Expr *base;
+            Expr *index;
+        } index;
+        struct {
+            Expr *operand; /* as for index.base */
+        } len;
     } as;
 };
 
@@ -155,9 +174,10 @@ typedef struct {
 } Block;
 
 typedef struct {
-    TypeKind type;
+    TypeKind type; /* for an array parameter, the type of its elements */
     Str name;
     SrcLoc loc;
+    bool is_slice;  /* declared as "T name[]" */
     Symbol *symbol; /* set by unit_analyze */
 } Param;
 
@@ -168,6 +188,7 @@ typedef struct {
     SrcLoc loc;
     bool declares;
     TypeKind type;        /* the declared type, when declares is set */
+    Expr *index;          /* set for "cin >> name[index]" */
     const Symbol *symbol; /* set by unit_analyze; NULL if it cannot be read into */
 } ReadTarget;
 
@@ -179,10 +200,15 @@ struct Stmt {
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
-            TypeKind type;
+            TypeKind type; /* for an array, the type of its elements */
             Str name;
             Expr *init; /* NULL for a variable left at its zero value */
             Symbol *symbol;
+            /* "T name[length] = { elems }". Elements left out are zero. */
+            bool is_array;
+            Expr *length; /* NULL when the length comes from the element count */
+            Expr **elems;
+            size_t elem_count;
         } decl;
         /* STMT_ASSIGN. "x += v", "x++" and "x--" are compound: the variable
            is combined with value using op. */
@@ -192,6 +218,7 @@ struct Stmt {
             Expr *value;
             bool compound;
             Op op;
+            Expr *index; /* set for "name[index] = value" */
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;

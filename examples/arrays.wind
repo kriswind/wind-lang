@@ -1,0 +1,31 @@
+// Fixed-size arrays: declared with a length, indexed from zero, and passed to
+// functions that take "T name[]".
+
+const string Names[] = {"north", "east", "south", "west"}
+
+int largest(int values[]) {
+    int best = values[0]
+    int i = 1
+next:
+    if i < len(values) {
+        if values[i] > best { best = values[i] }
+        i++
+        goto next
+    }
+    return best
+}
+
+int main(int argc, string argv[]) {
+    int scores[5] = {12, 47, 3, 30}  // the last element is zero
+    scores[4] = scores[0] + scores[2]
+
+    cout << "largest of " << len(scores) << " scores: " << largest(scores) << "\n"
+    cout << "second direction: " << Names[1] << "\n"
+    cout << "arguments after the program name: " << argc - 1 << "\n"
+
+    if argc > 1 {
+        string first = argv[1]
+        cout << "first argument starts with '" << first[0] << "'\n"
+    }
+    return 0
+}

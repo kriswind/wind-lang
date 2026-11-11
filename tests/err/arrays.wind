@@ -1,0 +1,35 @@
+int a[3] = {1, 2, 3}
+const int C[2] = {1, 2}
+string s = "abc"
+int n = 2
+int bad1[0]
+int bad2[n]
+int bad3[2] = {1, 2, 3}
+int bad4[]
+int bad5[2] = {1, "x"}
+void bad6[2]
+const int bad7[2]
+int b = a
+a = 5
+a[3] = 1
+a[-4] = 1
+a[-3] = 1
+C[0] = 9
+s[0] = 'x'
+n[0] = 1
+int x = n[0]
+int y = a["k"]
+i128 wide = 1
+int z = a[wide]
+void takes(int v[]) { v[0] = 1 }
+void sized(int v[3]) { }
+takes(n)
+takes(C)
+takes(s)
+u8 small[2]
+takes(small)
+cin >> a
+cin >> C[0]
+int l = len(n)
+int m = len(a, a)
+cout << x << y << z << l << m << b << small[0]

@@ -252,13 +252,20 @@ static void describe_symbol(Buf *buf, Str src, const Symbol *symbol) {
     switch (symbol->kind) {
     case SYM_CONST: {
         const Expr *init = symbol->decl->as.decl.init;
-        buf_printf(buf, "const %s %.*s = ", type_name(symbol->type), len, name);
+        buf_printf(buf, "const %s %.*s", type_name(symbol->type), len, name);
+        if (symbol->is_array) {
+            buf_printf(buf, "[%zu]", symbol->length);
+            break;
+        }
+        buf_puts(buf, " = ");
         buf_append(buf, src.data + init->loc.offset, init->loc.len);
         break;
     }
     case SYM_VAR:
     case SYM_PARAM:
         buf_printf(buf, "%s %.*s", type_name(symbol->type), len, name);
+        if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
+        if (symbol->is_slice) buf_puts(buf, "[]");
         break;
     case SYM_LABEL:
         buf_printf(buf, "%.*s:", len, name);
@@ -268,8 +275,8 @@ static void describe_symbol(Buf *buf, Str src, const Symbol *symbol) {
         buf_printf(buf, "%s %.*s(", type_name(symbol->type), len, name);
         for (size_t i = 0; i < func->as.func.param_count; i++) {
             const Param *param = &func->as.func.params[i];
-            buf_printf(buf, "%s%s %.*s", i ? ", " : "", type_name(param->type),
-                       (int)param->name.len, param->name.data);
+            buf_printf(buf, "%s%s %.*s%s", i ? ", " : "", type_name(param->type),
+                       (int)param->name.len, param->name.data, param->is_slice ? "[]" : "");
         }
         buf_puts(buf, ")");
         break;

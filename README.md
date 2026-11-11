@@ -79,8 +79,14 @@ int main() {
 }
 ```
 
-`main` takes no parameters and returns `int` (the process exit status) or
-`void`. Top-level variable initializers run, in order, before `main`.
+`main` returns `int` (the process exit status) or `void`. It takes no
+parameters, or the program's command-line arguments as
+`main(int argc, string argv[])`, where `argv[0]` is the program itself:
+
+```sh
+wind program.wind one two     # argc is 3
+```
+ Top-level variable initializers run, in order, before `main`.
 
 ### Basics
 
@@ -178,6 +184,61 @@ count++              // also count--, ++count, --count
 - Names must be declared before use. A name may shadow one from an enclosing
   block, but cannot be declared twice in the same block.
 
+### Arrays
+
+An array holds a fixed number of elements of one type. Its length is set
+when it is declared and never changes.
+
+```wind
+int scores[5] = {12, 47, 3}   // the remaining elements are zero
+string names[2]               // all elements are zero ("" here)
+u8 bytes[] = {1, 2, 3}        // length taken from the elements: 3
+
+scores[4] = scores[0] + 1
+scores[1] += 10
+cout << len(scores) << "\n"   // 5
+```
+
+- A length must be known at compile time: a literal, a constant, or
+  arithmetic over them.
+- Elements are indexed from zero. A negative index counts back from the
+  end, as in Python: `scores[-1]` is the last element and `scores[-2]` the
+  one before it.
+- Every index is checked: one that is out of range, in either direction,
+  stops the program with a message naming the line, the index and the
+  length. A literal index that is out of range is a compile-time error.
+- `len(x)` gives the number of elements of an array, or of bytes in a
+  string, as an `int`. `sizeof(array)` gives its size in bytes, so C's
+  `sizeof(a) / sizeof(a[0])` works too.
+- A string can be indexed the same way: `word[0]` is a `char`. Strings cannot
+  be changed, so a character cannot be assigned.
+- `const int Primes[3] = {2, 3, 5}` declares an array whose elements cannot
+  be changed.
+- `cout << scores` prints the whole array as `[12, 57, 3, 0, 13]`. Inside an
+  array, strings and chars are quoted and escaped (`["a", "b"]`, `['x']`) so
+  that the elements can be told apart.
+
+A function takes an array with a parameter written `T name[]`. It receives a
+view of the caller's array, not a copy, together with its length, so it works
+for arrays of any length and can change their elements:
+
+```wind
+void clear(int values[]) {
+    int i = 0
+next:
+    if i < len(values) {
+        values[i] = 0
+        i++
+        goto next
+    }
+}
+```
+
+An array is not a value in itself. Its name can be indexed, measured,
+printed, and passed to an array parameter, but one array cannot be assigned to another,
+compared with `==`, or returned from a function. Arrays have one dimension,
+and their elements cannot themselves be arrays.
+
 ### Operators
 
 | Operators | Operands | Result |
@@ -234,13 +295,14 @@ report("square", square(7))
   declaration, so they can be mutually recursive.
 - An empty parameter list can be written `()` or, as in C, `(void)`.
 - A function that returns a value must `return` on every path.
-- Parameters cannot be assigned to.
+- Parameters cannot be assigned to (the elements of an array parameter can).
 - A function sees every other function, and the constants and variables
   declared directly at the top level above it.
 
 ### Output
 
-`cout << a << b << ...` prints each value in turn. Any type can be printed:
+`cout << a << b << ...` prints each value in turn. Any type can be printed,
+and so can a whole array:
 integers in decimal, floats with the fewest digits that read back as the same
 value, `bool` as `true` or `false`.
 
@@ -283,7 +345,8 @@ cin >> string name >> int age
 cout << name << " is " << age << "\n"
 ```
 
-- Only variables can be read into, not constants or parameters.
+- Only variables and array elements (`cin >> scores[i]`) can be read into,
+  not constants or parameters.
 - Pending output is flushed before reading, so a prompt printed with `cout`
   is visible even without a newline.
 - Unlike in C++, a failed read does not block later reads, and the whole
@@ -291,6 +354,9 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
+- A constant array cannot be passed to a function, because nothing yet marks
+  a parameter as read-only.
+- An index must be an integer of at most 64 bits.
 - Integer division by zero and converting an out-of-range float to an integer
   are not checked.
 - `f128` values are printed and read with the precision of the C

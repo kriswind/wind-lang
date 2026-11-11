@@ -136,6 +136,14 @@ check("hover cin declaration", hover_text(1, 22), "```wind\nf32 ratio\n```")
 check("definition of cin declaration", request("textDocument/definition", at(2, 27))["result"]["range"], rng(1, 20, 25))
 check("definition of cin target", request("textDocument/definition", at(1, 8))["result"]["range"], rng(0, 3, 8))
 
+ARRAYS = "int nums[3] = {1, 2, 3}\nint first(int values[]) {\n    return values[0]\n}\ncout << first(nums) << nums[1]\n"
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 5}, "contentChanges": [{"text": ARRAYS}]})
+check("diagnostics for arrays", read()["params"]["diagnostics"], [])
+check("hover array", hover_text(4, 16), "```wind\nint nums[3]\n```")
+check("hover array parameter", hover_text(2, 12), "```wind\nint values[]\n```")
+check("hover function with array parameter", hover_text(4, 9), "```wind\nint first(int values[])\n```")
+check("definition of indexed array", request("textDocument/definition", at(4, 24))["result"]["range"], rng(0, 4, 8))
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 

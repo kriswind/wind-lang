@@ -73,13 +73,15 @@ static const char *temp_dir(void) {
     return (dir && *dir) ? dir : "/tmp";
 }
 
-/* Returns the child's exit code, or 128 + signal number if it was killed. */
-static int spawn_and_wait(char *const argv[]) {
+/* Runs the program at path (searched for in PATH if it has no slash) with the
+   given argument vector. Returns its exit code, or 128 + signal number if it
+   was killed. */
+static int spawn_and_wait(const char *path, char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) fatal("fork failed: %s", strerror(errno));
     if (pid == 0) {
-        execvp(argv[0], argv);
-        fprintf(stderr, "wind: error: cannot execute '%s': %s\n", argv[0],
+        execvp(path, argv);
+        fprintf(stderr, "wind: error: cannot execute '%s': %s\n", path,
                 strerror(errno));
         _exit(127);
     }
@@ -112,7 +114,7 @@ static void build(const char *src_path, const char *out_path) {
         (char *)cc, "-std=c11", "-O2", "-w", "-fwrapv", "-o", (char *)out_path,
         c_path,     NULL,
     };
-    int code = spawn_and_wait(argv);
+    int code = spawn_and_wait(cc, argv);
     unlink(c_path);
     if (code != 0) fatal("C compiler '%s' failed (exit code %d)", cc, code);
 }
@@ -163,10 +165,10 @@ static int cmd_run(int argc, char **argv) {
     build(argv[0], exe_path);
     chmod(exe_path, 0700);
 
-    /* The program sees its own path as argv[0], followed by the caller's
-       extra arguments; argv is NULL-terminated, so the tail carries over. */
-    argv[0] = exe_path;
-    int code = spawn_and_wait(argv);
+    /* The program's argv[0] is the source file it was built from, followed
+       by the caller's extra arguments; argv is NULL-terminated, so the tail
+       carries over. */
+    int code = spawn_and_wait(exe_path, argv);
     unlink(exe_path);
     return code;
 }

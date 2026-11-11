@@ -13,6 +13,12 @@
  * - Number literals are untyped until used: they take the type the context
  *   asks for (the "hint"), and default to int or float without one.
  *
+ * Arrays:
+ *
+ * - An array is not a value: its name can only be indexed, measured with
+ *   len() or sizeof, printed, or passed to an array parameter. A Symbol's type is
+ *   then the type of the elements.
+ *
  * Scoping rules:
  *
  * - Names must be declared before use, except functions and labels.
@@ -155,6 +161,92 @@ static Symbol *resolve(Checker *c, Str name, SrcLoc loc) {
 /* ---- Expressions ---- */
 
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
+
+/* If expr is the name of an array, resolves it and returns its symbol, with
+   expr->type set to the element type. Returns NULL, having done nothing, for
+   any other expression. */
+static const Symbol *array_operand(Checker *c, Expr *expr) {
+    if (expr->kind != EXPR_IDENT) return NULL;
+    Symbol *symbol = lookup(c, expr->as.ident.name);
+    if (!symbol || (!symbol->is_array && !symbol->is_slice)) return NULL;
+    add_ref(c, expr->loc, symbol);
+    symbol->used = true;
+    expr->as.ident.symbol = symbol;
+    expr->type = symbol->type;
+    return symbol;
+}
+
+/* Checks an expression used as an index. A negative index counts back from
+   the end, so an array of length n accepts -n to n - 1. For a fixed array a
+   literal index is range-checked here; everything else is checked when the
+   program runs. */
+static void check_index_value(Checker *c, Expr *index, bool fixed, size_t length) {
+    TypeKind type = check_expr(c, index, TYPE_INT);
+    if (type == TYPE_INVALID) return;
+    if (!type_is_integer(type) || type == TYPE_I128 || type == TYPE_U128) {
+        error(c, index->loc, "an index must be an integer of at most 64 bits, found '%s'",
+              type_name(type));
+    } else if (fixed && index->kind == EXPR_UNARY && index->as.unary.op == OP_NEG &&
+               index->as.unary.operand->kind == EXPR_INT_LIT &&
+               index->as.unary.operand->as.int_lit > length) {
+        error(c, index->loc, "index -%llu is out of range for an array of length %zu",
+              (unsigned long long)index->as.unary.operand->as.int_lit, length);
+    } else if (fixed && index->kind == EXPR_INT_LIT && index->as.int_lit >= length) {
+        error(c, index->loc, "index %llu is out of range for an array of length %zu",
+              (unsigned long long)index->as.int_lit, length);
+    }
+}
+
+static TypeKind check_index(Checker *c, Expr *expr) {
+    Expr *base = expr->as.index.base;
+    const Symbol *array = array_operand(c, base);
+    TypeKind result = TYPE_INVALID;
+    if (array) {
+        result = array->type;
+    } else {
+        TypeKind type = check_expr(c, base, TYPE_INVALID);
+        if (type == TYPE_STRING) {
+            result = TYPE_CHAR;
+        } else if (type != TYPE_INVALID) {
+            error(c, base->loc, "cannot index a value of type '%s'; only arrays and "
+                                "strings have elements",
+                  type_name(type));
+        }
+    }
+    check_index_value(c, expr->as.index.index, array && array->is_array,
+                      array ? array->length : 0);
+    return result;
+}
+
+/* The built-in len(x): the number of elements of an array or bytes of a
+   string. Used unless the program declares its own "len". */
+static bool is_builtin_len(const Checker *c, const Expr *expr) {
+    return str_eq_cstr(expr->as.call.name, "len") && !lookup(c, expr->as.call.name);
+}
+
+static TypeKind check_len(Checker *c, Expr *expr) {
+    if (expr->as.call.count != 1) {
+        error(c, expr->loc, "'len' takes 1 argument, but %zu were given",
+              expr->as.call.count);
+        for (size_t i = 0; i < expr->as.call.count; i++) {
+            if (!array_operand(c, expr->as.call.args[i])) {
+                check_expr(c, expr->as.call.args[i], TYPE_INVALID);
+            }
+        }
+        return TYPE_INT;
+    }
+    Expr *operand = expr->as.call.args[0];
+    if (!array_operand(c, operand)) {
+        TypeKind type = check_expr(c, operand, TYPE_INVALID);
+        if (type != TYPE_STRING && type != TYPE_INVALID) {
+            error(c, operand->loc, "'len' needs an array or a string, found '%s'",
+                  type_name(type));
+        }
+    }
+    expr->kind = EXPR_LEN;
+    expr->as.len.operand = operand;
+    return TYPE_INT;
+}
 
 static bool is_arithmetic(Op op) {
     return op == OP_ADD || op == OP_SUB || op == OP_MUL || op == OP_DIV ||
@@ -318,6 +410,20 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         Expr *arg = expr->as.call.args[i];
         bool has_param = func && i < func->as.func.param_count;
         TypeKind expected = has_param ? func->as.func.params[i].type : TYPE_INVALID;
+        if (has_param && func->as.func.params[i].is_slice) {
+            const Symbol *array = array_operand(c, arg);
+            if (!array) check_expr(c, arg, TYPE_INVALID);
+            if (!array || array->type != expected) {
+                error(c, arg->loc, "argument %zu of '%.*s' must be an array of '%s'", i + 1,
+                      NAME(name), type_name(expected));
+            } else if (array->kind == SYM_CONST) {
+                error(c, arg->loc,
+                      "constant array '%.*s' cannot be passed to a function, which "
+                      "could change it",
+                      NAME(array->name));
+            }
+            continue;
+        }
         TypeKind type = check_expr(c, arg, expected);
         if (expected != TYPE_INVALID && type != TYPE_INVALID && type != expected) {
             error(c, arg->loc, "argument %zu of '%.*s' must be '%s', found '%s'", i + 1,
@@ -369,15 +475,26 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
             return TYPE_INVALID;
         }
         symbol->used = true;
+        if (symbol->is_array || symbol->is_slice) {
+            error(c, expr->loc,
+                  "array '%.*s' cannot be used as a value; index it, print it, or pass "
+                  "it to an array parameter",
+                  NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
         expr->as.ident.symbol = symbol;
         return symbol->type;
     }
+    case EXPR_INDEX:
+        return check_index(c, expr);
+    case EXPR_LEN:
+        return TYPE_INT;
     case EXPR_UNARY:
         return check_unary(c, expr, hint);
     case EXPR_BINARY:
         return check_binary(c, expr, hint);
     case EXPR_CALL:
-        return check_call(c, expr);
+        return is_builtin_len(c, expr) ? check_len(c, expr) : check_call(c, expr);
     case EXPR_CAST:
         return check_cast(c, expr);
     case EXPR_CIN_OK:
@@ -387,12 +504,21 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
            then adapts to its context like any other, and the later passes
            never see a sizeof. */
         TypeKind of = expr->as.size_of.type;
+        size_t count = 1;
         if (expr->as.size_of.operand) {
-            of = check_expr(c, expr->as.size_of.operand, TYPE_INVALID);
+            const Symbol *array = array_operand(c, expr->as.size_of.operand);
+            if (array && array->is_array) {
+                of = array->type;
+                count = array->length;
+            } else if (array) {
+                of = TYPE_STRING; /* a slice is also a pointer and a length */
+            } else {
+                of = check_expr(c, expr->as.size_of.operand, TYPE_INVALID);
+            }
         }
         if (of == TYPE_VOID) error(c, expr->loc, "cannot take the size of 'void'");
         expr->kind = EXPR_INT_LIT;
-        expr->as.int_lit = type_size(of);
+        expr->as.int_lit = type_size(of) * count;
         return check_int_literal(c, expr, hint, false);
     }
     }
@@ -429,6 +555,8 @@ static bool is_constant(const Expr *expr) {
     case EXPR_CALL:
     case EXPR_SIZEOF:
     case EXPR_CIN_OK:
+    case EXPR_INDEX:
+    case EXPR_LEN:
         return false;
     }
     return false;
@@ -438,7 +566,116 @@ static bool is_constant(const Expr *expr) {
 
 static void check_block(Checker *c, Block *block);
 
+/* Evaluates an integer expression made of literals, constants and
+   arithmetic. Returns false if it is not one, or overflows. */
+static bool eval_const_int(const Expr *expr, long long *out) {
+    long long left, right;
+    switch (expr->kind) {
+    case EXPR_INT_LIT:
+        if (expr->as.int_lit > (U128)0x7fffffffffffffffLL) return false;
+        *out = (long long)expr->as.int_lit;
+        return true;
+    case EXPR_CHAR_LIT:
+        *out = (unsigned char)expr->as.char_lit;
+        return true;
+    case EXPR_IDENT: {
+        const Symbol *symbol = expr->as.ident.symbol;
+        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array) return false;
+        return eval_const_int(symbol->decl->as.decl.init, out);
+    }
+    case EXPR_CAST:
+        return eval_const_int(expr->as.cast.operand, out);
+    case EXPR_UNARY:
+        if (expr->as.unary.op != OP_NEG) return false;
+        if (!eval_const_int(expr->as.unary.operand, &right)) return false;
+        return !__builtin_sub_overflow(0LL, right, out);
+    case EXPR_BINARY:
+        if (!eval_const_int(expr->as.binary.left, &left) ||
+            !eval_const_int(expr->as.binary.right, &right)) {
+            return false;
+        }
+        switch (expr->as.binary.op) {
+        case OP_ADD: return !__builtin_add_overflow(left, right, out);
+        case OP_SUB: return !__builtin_sub_overflow(left, right, out);
+        case OP_MUL: return !__builtin_mul_overflow(left, right, out);
+        case OP_DIV:
+        case OP_MOD:
+            if (right == 0 || right == -1) return false;
+            *out = expr->as.binary.op == OP_DIV ? left / right : left % right;
+            return true;
+        default:
+            return false;
+        }
+    default:
+        return false;
+    }
+}
+
+/* Keeps a mistyped length from asking for an absurd amount of memory. */
+#define MAX_ARRAY_LENGTH (1LL << 28)
+
+static void check_array_decl(Checker *c, Stmt *stmt) {
+    TypeKind type = stmt->as.decl.type;
+    bool is_const = stmt->kind == STMT_CONST;
+    size_t count = stmt->as.decl.elem_count;
+    size_t length = count;
+    bool length_known = true;
+
+    Expr *length_expr = stmt->as.decl.length;
+    if (length_expr) {
+        long long value;
+        TypeKind found = check_expr(c, length_expr, TYPE_INT);
+        length_known = false;
+        if (found == TYPE_INVALID) {
+            /* already reported */
+        } else if (!type_is_integer(found) || !eval_const_int(length_expr, &value)) {
+            error(c, length_expr->loc,
+                  "an array's length must be an integer known at compile time");
+        } else if (value < 1 || value > MAX_ARRAY_LENGTH) {
+            error(c, length_expr->loc, "an array's length must be between 1 and %lld",
+                  MAX_ARRAY_LENGTH);
+        } else {
+            length = (size_t)value;
+            length_known = true;
+        }
+    } else if (count == 0) {
+        error(c, stmt->loc, "an array needs at least one element");
+        length_known = false;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        Expr *elem = stmt->as.decl.elems[i];
+        TypeKind found = check_expr(c, elem, type);
+        if (found != TYPE_INVALID && found != type) {
+            error(c, elem->loc, "an element of this array must be '%s', found '%s'",
+                  type_name(type), type_name(found));
+        } else if (is_const && !is_constant(elem)) {
+            error(c, elem->loc, "a constant's value must be known at compile time; use "
+                                "a variable for this");
+        }
+    }
+    if (length_known && count > length) {
+        error(c, stmt->as.decl.elems[length]->loc,
+              "too many elements: the array has length %zu", length);
+    }
+
+    Symbol *symbol = new_symbol(c, is_const ? SYM_CONST : SYM_VAR, stmt->as.decl.name,
+                                stmt->loc, type);
+    symbol->decl = stmt;
+    symbol->is_array = true;
+    symbol->length = length_known && length ? length : 1;
+    stmt->as.decl.symbol = symbol;
+    declare(c, symbol);
+    if (!is_const) {
+        list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+    }
+}
+
 static void check_decl(Checker *c, Stmt *stmt) {
+    if (stmt->as.decl.is_array) {
+        check_array_decl(c, stmt);
+        return;
+    }
     TypeKind type = stmt->as.decl.type;
     Expr *init = stmt->as.decl.init;
     bool is_const = stmt->kind == STMT_CONST;
@@ -470,8 +707,30 @@ static void check_decl(Checker *c, Stmt *stmt) {
 static void check_assign(Checker *c, Stmt *stmt) {
     Str name = stmt->as.assign.name;
     Symbol *symbol = resolve(c, name, stmt->loc);
+    Expr *index = stmt->as.assign.index;
     TypeKind expected = TYPE_INVALID;
-    if (symbol && symbol->kind != SYM_VAR) {
+    bool is_array = symbol && (symbol->is_array || symbol->is_slice);
+    if (symbol && index) {
+        /* The target is one element. An array parameter's elements can be
+           assigned even though the parameter itself cannot. */
+        if (!is_array) {
+            error(c, stmt->loc,
+                  symbol->type == TYPE_STRING && symbol->kind != SYM_FUNC
+                      ? "'%.*s' is a string, and a string's characters cannot be changed"
+                      : "'%.*s' is not an array",
+                  NAME(name));
+        } else if (symbol->kind == SYM_CONST) {
+            error(c, stmt->loc, "cannot assign to an element of constant array '%.*s'",
+                  NAME(name));
+        } else {
+            stmt->as.assign.symbol = symbol;
+            expected = symbol->type;
+        }
+        check_index_value(c, index, symbol->is_array, symbol->length);
+    } else if (is_array) {
+        error(c, stmt->loc, "cannot assign to array '%.*s' as a whole; assign its elements",
+              NAME(name));
+    } else if (symbol && symbol->kind != SYM_VAR) {
         const char *what = symbol->kind == SYM_CONST   ? "constant"
                            : symbol->kind == SYM_PARAM ? "parameter"
                                                        : "function";
@@ -479,6 +738,8 @@ static void check_assign(Checker *c, Stmt *stmt) {
     } else if (symbol) {
         stmt->as.assign.symbol = symbol;
         expected = symbol->type;
+    } else if (index) {
+        check_expr(c, index, TYPE_INT);
     }
     TypeKind found = check_expr(c, stmt->as.assign.value, expected);
     if (expected == TYPE_INVALID) return;
@@ -489,8 +750,9 @@ static void check_assign(Checker *c, Stmt *stmt) {
         error(c, stmt->loc, "operator '%s=' is not defined for '%s'", op_text(op),
               type_name(expected));
     } else if (found != TYPE_INVALID && found != expected) {
-        error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s' variable '%.*s'",
-              type_name(found), type_name(expected), NAME(name));
+        error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s' %s '%.*s'",
+              type_name(found), type_name(expected),
+              index ? "element of" : "variable", NAME(name));
     }
 }
 
@@ -589,6 +851,7 @@ static void check_func(Checker *c, Stmt *stmt) {
     for (size_t i = 0; i < stmt->as.func.param_count; i++) {
         Param *param = &stmt->as.func.params[i];
         Symbol *symbol = new_symbol(c, SYM_PARAM, param->name, param->loc, param->type);
+        symbol->is_slice = param->is_slice;
         symbol->visible_from = body->open.offset;
         param->symbol = symbol;
         declare(c, symbol);
@@ -623,6 +886,8 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_COUT:
         for (size_t i = 0; i < stmt->as.cout.count; i++) {
             Expr *arg = stmt->as.cout.args[i];
+            /* An array's name can be printed whole. */
+            if (array_operand(c, arg)) continue;
             if (check_expr(c, arg, TYPE_INVALID) == TYPE_VOID) {
                 error(c, arg->loc, "cannot print a 'void' value");
             }
@@ -641,7 +906,30 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                 continue;
             }
             Symbol *symbol = resolve(c, target->name, target->loc);
-            if (!symbol) continue;
+            if (!symbol) {
+                if (target->index) check_expr(c, target->index, TYPE_INT);
+                continue;
+            }
+            bool is_array = symbol->is_array || symbol->is_slice;
+            if (target->index) {
+                check_index_value(c, target->index, symbol->is_array, symbol->length);
+                if (!is_array) {
+                    error(c, target->loc, "'%.*s' is not an array", NAME(target->name));
+                } else if (symbol->kind == SYM_CONST) {
+                    error(c, target->loc,
+                          "cannot read into an element of constant array '%.*s'",
+                          NAME(target->name));
+                } else {
+                    target->symbol = symbol;
+                }
+                continue;
+            }
+            if (is_array) {
+                error(c, target->loc,
+                      "cannot read into array '%.*s' as a whole; read its elements",
+                      NAME(target->name));
+                continue;
+            }
             if (symbol->kind != SYM_VAR) {
                 const char *what = symbol->kind == SYM_CONST   ? "constant"
                                    : symbol->kind == SYM_PARAM ? "parameter"
@@ -710,8 +998,14 @@ static void warn_unused(Checker *c) {
    top level, and main as the entry point. */
 static void check_main(Checker *c, const Stmt *main) {
     c->unit->program.main = main;
-    if (main->as.func.param_count != 0) {
-        error(c, main->loc, "'main' cannot take parameters");
+    const Param *params = main->as.func.params;
+    bool takes_args = main->as.func.param_count == 2 && params[0].type == TYPE_INT &&
+                      !params[0].is_slice && params[1].type == TYPE_STRING &&
+                      params[1].is_slice;
+    if (main->as.func.param_count != 0 && !takes_args) {
+        error(c, main->loc,
+              "'main' takes no parameters, or the program's arguments as "
+              "'(int argc, string argv[])'");
     }
     if (main->as.func.ret != TYPE_INT && main->as.func.ret != TYPE_VOID) {
         error(c, main->loc, "'main' must return 'int' or 'void', not '%s'",

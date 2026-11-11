@@ -113,6 +113,8 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_RPAREN:    return "')'";
     case TOK_LBRACE:    return "'{'";
     case TOK_RBRACE:    return "'}'";
+    case TOK_LBRACKET:  return "'['";
+    case TOK_RBRACKET:  return "']'";
     case TOK_COMMA:     return "','";
     case TOK_COLON:     return "':'";
     case TOK_PLUS:      return "'+'";
@@ -441,6 +443,8 @@ Token lexer_next(Lexer *lexer) {
         case ')': tok.kind = TOK_RPAREN;  break;
         case '{': tok.kind = TOK_LBRACE;  break;
         case '}': tok.kind = TOK_RBRACE;  break;
+        case '[': tok.kind = TOK_LBRACKET; break;
+        case ']': tok.kind = TOK_RBRACKET; break;
         case ',': tok.kind = TOK_COMMA;   break;
         case ':': tok.kind = TOK_COLON;   break;
         case '+':

@@ -15,17 +15,19 @@
  *
  *   const_decl = "const" type IDENT "=" expr
  *   var_decl   = type IDENT [ "=" expr ]
- *   assign     = IDENT ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr
- *              | IDENT ( "++" | "--" ) | ( "++" | "--" ) IDENT
+ *              | type IDENT "[" [ expr ] "]" [ "=" "{" [ expr { "," expr } ] "}" ]
+ *   assign     = place ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr
+ *              | place ( "++" | "--" ) | ( "++" | "--" ) place
+ *   place      = IDENT [ "[" expr "]" ]
  *   cout       = "cout" "<<" expr { "<<" expr }
  *   cin        = "cin" ">>" target { ">>" target }
- *   target     = [ type ] IDENT
+ *   target     = type IDENT | place
  *   goto       = "goto" IDENT
  *   label      = IDENT ":"
  *   return     = "return" [ expr ]
  *   if         = "if" expr block [ "else" ( if | block ) ]
  *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
- *   param      = type IDENT
+ *   param      = type IDENT [ "[" "]" ]
  *   type       = TYPE | a C spelling such as "unsigned long" (see parse_type)
  *
  *   expr       = or
@@ -34,7 +36,8 @@
  *   compare    = sum { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum }
  *   sum        = term { ( "+" | "-" ) term }
  *   term       = unary { ( "*" | "/" | "%" ) unary }
- *   unary      = ( "-" | "!" ) unary | primary
+ *   unary      = ( "-" | "!" ) unary | postfix
+ *   postfix    = primary { "[" expr "]" }
  *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | IDENT
  *              | call | type "(" expr ")" | "(" expr ")"
  *              | "sizeof" "(" type ")" | "sizeof" unary | "cin"
@@ -303,8 +306,28 @@ static Expr *parse_primary(Parser *p) {
     }
 }
 
+/* Called at the "[" that follows the indexed expression. */
+static Expr *parse_index(Parser *p, Expr *base) {
+    next(p);
+    skip_newlines(p);
+    Expr *index = parse_expr(p);
+    if (!index) return NULL;
+    skip_newlines(p);
+    if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
+    Expr *expr = new_expr(p, EXPR_INDEX, span(base->loc, p->prev));
+    expr->as.index.base = base;
+    expr->as.index.index = index;
+    return expr;
+}
+
+static Expr *parse_postfix(Parser *p) {
+    Expr *expr = parse_primary(p);
+    while (expr && at(p, TOK_LBRACKET)) expr = parse_index(p, expr);
+    return expr;
+}
+
 static Expr *parse_unary(Parser *p) {
-    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT)) return parse_primary(p);
+    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT)) return parse_postfix(p);
     Token tok = p->tok;
     next(p);
     Expr *operand = parse_unary(p);
@@ -383,8 +406,51 @@ static bool at_statement_keyword(const Parser *p) {
     }
 }
 
+/* Called at the "[" of an array declaration, after its type and name. */
+static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, Token name) {
+    Stmt *stmt = new_stmt(p, kind, name.loc);
+    stmt->as.decl.type = type;
+    stmt->as.decl.name = name.text;
+    stmt->as.decl.is_array = true;
+    size_t cap = 0;
+
+    next(p);
+    if (!at(p, TOK_RBRACKET)) {
+        stmt->as.decl.length = parse_expr(p);
+        if (!stmt->as.decl.length) return NULL;
+    }
+    if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
+
+    if (accept(p, TOK_ASSIGN)) {
+        skip_newlines(p);
+        if (!expect(p, TOK_LBRACE, NULL)) return NULL;
+        skip_newlines(p);
+        while (!at(p, TOK_RBRACE)) {
+            Expr *elem = parse_expr(p);
+            if (!elem) return NULL;
+            ARENA_PUSH(p->arena, stmt->as.decl.elems, stmt->as.decl.elem_count, cap, elem);
+            skip_newlines(p);
+            if (!accept(p, TOK_COMMA)) break;
+            skip_newlines(p);
+        }
+        if (!expect(p, TOK_RBRACE, NULL)) return NULL;
+    } else if (kind == STMT_CONST || !stmt->as.decl.length) {
+        diag_add(p->diags, SEV_ERROR, name.loc,
+                 kind == STMT_CONST ? "a constant array needs its elements: '= { ... }'"
+                                    : "an array needs a length or its elements");
+        return NULL;
+    }
+    if (type == TYPE_VOID) {
+        diag_add(p->diags, SEV_ERROR, name.loc, "'%.*s' cannot have type 'void'",
+                 (int)name.text.len, name.text.data);
+        return NULL;
+    }
+    return stmt;
+}
+
 /* Called after the type and name of a declaration. */
 static Stmt *parse_decl_rest(Parser *p, StmtKind kind, TypeKind type, Token name) {
+    if (at(p, TOK_LBRACKET)) return parse_array_decl(p, kind, type, name);
     Expr *init = NULL;
     if (kind == STMT_CONST || at(p, TOK_ASSIGN)) {
         if (!expect(p, TOK_ASSIGN, NULL)) return NULL;
@@ -430,7 +496,19 @@ static Stmt *parse_func(Parser *p, TypeKind ret, Token name, bool top_level) {
                          param_name.text.data);
                 type = TYPE_INVALID;
             }
-            Param param = {type, param_name.text, param_name.loc, NULL};
+            Param param = {type, param_name.text, param_name.loc, false, NULL};
+            if (accept(p, TOK_LBRACKET)) {
+                if (!at(p, TOK_RBRACKET)) {
+                    diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                             "an array parameter is written '%s %.*s[]', without a "
+                             "length",
+                             type_name(type), (int)param_name.text.len,
+                             param_name.text.data);
+                    return NULL;
+                }
+                next(p);
+                param.is_slice = true;
+            }
             ARENA_PUSH(p->arena, stmt->as.func.params, stmt->as.func.param_count, cap,
                        param);
             skip_newlines(p);
@@ -463,6 +541,18 @@ static Stmt *parse_cout(Parser *p) {
     return stmt;
 }
 
+/* Parses the optional "[index]" of an assignment target. Returns false on
+   error; *index is NULL when there is none. */
+static bool parse_place_index(Parser *p, Expr **index) {
+    *index = NULL;
+    if (!accept(p, TOK_LBRACKET)) return true;
+    skip_newlines(p);
+    *index = parse_expr(p);
+    if (!*index) return false;
+    skip_newlines(p);
+    return expect(p, TOK_RBRACKET, NULL);
+}
+
 static Stmt *parse_cin(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_CIN, p->tok.loc);
     size_t cap = 0;
@@ -492,6 +582,7 @@ static Stmt *parse_cin(Parser *p) {
         }
         target.name = name.text;
         target.loc = name.loc;
+        if (!target.declares && !parse_place_index(p, &target.index)) return NULL;
         ARENA_PUSH(p->arena, stmt->as.cin.targets, stmt->as.cin.count, cap, target);
     } while (at(p, TOK_SHR));
     return stmt;
@@ -535,9 +626,10 @@ static bool compound_assign_op(TokenKind kind, Op *op) {
 }
 
 /* "x++" and "x--" are "x += 1" and "x -= 1". step is the "++" or "--". */
-static Stmt *new_step(Parser *p, Token name, Token step) {
+static Stmt *new_step(Parser *p, Token name, Expr *index, Token step) {
     Stmt *stmt = new_stmt(p, STMT_ASSIGN, name.loc);
     stmt->as.assign.name = name.text;
+    stmt->as.assign.index = index;
     stmt->as.assign.compound = true;
     stmt->as.assign.op = step.kind == TOK_INC ? OP_ADD : OP_SUB;
     stmt->as.assign.value = new_expr(p, EXPR_INT_LIT, step.loc);
@@ -550,6 +642,7 @@ static Stmt *new_step(Parser *p, Token name, Token step) {
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) {
     Token tok = p->tok;
     Stmt *stmt;
+    Expr *index;
     Op op;
     if (at_type(p)) {
         TypeKind type;
@@ -574,9 +667,11 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     case TOK_INC:
     case TOK_DEC: {
         Token name;
+        Expr *index;
         next(p);
         if (!expect(p, TOK_IDENT, &name)) return NULL;
-        return new_step(p, name, tok);
+        if (!parse_place_index(p, &index)) return NULL;
+        return new_step(p, name, index, tok);
     }
     case TOK_KW_COUT:
         return parse_cout(p);
@@ -609,34 +704,38 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
             stmt->as.label.name = tok.text;
             return stmt;
         }
+        if (at(p, TOK_LPAREN)) {
+            stmt = new_stmt(p, STMT_EXPR, tok.loc);
+            stmt->as.expr = parse_call(p, tok);
+            return stmt->as.expr ? stmt : NULL;
+        }
+        if (!parse_place_index(p, &index)) return NULL;
         if (accept(p, TOK_ASSIGN)) {
             skip_newlines(p);
             stmt = new_stmt(p, STMT_ASSIGN, tok.loc);
             stmt->as.assign.name = tok.text;
+            stmt->as.assign.index = index;
             stmt->as.assign.value = parse_expr(p);
             return stmt->as.assign.value ? stmt : NULL;
         }
         if (at(p, TOK_INC) || at(p, TOK_DEC)) {
             Token step = p->tok;
             next(p);
-            return new_step(p, tok, step);
+            return new_step(p, tok, index, step);
         }
         if (compound_assign_op(p->tok.kind, &op)) {
             next(p);
             skip_newlines(p);
             stmt = new_stmt(p, STMT_ASSIGN, tok.loc);
             stmt->as.assign.name = tok.text;
+            stmt->as.assign.index = index;
             stmt->as.assign.compound = true;
             stmt->as.assign.op = op;
             stmt->as.assign.value = parse_expr(p);
             return stmt->as.assign.value ? stmt : NULL;
         }
-        if (at(p, TOK_LPAREN)) {
-            stmt = new_stmt(p, STMT_EXPR, tok.loc);
-            stmt->as.expr = parse_call(p, tok);
-            return stmt->as.expr ? stmt : NULL;
-        }
-        error_expected(p, "an assignment, '(' or ':' after a name");
+        error_expected(p, index ? "an assignment after the indexed name"
+                                : "an assignment, '(', '[' or ':' after a name");
         return NULL;
     default:
         error_expected(p, "a statement");

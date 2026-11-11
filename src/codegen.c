@@ -20,6 +20,10 @@
  * - Arithmetic results are cast back to their Wind type, undoing C's integer
  *   promotion so that narrow types wrap at their own width.
  *
+ * - A fixed array is a C array. An array parameter is a slice: a struct of a
+ *   pointer and a length, defined once per element type. Every index goes
+ *   through wind_index, which counts a negative index back from the end and
+ *   stops the program if the index is out of range.
  * - Only the runtime support a program uses is emitted. The program is
  *   generated first, into memory, recording each runtime type and helper it
  *   mentions; the matching definitions are then written ahead of it.
@@ -33,6 +37,9 @@
 /* Listed so that each helper comes after the ones its definition calls. */
 typedef enum {
     HELPER_NONE, /* ends a helper's list of needs */
+    HELPER_INDEX,
+    HELPER_STRING_AT,
+    HELPER_ARGS,
     HELPER_CIN_STATE,
     HELPER_IS_SPACE,
     HELPER_READ_WORD,
@@ -58,6 +65,9 @@ typedef enum {
     HELPER_WRITE_F32,
     HELPER_WRITE_F64,
     HELPER_WRITE_F128,
+    HELPER_WRITE_ESCAPED,
+    HELPER_WRITE_QUOTED_STRING,
+    HELPER_WRITE_QUOTED_CHAR,
     HELPER_COUNT,
 } Helper;
 
@@ -73,7 +83,10 @@ typedef enum {
 /* What the program generated so far needs from the runtime. */
 static struct {
     bool types[TYPE_COUNT];
+    bool slices[TYPE_COUNT];        /* by element type */
+    bool array_writers[TYPE_COUNT]; /* by element type */
     bool helpers[HELPER_COUNT];
+    unsigned headers; /* Header flags the program's own code relies on */
 } used;
 
 /* The C name of a type, noted as needing its definition. */
@@ -127,6 +140,41 @@ typedef struct {
 } HelperInfo;
 
 static const HelperInfo helpers[HELPER_COUNT] = {
+    [HELPER_INDEX] = {
+        "/* Turns an index into a position among len elements. A negative index\n"
+        "   counts back from the end, so -1 is the last element. An index that is\n"
+        "   out of range is reported and stops the program. is_signed tells\n"
+        "   whether the index had a signed type: an unsigned one arrives here as\n"
+        "   negative only when it is too large to be valid. */\n"
+        "static size_t wind_index(long long i, int is_signed, size_t len, int line) {\n"
+        "    long long position = (is_signed && i < 0) ? i + (long long)len : i;\n"
+        "    if (position < 0 || (unsigned long long)position >= len) {\n"
+        "        fflush(stdout);\n"
+        "        fprintf(stderr, \"wind: line %d: index \", line);\n"
+        "        fprintf(stderr, is_signed ? \"%lld\" : \"%llu\", i);\n"
+        "        fprintf(stderr, \" is out of range for length %zu\\n\", len);\n"
+        "        exit(1);\n"
+        "    }\n"
+        "    return (size_t)position;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
+    [HELPER_STRING_AT] = {
+        "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
+        "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
+        "}\n",
+        0, {HELPER_INDEX}, {TYPE_STRING, TYPE_CHAR}},
+    [HELPER_ARGS] = {
+        "/* Wraps the program's C argument vector as an array of strings. */\n"
+        "static wind_slice_string wind_args(int argc, char **argv) {\n"
+        "    size_t count = argc > 0 ? (size_t)argc : 0;\n"
+        "    wind_string *args = malloc(sizeof *args * (count + 1));\n"
+        "    if (!args) abort();\n"
+        "    for (size_t i = 0; i < count; i++) {\n"
+        "        args[i] = (wind_string){ argv[i], strlen(argv[i]) };\n"
+        "    }\n"
+        "    return (wind_slice_string){ args, count };\n"
+        "}\n",
+        HEADER_STDLIB | HEADER_STRING, {0}, {TYPE_STRING}},
     [HELPER_CIN_STATE] = {
         "/* Whether the most recent cin read succeeded. */\n"
         "static wind_bool wind_cin_ok = 1;\n",
@@ -358,67 +406,37 @@ static const HelperInfo helpers[HELPER_COUNT] = {
                           {HELPER_FLOAT_WRITER}, {TYPE_F64}},
     [HELPER_WRITE_F128] = {"WIND_WRITE_FLOAT(wind_write_f128, wind_f128, 21, strtold)\n", 0,
                            {HELPER_FLOAT_WRITER}, {TYPE_F128}},
+    [HELPER_WRITE_ESCAPED] = {
+        "/* Writes one byte as it is spelled inside a literal that uses the\n"
+        "   given quote character. */\n"
+        "static void wind_write_escaped(unsigned char c, char quote) {\n"
+        "    switch (c) {\n"
+        "    case '\\n': fputs(\"\\\\n\", stdout); break;\n"
+        "    case '\\t': fputs(\"\\\\t\", stdout); break;\n"
+        "    case '\\r': fputs(\"\\\\r\", stdout); break;\n"
+        "    case '\\0': fputs(\"\\\\0\", stdout); break;\n"
+        "    case '\\\\': fputs(\"\\\\\\\\\", stdout); break;\n"
+        "    default:\n"
+        "        if (c == (unsigned char)quote) fputc('\\\\', stdout);\n"
+        "        fputc(c, stdout);\n"
+        "    }\n"
+        "}\n",
+        HEADER_STDIO, {0}, {0}},
+    [HELPER_WRITE_QUOTED_STRING] = {
+        "static void wind_write_quoted_string(wind_string s) {\n"
+        "    fputc('\"', stdout);\n"
+        "    for (size_t i = 0; i < s.len; i++) wind_write_escaped((unsigned char)s.data[i], '\"');\n"
+        "    fputc('\"', stdout);\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDIO, {HELPER_WRITE_ESCAPED}, {TYPE_STRING}},
+    [HELPER_WRITE_QUOTED_CHAR] = {
+        "static void wind_write_quoted_char(wind_char c) {\n"
+        "    fputc('\\'', stdout);\n"
+        "    wind_write_escaped(c, '\\'');\n"
+        "    fputc('\\'', stdout);\n"
+        "}\n",
+        HEADER_STDIO, {HELPER_WRITE_ESCAPED}, {TYPE_CHAR}},
 };
-
-/* Writes the headers, type definitions and helpers recorded in `used`. */
-static void emit_runtime(FILE *out) {
-    /* A helper can need another that sits anywhere in the list, so the set
-       is grown until it stops changing. */
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (int i = 0; i < HELPER_COUNT; i++) {
-            if (!used.helpers[i]) continue;
-            for (size_t j = 0; j < 4 && helpers[i].needs[j] != HELPER_NONE; j++) {
-                if (!used.helpers[helpers[i].needs[j]]) {
-                    used.helpers[helpers[i].needs[j]] = true;
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    unsigned headers = 0;
-    for (int i = 0; i < HELPER_COUNT; i++) {
-        if (!used.helpers[i]) continue;
-        headers |= helpers[i].headers;
-        for (size_t j = 0; j < 3 && helpers[i].types[j] != TYPE_INVALID; j++) {
-            used.types[helpers[i].types[j]] = true;
-        }
-    }
-    if (used.types[TYPE_STRING]) headers |= HEADER_STDDEF;
-    for (int type = TYPE_INT; type <= TYPE_UINTPTR; type++) {
-        if (used.types[type] && type != TYPE_I128 && type != TYPE_U128) {
-            headers |= HEADER_STDINT;
-        }
-    }
-
-    static const struct {
-        Header header;
-        const char *name;
-    } header_names[] = {
-        {HEADER_ERRNO, "errno.h"},   {HEADER_STDDEF, "stddef.h"},
-        {HEADER_STDINT, "stdint.h"}, {HEADER_STDIO, "stdio.h"},
-        {HEADER_STDLIB, "stdlib.h"}, {HEADER_STRING, "string.h"},
-    };
-    for (size_t i = 0; i < sizeof header_names / sizeof header_names[0]; i++) {
-        if (headers & header_names[i].header) {
-            fprintf(out, "#include <%s>\n", header_names[i].name);
-        }
-    }
-    if (headers) fputs("\n", out);
-
-    bool any = false;
-    for (int type = 0; type < TYPE_COUNT; type++) {
-        if (!used.types[type] || !type_definitions[type]) continue;
-        fputs(type_definitions[type], out);
-        any = true;
-    }
-    if (any) fputs("\n", out);
-
-    for (int i = 0; i < HELPER_COUNT; i++) {
-        if (used.helpers[i]) fprintf(out, "%s\n", helpers[i].definition);
-    }
-}
 
 /* ---- Program ---- */
 
@@ -454,12 +472,38 @@ static void emit_symbol(const Symbol *symbol, FILE *out) {
     }
 }
 
-/* The string literal a string constant ultimately names, following
-   constant-to-constant initializers. */
-static Str const_string(const Symbol *symbol) {
-    const Expr *expr = symbol->decl->as.decl.init;
+/* The string literal a constant string expression ultimately names,
+   following constant-to-constant initializers. */
+static Str const_string(const Expr *expr) {
     while (expr->kind == EXPR_IDENT) expr = expr->as.ident.symbol->decl->as.decl.init;
     return expr->as.string_lit;
+}
+
+/* The slice type for an element type, noted as needing its definition. */
+static void emit_slice_type(TypeKind elem, FILE *out) {
+    used.slices[elem] = true;
+    fprintf(out, "wind_slice_%s", type_name(elem));
+}
+
+static bool is_array_name(const Expr *expr) {
+    return expr->kind == EXPR_IDENT && expr->as.ident.symbol &&
+           (expr->as.ident.symbol->is_array || expr->as.ident.symbol->is_slice);
+}
+
+/* Emits one element of an array as something that can be read or assigned. */
+static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
+    used.helpers[HELPER_INDEX] = true;
+    emit_symbol(array, out);
+    fputs(array->is_slice ? ".data[wind_index((long long)(" : "[wind_index((long long)(", out);
+    emit_expr(index, out);
+    fprintf(out, "), %d, ", type_is_signed(index->type));
+    if (array->is_slice) {
+        emit_symbol(array, out);
+        fputs(".len", out);
+    } else {
+        fprintf(out, "%zu", array->length);
+    }
+    fprintf(out, ", %d)]", index->loc.line);
 }
 
 static void emit_int_literal(const Expr *expr, FILE *out) {
@@ -509,6 +553,35 @@ static void emit_binary(const Expr *expr, FILE *out) {
 
 static void emit_expr(const Expr *expr, FILE *out) {
     switch (expr->kind) {
+    case EXPR_INDEX: {
+        const Expr *base = expr->as.index.base;
+        if (is_array_name(base)) {
+            emit_element(base->as.ident.symbol, expr->as.index.index, out);
+            break;
+        }
+        used.helpers[HELPER_STRING_AT] = true;
+        fputs("wind_string_at(", out);
+        emit_expr(base, out);
+        fputs(", (long long)(", out);
+        emit_expr(expr->as.index.index, out);
+        fprintf(out, "), %d, %d)", type_is_signed(expr->as.index.index->type), expr->loc.line);
+        break;
+    }
+    case EXPR_LEN: {
+        const Expr *operand = expr->as.len.operand;
+        fprintf(out, "((%s)", c_type(TYPE_INT));
+        if (!is_array_name(operand)) {
+            fputs("(", out);
+            emit_expr(operand, out);
+            fputs(").len)", out);
+        } else if (operand->as.ident.symbol->is_slice) {
+            emit_symbol(operand->as.ident.symbol, out);
+            fputs(".len)", out);
+        } else {
+            fprintf(out, "%zu)", operand->as.ident.symbol->length);
+        }
+        break;
+    }
     case EXPR_INT_LIT:
         emit_int_literal(expr, out);
         break;
@@ -549,8 +622,20 @@ static void emit_expr(const Expr *expr, FILE *out) {
         emit_symbol(expr->as.call.symbol, out);
         fputs("(", out);
         for (size_t i = 0; i < expr->as.call.count; i++) {
+            const Expr *arg = expr->as.call.args[i];
             if (i) fputs(", ", out);
-            emit_expr(expr->as.call.args[i], out);
+            if (!is_array_name(arg)) {
+                emit_expr(arg, out);
+            } else if (arg->as.ident.symbol->is_slice) {
+                emit_symbol(arg->as.ident.symbol, out);
+            } else {
+                /* A fixed array is passed as a view of all its elements. */
+                fputs("(", out);
+                emit_slice_type(arg->as.ident.symbol->type, out);
+                fputs("){ ", out);
+                emit_symbol(arg->as.ident.symbol, out);
+                fprintf(out, ", %zu }", arg->as.ident.symbol->length);
+            }
         }
         fputs(")", out);
         break;
@@ -568,37 +653,67 @@ static void emit_expr(const Expr *expr, FILE *out) {
     }
 }
 
-static void emit_write(const Expr *arg, FILE *out) {
+/* The helper that prints one value of a type, noted as used. *cast is what
+   the value must be converted to first, or "". Inside an array, strings and
+   chars are quoted so that the elements can be told apart. */
+static const char *value_writer(TypeKind type, bool in_array, const char **cast) {
     static const char *const names[HELPER_COUNT] = {
-        [HELPER_WRITE_STRING] = "wind_write_string", [HELPER_WRITE_BOOL] = "wind_write_bool",
-        [HELPER_WRITE_CHAR] = "wind_write_char",     [HELPER_WRITE_INT] = "wind_write_int",
-        [HELPER_WRITE_UINT] = "wind_write_uint",     [HELPER_WRITE_U128] = "wind_write_u128",
-        [HELPER_WRITE_I128] = "wind_write_i128",     [HELPER_WRITE_F16] = "wind_write_f16",
-        [HELPER_WRITE_F32] = "wind_write_f32",       [HELPER_WRITE_F64] = "wind_write_f64",
+        [HELPER_WRITE_STRING] = "wind_write_string",
+        [HELPER_WRITE_BOOL] = "wind_write_bool",
+        [HELPER_WRITE_CHAR] = "wind_write_char",
+        [HELPER_WRITE_INT] = "wind_write_int",
+        [HELPER_WRITE_UINT] = "wind_write_uint",
+        [HELPER_WRITE_U128] = "wind_write_u128",
+        [HELPER_WRITE_I128] = "wind_write_i128",
+        [HELPER_WRITE_F16] = "wind_write_f16",
+        [HELPER_WRITE_F32] = "wind_write_f32",
+        [HELPER_WRITE_F64] = "wind_write_f64",
         [HELPER_WRITE_F128] = "wind_write_f128",
+        [HELPER_WRITE_QUOTED_STRING] = "wind_write_quoted_string",
+        [HELPER_WRITE_QUOTED_CHAR] = "wind_write_quoted_char",
     };
-    TypeKind type = arg->type;
     Helper helper;
-    const char *cast = "";
+    *cast = "";
     switch (type) {
-    case TYPE_STRING: helper = HELPER_WRITE_STRING; break;
-    case TYPE_BOOL:   helper = HELPER_WRITE_BOOL;   break;
-    case TYPE_CHAR:   helper = HELPER_WRITE_CHAR;   break;
-    case TYPE_I128:   helper = HELPER_WRITE_I128;   break;
-    case TYPE_U128:   helper = HELPER_WRITE_U128;   break;
-    case TYPE_F16:    helper = HELPER_WRITE_F16;    break;
-    case TYPE_F32:    helper = HELPER_WRITE_F32;    break;
-    case TYPE_F128:   helper = HELPER_WRITE_F128;   break;
+    case TYPE_STRING: helper = in_array ? HELPER_WRITE_QUOTED_STRING : HELPER_WRITE_STRING; break;
+    case TYPE_CHAR:   helper = in_array ? HELPER_WRITE_QUOTED_CHAR : HELPER_WRITE_CHAR;     break;
+    case TYPE_BOOL:   helper = HELPER_WRITE_BOOL; break;
+    case TYPE_I128:   helper = HELPER_WRITE_I128; break;
+    case TYPE_U128:   helper = HELPER_WRITE_U128; break;
+    case TYPE_F16:    helper = HELPER_WRITE_F16;  break;
+    case TYPE_F32:    helper = HELPER_WRITE_F32;  break;
+    case TYPE_F128:   helper = HELPER_WRITE_F128; break;
     case TYPE_FLOAT:
-    case TYPE_F64:    helper = HELPER_WRITE_F64;    break;
+    case TYPE_F64:    helper = HELPER_WRITE_F64;  break;
     default:
         /* Every narrower integer is printed through the widest one. */
         helper = type_is_signed(type) ? HELPER_WRITE_INT : HELPER_WRITE_UINT;
-        cast = type_is_signed(type) ? "(long long)" : "(unsigned long long)";
+        *cast = type_is_signed(type) ? "(long long)" : "(unsigned long long)";
         break;
     }
     used.helpers[helper] = true;
-    fprintf(out, "%s(%s", names[helper], cast);
+    return names[helper];
+}
+
+static void emit_write(const Expr *arg, FILE *out) {
+    if (is_array_name(arg)) {
+        /* A whole array prints as "[a, b, c]". */
+        const Symbol *array = arg->as.ident.symbol;
+        used.array_writers[array->type] = true;
+        fprintf(out, "wind_write_array_%s(", type_name(array->type));
+        emit_symbol(array, out);
+        if (array->is_slice) {
+            fputs(".data, ", out);
+            emit_symbol(array, out);
+            fputs(".len);\n", out);
+        } else {
+            fprintf(out, ", %zu);\n", array->length);
+        }
+        return;
+    }
+    const char *cast;
+    const char *writer = value_writer(arg->type, false, &cast);
+    fprintf(out, "%s(%s", writer, cast);
     emit_expr(arg, out);
     fputs(");\n", out);
 }
@@ -619,8 +734,9 @@ static const char *int_limits(TypeKind type) {
     }
 }
 
-/* Emits the call that reads one value of the symbol's type from stdin. */
-static void emit_read(const Symbol *symbol, FILE *out) {
+/* Emits the statement that reads one value from stdin into the target. */
+static void emit_read(const ReadTarget *target, FILE *out) {
+    const Symbol *symbol = target->symbol;
     TypeKind type = symbol->type;
     Helper helper;
     const char *call;
@@ -641,7 +757,11 @@ static void emit_read(const Symbol *symbol, FILE *out) {
         break;
     }
     used.helpers[helper] = true;
-    emit_symbol(symbol, out);
+    if (target->index) {
+        emit_element(symbol, target->index, out);
+    } else {
+        emit_symbol(symbol, out);
+    }
     fprintf(out, " = (%s)", c_type(type));
     if (call) {
         fprintf(out, "%s;\n", call);
@@ -664,6 +784,28 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         break;
     case STMT_VAR:
         indent(depth, out);
+        if (stmt->as.decl.is_array) {
+            /* Elements the initializer leaves out are zero, as in C. */
+            const Symbol *array = stmt->as.decl.symbol;
+            used.headers |= HEADER_STRING;
+            if (stmt->as.decl.elem_count == 0) {
+                fputs("memset(", out);
+                emit_symbol(array, out);
+                fputs(", 0, sizeof ", out);
+            } else {
+                fputs("memcpy(", out);
+                emit_symbol(array, out);
+                fprintf(out, ", (%s[%zu]){ ", c_type(array->type), array->length);
+                for (size_t i = 0; i < stmt->as.decl.elem_count; i++) {
+                    if (i) fputs(", ", out);
+                    emit_expr(stmt->as.decl.elems[i], out);
+                }
+                fputs(" }, sizeof ", out);
+            }
+            emit_symbol(array, out);
+            fputs(");\n", out);
+            break;
+        }
         emit_symbol(stmt->as.decl.symbol, out);
         fputs(" = ", out);
         if (stmt->as.decl.init) {
@@ -675,6 +817,15 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         break;
     case STMT_ASSIGN:
         indent(depth, out);
+        if (stmt->as.assign.index) {
+            /* C's own compound operator is used so that the index is
+               evaluated once; it wraps at the element's width as well. */
+            emit_element(stmt->as.assign.symbol, stmt->as.assign.index, out);
+            fprintf(out, " %s= ", stmt->as.assign.compound ? op_text(stmt->as.assign.op) : "");
+            emit_expr(stmt->as.assign.value, out);
+            fputs(";\n", out);
+            break;
+        }
         emit_symbol(stmt->as.assign.symbol, out);
         fputs(" = ", out);
         if (stmt->as.assign.compound) {
@@ -702,7 +853,7 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
     case STMT_CIN:
         for (size_t i = 0; i < stmt->as.cin.count; i++) {
             indent(depth, out);
-            emit_read(stmt->as.cin.targets[i].symbol, out);
+            emit_read(&stmt->as.cin.targets[i], out);
         }
         break;
     case STMT_IF:
@@ -748,8 +899,10 @@ static void emit_block(const Block *block, int depth, FILE *out) {
 
 static void emit_variables(const SymbolList *variables, const char *prefix, FILE *out) {
     for (size_t i = 0; i < variables->count; i++) {
-        fprintf(out, "%s%s ", prefix, c_type(variables->items[i]->type));
-        emit_symbol(variables->items[i], out);
+        const Symbol *variable = variables->items[i];
+        fprintf(out, "%s%s ", prefix, c_type(variable->type));
+        emit_symbol(variable, out);
+        if (variable->is_array) fprintf(out, "[%zu]", variable->length);
         fputs(" = {0};\n", out);
     }
 }
@@ -760,11 +913,112 @@ static void emit_signature(const Stmt *func, FILE *out) {
     fputs("(", out);
     if (func->as.func.param_count == 0) fputs("void", out);
     for (size_t i = 0; i < func->as.func.param_count; i++) {
+        const Param *param = &func->as.func.params[i];
         if (i) fputs(", ", out);
-        fprintf(out, "%s ", c_type(func->as.func.params[i].type));
-        emit_symbol(func->as.func.params[i].symbol, out);
+        if (param->is_slice) {
+            emit_slice_type(param->type, out);
+            fputs(" ", out);
+        } else {
+            fprintf(out, "%s ", c_type(param->type));
+        }
+        emit_symbol(param->symbol, out);
     }
     fputs(")", out);
+}
+
+/* Writes the headers, type definitions and helpers recorded in `used`. */
+static void emit_runtime(FILE *out) {
+    /* Each array writer prints its elements with the writer for one value. */
+    const char *element_writers[TYPE_COUNT] = {0};
+    const char *element_casts[TYPE_COUNT] = {0};
+    for (int type = 0; type < TYPE_COUNT; type++) {
+        if (!used.array_writers[type]) continue;
+        element_writers[type] = value_writer(type, true, &element_casts[type]);
+        used.types[type] = true;
+        used.headers |= HEADER_STDDEF | HEADER_STDIO;
+    }
+
+    /* A helper can need another that sits anywhere in the list, so the set
+       is grown until it stops changing. */
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < HELPER_COUNT; i++) {
+            if (!used.helpers[i]) continue;
+            for (size_t j = 0; j < 4 && helpers[i].needs[j] != HELPER_NONE; j++) {
+                if (!used.helpers[helpers[i].needs[j]]) {
+                    used.helpers[helpers[i].needs[j]] = true;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    unsigned headers = used.headers;
+    for (int type = 0; type < TYPE_COUNT; type++) {
+        if (!used.slices[type]) continue;
+        used.types[type] = true;
+        headers |= HEADER_STDDEF;
+    }
+    for (int i = 0; i < HELPER_COUNT; i++) {
+        if (!used.helpers[i]) continue;
+        headers |= helpers[i].headers;
+        for (size_t j = 0; j < 3 && helpers[i].types[j] != TYPE_INVALID; j++) {
+            used.types[helpers[i].types[j]] = true;
+        }
+    }
+    if (used.types[TYPE_STRING]) headers |= HEADER_STDDEF;
+    for (int type = TYPE_INT; type <= TYPE_UINTPTR; type++) {
+        if (used.types[type] && type != TYPE_I128 && type != TYPE_U128) {
+            headers |= HEADER_STDINT;
+        }
+    }
+
+    static const struct {
+        Header header;
+        const char *name;
+    } header_names[] = {
+        {HEADER_ERRNO, "errno.h"},   {HEADER_STDDEF, "stddef.h"},
+        {HEADER_STDINT, "stdint.h"}, {HEADER_STDIO, "stdio.h"},
+        {HEADER_STDLIB, "stdlib.h"}, {HEADER_STRING, "string.h"},
+    };
+    for (size_t i = 0; i < sizeof header_names / sizeof header_names[0]; i++) {
+        if (headers & header_names[i].header) {
+            fprintf(out, "#include <%s>\n", header_names[i].name);
+        }
+    }
+    if (headers) fputs("\n", out);
+
+    bool any = false;
+    for (int type = 0; type < TYPE_COUNT; type++) {
+        if (!used.types[type] || !type_definitions[type]) continue;
+        fputs(type_definitions[type], out);
+        any = true;
+    }
+    for (int type = 0; type < TYPE_COUNT; type++) {
+        if (!used.slices[type]) continue;
+        fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
+                type_c_name(type), type_name(type));
+        any = true;
+    }
+    if (any) fputs("\n", out);
+
+    for (int i = 0; i < HELPER_COUNT; i++) {
+        if (used.helpers[i]) fprintf(out, "%s\n", helpers[i].definition);
+    }
+    for (int type = 0; type < TYPE_COUNT; type++) {
+        if (!used.array_writers[type]) continue;
+        fprintf(out,
+                "static void wind_write_array_%s(const %s *data, size_t len) {\n"
+                "    fputc('[', stdout);\n"
+                "    for (size_t i = 0; i < len; i++) {\n"
+                "        if (i) fputs(\", \", stdout);\n"
+                "        %s(%sdata[i]);\n"
+                "    }\n"
+                "    fputc(']', stdout);\n"
+                "}\n\n",
+                type_name(type), type_c_name(type), element_writers[type],
+                element_casts[type]);
+    }
 }
 
 static void emit_program(const Unit *unit, FILE *out) {
@@ -773,14 +1027,36 @@ static void emit_program(const Unit *unit, FILE *out) {
 
     for (size_t i = 0; i < unit->symbols.count; i++) {
         const Symbol *symbol = unit->symbols.items[i];
-        if (symbol->kind != SYM_CONST || symbol->type != TYPE_STRING) continue;
-        Str value = const_string(symbol);
-        fprintf(out, "static const %s ", c_type(TYPE_STRING));
-        emit_symbol(symbol, out);
-        fputs(" = { ", out);
-        emit_c_string(value, out);
-        fprintf(out, ", %zu };\n", value.len);
-        any = true;
+        if (symbol->kind != SYM_CONST) continue;
+        if (symbol->is_array) {
+            const Stmt *decl = symbol->decl;
+            fprintf(out, "static const %s ", c_type(symbol->type));
+            emit_symbol(symbol, out);
+            fprintf(out, "[%zu] = { ", symbol->length);
+            for (size_t j = 0; j < decl->as.decl.elem_count; j++) {
+                if (j) fputs(", ", out);
+                if (symbol->type == TYPE_STRING) {
+                    /* Spelled as a brace list: C does not accept a compound
+                       literal in a static initializer. */
+                    Str value = const_string(decl->as.decl.elems[j]);
+                    fputs("{ ", out);
+                    emit_c_string(value, out);
+                    fprintf(out, ", %zu }", value.len);
+                } else {
+                    emit_expr(decl->as.decl.elems[j], out);
+                }
+            }
+            fputs(" };\n", out);
+            any = true;
+        } else if (symbol->type == TYPE_STRING) {
+            Str value = const_string(symbol->decl->as.decl.init);
+            fprintf(out, "static const %s ", c_type(TYPE_STRING));
+            emit_symbol(symbol, out);
+            fputs(" = { ", out);
+            emit_c_string(value, out);
+            fprintf(out, ", %zu };\n", value.len);
+            any = true;
+        }
     }
     emit_variables(&unit->program.globals, "static ", out);
     if (any || unit->program.globals.count) fputs("\n", out);
@@ -805,21 +1081,27 @@ static void emit_program(const Unit *unit, FILE *out) {
         fputs("}\n\n", out);
     }
 
-    fputs("int main(void) {\n", out);
+    const Stmt *wind_main = unit->program.main;
+    bool takes_args = wind_main && wind_main->as.func.param_count > 0;
+    fputs(takes_args ? "int main(int argc, char **argv) {\n" : "int main(void) {\n", out);
     emit_variables(&unit->program.locals, "    ", out);
     emit_block(top, 1, out);
-    const Stmt *wind_main = unit->program.main;
-    if (wind_main && wind_main->as.func.ret == TYPE_INT) {
-        /* The value main returns is the process exit status. */
-        fputs("    return (int)", out);
-        emit_symbol(wind_main->as.func.symbol, out);
-        fputs("();\n}\n", out);
-        return;
-    }
     if (wind_main) {
-        fputs("    ", out);
+        /* The value an int main returns is the process exit status. */
+        bool returns_status = wind_main->as.func.ret == TYPE_INT;
+        fputs(returns_status ? "    return (int)" : "    ", out);
         emit_symbol(wind_main->as.func.symbol, out);
-        fputs("();\n", out);
+        if (takes_args) {
+            used.helpers[HELPER_ARGS] = true;
+            used.slices[TYPE_STRING] = true;
+            fprintf(out, "((%s)argc, wind_args(argc, argv));\n", c_type(TYPE_INT));
+        } else {
+            fputs("();\n", out);
+        }
+        if (returns_status) {
+            fputs("}\n", out);
+            return;
+        }
     }
     fputs("    return 0;\n}\n", out);
 }

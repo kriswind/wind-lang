@@ -1,5 +1,5 @@
 tests/err/main.wind:1:5: warning: variable 'total' is never used
 tests/err/main.wind:2:1: error: a file that defines 'main' can only have declarations at the top level; move this statement into a function
-tests/err/main.wind:3:8: error: 'main' cannot take parameters
+tests/err/main.wind:3:8: error: 'main' takes no parameters, or the program's arguments as '(int argc, string argv[])'
 tests/err/main.wind:3:8: error: 'main' must return 'int' or 'void', not 'string'
 tests/err/main.wind:6:1: error: a file that defines 'main' can only have declarations at the top level; move this statement into a function

@@ -1,0 +1,94 @@
+/* Fixed-size arrays, array parameters, len() and indexing. */
+
+const int Primes[5] = {2, 3, 5, 7, 11}
+const string Days[] = {"Mon", "Tue", "Wed"}
+const int Size = 4
+int totals[Size]
+
+int sum(int values[]) {
+    int total = 0
+    int i = 0
+next:
+    if i < len(values) {
+        total += values[i]
+        i++
+        goto next
+    }
+    return total
+}
+
+void fill(u8 out[], u8 value) {
+    int i = 0
+again:
+    if i < len(out) {
+        out[i] = value
+        i++
+        goto again
+    }
+}
+
+int last(int values[]) {
+    return values[-1]
+}
+
+void show(int values[]) {
+    cout << "parameter: " << values << "\n"
+}
+
+int relay(int values[]) {
+    return sum(values) // an array parameter can be passed on
+}
+
+int main() {
+    int nums[3] = {1, 2, 3};
+    cout << nums[0] << nums[1] << nums[2] << " len " << len(nums) << "\n"
+
+    nums[1] = 20
+    nums[2] += 5
+    nums[0]++
+    --nums[0]
+    cout << sum(nums) << " " << relay(nums) << "\n"
+
+    // Elements left out are zero, and an array without elements is all zero.
+    float partial[4] = {1.5, 2.5}
+    string names[2]
+    cout << partial[1] << partial[3] << "[" << names[1] << "]\n"
+
+    u8 bytes[] = {1, 2, 3, 4, 5, 6}
+    fill(bytes, 255)
+    bytes[5]++ // wraps at the width of u8
+    cout << bytes[0] << " " << bytes[5] << " " << sizeof(bytes) << " "
+    cout << sizeof(nums) / sizeof(nums[0]) << "\n"
+
+    cout << Primes[4] << " " << Days[2] << " " << len(Days) << "\n"
+    totals[Size - 1] = Primes[0] * 21
+    cout << totals[0] << totals[3] << "\n"
+
+    // Strings can be indexed and measured too.
+    string word = "wind"
+    cout << word[0] << word[len(word) - 1] << " " << len(word) << " " << len("") << "\n"
+
+    // A whole array prints as a list; strings and chars are quoted in it.
+    const string Tricky[] = {"a, b", "say \"hi\"", "tab\there", "back\\slash", ""}
+    char letters[] = {'x', '\'', '\n'}
+    bool flags[2] = {true}
+    i128 wide[] = {-170141183460469231731687303715884105728, 7}
+    f32 ratios[] = {0.5, 1.25}
+    cout << nums << " " << bytes << " " << partial << "\n"
+    cout << Days << " " << Tricky << "\n"
+    cout << letters << " " << flags << " " << wide << " " << ratios << " " << names << "\n"
+    show(nums)
+
+    // A negative index counts back from the end: -1 is the last element.
+    cout << nums[-1] << " " << nums[-3] << " " << word[-1] << " " << Days[-2] << "\n"
+    nums[-1] = 99
+    nums[-2]++
+    int back = -1
+    u8 front = 0
+    cout << nums[back] << " " << nums[back - 1] << " " << last(nums) << nums[front] << "\n"
+
+    int index = 2
+    cin >> nums[index] >> nums[0]
+    cout << nums[0] << " " << nums[2] << "\n"
+    return 0
+}
