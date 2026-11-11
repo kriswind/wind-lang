@@ -31,6 +31,8 @@ typedef enum {
     TYPE_F128,
 } TypeKind;
 
+#define TYPE_COUNT (TYPE_F128 + 1)
+
 const char *type_name(TypeKind type);
 /* The name of the C typedef the generated code uses for the type. */
 const char *type_c_name(TypeKind type);
