@@ -17,10 +17,12 @@ static void usage(FILE *out) {
     fputs("usage:\n"
           "  wind build <file.wind> [-o <output>]   compile to an executable\n"
           "  wind run <file.wind> [args...]         compile and run\n"
+          "  wind <file.wind> [args...]             same as run\n"
           "  wind check <file.wind>...              report errors and warnings\n"
           "  wind lsp                               run the language server on stdio\n"
           "  wind emit-c <file.wind>                print the generated C\n"
-          "  wind version                           print the version\n"
+          "  wind version | -v | --version          print the version\n"
+          "  wind help | -h | --help                show this help\n"
           "\n"
           "The C compiler is taken from $CC (default: cc).\n",
           out);
@@ -188,6 +190,20 @@ static int cmd_emit_c(int argc, char **argv) {
     return 0;
 }
 
+static const char *const version_spellings[] = {
+    "version", "--version", "-version", "--v", "-v", "-V", NULL,
+};
+static const char *const help_spellings[] = {
+    "help", "--help", "-help", "--h", "-h", "-?", NULL,
+};
+
+static bool is_one_of(const char *arg, const char *const *spellings) {
+    for (; *spellings; spellings++) {
+        if (strcmp(arg, *spellings) == 0) return true;
+    }
+    return false;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         usage(stderr);
@@ -199,15 +215,20 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "check") == 0) return cmd_check(argc - 2, argv + 2);
     if (strcmp(cmd, "lsp") == 0) return lsp_run();
     if (strcmp(cmd, "emit-c") == 0) return cmd_emit_c(argc - 2, argv + 2);
-    if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0) {
+    if (is_one_of(cmd, version_spellings)) {
         puts("wind " WIND_VERSION);
         return 0;
     }
-    if (strcmp(cmd, "help") == 0 || strcmp(cmd, "--help") == 0 ||
-        strcmp(cmd, "-h") == 0) {
+    if (is_one_of(cmd, help_spellings)) {
         usage(stdout);
         return 0;
     }
+    /* Anything that is not a command is taken as a program to run, if it
+       names a Wind source file or an existing file. */
+    size_t len = strlen(cmd);
+    bool is_source = len > 5 && strcmp(cmd + len - 5, ".wind") == 0;
+    if (is_source || access(cmd, F_OK) == 0) return cmd_run(argc - 1, argv + 1);
+
     fprintf(stderr, "wind: error: unknown command '%s'\n\n", cmd);
     usage(stderr);
     return 2;

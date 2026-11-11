@@ -29,7 +29,8 @@ cd wind-lang
 make            # produces build/wind
 make test
 
-build/wind run examples/hello.wind          # compile and run
+build/wind examples/hello.wind              # compile and run
+build/wind run examples/hello.wind          # the same, spelled out
 build/wind build examples/hello.wind -o hi  # compile to an executable
 build/wind check examples/hello.wind        # report errors and warnings only
 build/wind emit-c examples/hello.wind       # print the generated C
