@@ -1,0 +1,4 @@
+
+void main(int argc, string argv[]) {
+	cout << "argc: " << argc << " argv: " << argv << "\n"
+}
