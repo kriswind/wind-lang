@@ -1,0 +1,8 @@
+tests/err/recovery.wind:2:7: error: expected a type, found identifier
+tests/err/recovery.wind:3:17: error: unexpected character '@'
+tests/err/recovery.wind:3:21: error: unknown escape sequence '\q'
+tests/err/recovery.wind:3:33: error: unexpected character '<' (did you mean '<<'?)
+tests/err/recovery.wind:3:35: error: expected end of statement, found identifier
+tests/err/recovery.wind:5:1: error: expected an expression, found 'const'
+tests/err/recovery.wind:6:15: error: unexpected number '42'
+tests/err/recovery.wind:7:1: error: expected a statement, found identifier

@@ -1,0 +1,2 @@
+tests/err/redefined.wind:1:14: warning: constant 'A' is never used
+tests/err/redefined.wind:2:14: error: 'A' is already defined at line 1

@@ -1,0 +1,1 @@
+tests/err/undefined.wind:1:9: error: undefined name 'Missing'

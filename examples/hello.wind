@@ -1,0 +1,6 @@
+// Constants are immutable, compile-time strings.
+const string Greeting = "Hello from Wind!"
+const string s = "A string of characters"
+
+cout << Greeting << "\n"
+cout << "My String: " << s << "\n"

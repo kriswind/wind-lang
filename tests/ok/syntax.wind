@@ -1,0 +1,14 @@
+// Semicolons are optional and allow several statements on one line.
+const string A = "alpha"; const string Alias = A;
+cout << Alias << "\n";
+
+// A trailing '<<' or '=' continues the statement on the next line.
+const string Long =
+    "split"
+cout << Long <<
+    " across lines" <<
+    "\n"
+
+// Escapes, bytes that need care in the generated C, and the empty string.
+cout << "quote: \" backslash: \\" << "" << "\n" // trailing comment
+cout << "??/ 100% é 7\n"

@@ -1,0 +1,37 @@
+%YAML 1.2
+---
+name: Wind
+file_extensions: [wind]
+scope: source.wind
+
+contexts:
+  main:
+    - match: '//.*$'
+      scope: comment.line.double-slash.wind
+    - match: '"'
+      scope: punctuation.definition.string.begin.wind
+      push: string
+    - match: '\bconst\b'
+      scope: storage.modifier.wind
+    - match: '\bstring\b'
+      scope: storage.type.wind
+    - match: '\bcout\b'
+      scope: support.function.wind
+    - match: '<<'
+      scope: keyword.operator.wind
+    - match: '='
+      scope: keyword.operator.assignment.wind
+    - match: ';'
+      scope: punctuation.terminator.wind
+
+  string:
+    - meta_scope: string.quoted.double.wind
+    - match: '\\[ntr0\\"]'
+      scope: constant.character.escape.wind
+    - match: '\\.'
+      scope: invalid.illegal.escape.wind
+    - match: '"'
+      scope: punctuation.definition.string.end.wind
+      pop: true
+    - match: '$'
+      pop: true

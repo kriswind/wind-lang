@@ -1,0 +1,7 @@
+const string Good = "ok"
+const int Bad = "x"
+cout << Good << @ "a\q" << "é" < Good
+cout <<
+const string Later = "still parsed"
+cout << Later 42
+hello

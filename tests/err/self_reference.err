@@ -1,0 +1,2 @@
+tests/err/self_reference.wind:1:14: warning: constant 'A' is never used
+tests/err/self_reference.wind:1:18: error: undefined name 'A'

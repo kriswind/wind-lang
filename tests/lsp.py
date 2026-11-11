@@ -1,0 +1,108 @@
+"""Drives `wind lsp` over stdio and checks its responses.
+
+Run from the repository root: python3 tests/lsp.py
+"""
+import json
+import subprocess
+import sys
+
+URI = "file:///test.wind"
+# Line 1 holds an astral character (two UTF-16 units, four bytes) before the
+# use of Name, so byte columns and LSP columns differ.
+TEXT = 'const string Name = "v\\n"\ncout << "\U0001F600é" << Name << Nope\n'
+
+proc = subprocess.Popen(["build/wind", "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+next_id = 0
+failures = 0
+
+
+def send(payload):
+    body = json.dumps(payload).encode()
+    proc.stdin.write(b"Content-Length: %d\r\n\r\n%s" % (len(body), body))
+    proc.stdin.flush()
+
+
+def read():
+    length = None
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            sys.exit("FAIL server closed the stream")
+        if line == b"\r\n":
+            break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":")[1])
+    return json.loads(proc.stdout.read(length))
+
+
+def notify(method, params):
+    send({"jsonrpc": "2.0", "method": method, "params": params})
+
+
+def request(method, params):
+    global next_id
+    next_id += 1
+    send({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params})
+    reply = read()
+    check(method + " id", reply.get("id"), next_id)
+    return reply
+
+
+def check(what, actual, expected):
+    global failures
+    if actual != expected:
+        failures += 1
+        print("FAIL %s\n  expected %r\n  actual   %r" % (what, expected, actual))
+
+
+def rng(line, start, end):
+    return {"start": {"line": line, "character": start}, "end": {"line": line, "character": end}}
+
+
+def at(line, character):
+    return {"textDocument": {"uri": URI}, "position": {"line": line, "character": character}}
+
+
+caps = request("initialize", {"capabilities": {}})["result"]["capabilities"]
+check("sync", caps["textDocumentSync"], {"openClose": True, "change": 1})
+notify("initialized", {})
+
+notify("textDocument/didOpen", {"textDocument": {"uri": URI, "languageId": "wind", "version": 1, "text": TEXT}})
+diags = read()
+check("publish method", diags["method"], "textDocument/publishDiagnostics")
+check("publish uri", diags["params"]["uri"], URI)
+check("diagnostics", diags["params"]["diagnostics"], [
+    {"range": rng(1, 25, 29), "severity": 1, "source": "wind", "message": "undefined name 'Nope'"},
+])
+
+hover = request("textDocument/hover", at(1, 18))["result"]
+check("hover text", hover["contents"]["value"], '```wind\nconst string Name = "v\\n"\n```')
+check("hover range", hover["range"], rng(1, 17, 21))
+check("hover on nothing", request("textDocument/hover", at(1, 2))["result"], None)
+
+check("definition", request("textDocument/definition", at(1, 21))["result"],
+      {"uri": URI, "range": rng(0, 13, 17)})
+
+labels = [item["label"] for item in request("textDocument/completion", at(1, 5))["result"]]
+check("completion", labels, ["const", "string", "cout", "Name"])
+labels = [item["label"] for item in request("textDocument/completion", at(0, 0))["result"]]
+check("completion above declaration", labels, ["const", "string", "cout"])
+
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 2},
+                                  "contentChanges": [{"text": 'const string Unused = "x"\n'}]})
+check("diagnostics after change", read()["params"]["diagnostics"], [
+    {"range": rng(0, 13, 19), "severity": 2, "source": "wind", "message": "constant 'Unused' is never used"},
+])
+
+notify("$/setTrace", {"value": "off"})
+check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
+
+notify("textDocument/didClose", {"textDocument": {"uri": URI}})
+check("diagnostics after close", read()["params"]["diagnostics"], [])
+
+check("shutdown", request("shutdown", None)["result"], None)
+notify("exit", None)
+check("exit code", proc.wait(timeout=5), 0)
+
+print("lsp: %s" % ("ok" if not failures else "%d failure(s)" % failures))
+sys.exit(1 if failures else 0)

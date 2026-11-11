@@ -1,0 +1,20 @@
+---
+name: wind
+description: Compiler, linter and language server for the Wind programming language.
+homepage: https://github.com/kriswind/wind-lang
+licenses:
+  - proprietary
+languages:
+  - Wind
+categories:
+  - LSP
+  - Linter
+  - Compiler
+
+source:
+  id: pkg:github/kriswind/wind-lang@v0.1.0
+  build:
+    run: make
+
+bin:
+  wind: build/wind
