@@ -1,8 +1,12 @@
+do {
+	cout << "this prints" << "\n"
+} while false
 
-cin >> int input
+while false {
+	cout << "this is unreachable"
+}
 
-if input == 5 {
-	cout << "yippie"
-} else {
-	cout << "nopi"
+for ;; {
+	cout << "this is reachable" << "\n"
+	break;
 }
