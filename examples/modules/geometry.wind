@@ -1,0 +1,15 @@
+// A module: other files reach what it exports as geometry.name.
+export const int SIDES[3] = {3, 4, 5}
+
+export int area(int width, int height) { return width * height }
+
+export int perimeter(int width, int height) { return 2 * (width + height) }
+
+export string name(int sides) {
+    return sides == 3 ? "triangle" : sides == 4 ? "rectangle" : "polygon"
+}
+
+// Not exported, so only this file can call it.
+int square(int n) { return n * n }
+
+export int hypotenuse_squared(int a, int b) { return square(a) + square(b) }

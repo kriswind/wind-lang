@@ -1,0 +1,14 @@
+// Run with: wind examples/modules/main.wind
+import "geometry.wind"
+import "geometry.wind" as geo
+
+int width = 3
+int height = 4
+
+cout << geometry.name(4) << " " << width << "x" << height << "\n"
+cout << "area " << geometry.area(width, height) << "\n"
+cout << "perimeter " << geo.perimeter(width, height) << "\n"
+cout << "diagonal squared " << geo.hypotenuse_squared(width, height) << "\n"
+
+for (int i = 0; i < len(geo.SIDES); i++)
+    cout << geo.SIDES[i] << " sides: " << geo.name(geo.SIDES[i]) << "\n"

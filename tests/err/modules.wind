@@ -1,0 +1,33 @@
+import "modules/good.wind"
+import "modules/good.wind" as g
+import "modules/good.wind"
+import "modules/missing.wind"
+import "modules/broken.wind"
+import "modules/script.wind"
+import "modules/loop_a.wind"
+import "modules/2d.wind"
+import "modules/2d.wind" as for
+import "modules.wind" as self
+import "modules/good.wind" as unused
+import ""
+import good
+int main() {
+    import "modules/good.wind" as inner
+    int x = good.secret()
+    x = good.hidden
+    x = good.nope + g.SIZE
+    x = good
+    x = x.SIZE
+    x = nowhere.SIZE
+    good.SIZE = 3
+    good.get
+    good = 2
+    good.TABLE[0] = 1
+    good.nothing(1)
+    x = good.get() + broken.twice(2)
+    cout << good.TABLE << good.get << "\n"
+    return x
+}
+export int value = 3
+export cout << "x"
+void local() { export const int Y = 1 }

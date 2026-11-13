@@ -1,0 +1,15 @@
+// A file with its own main can be imported; its main is left alone.
+int start() { return 40 }
+
+// Initialized before the importing program starts.
+int count = start() + 2
+
+export int next() {
+    count++
+    return count
+}
+
+int main() {
+    cout << "counter run directly: " << next() << "\n"
+    return 0
+}

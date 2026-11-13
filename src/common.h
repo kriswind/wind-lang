@@ -87,6 +87,20 @@ const char *severity_name(Severity severity);
 void *xmalloc(size_t size);
 void *xrealloc(void *ptr, size_t size);
 
+/* Reads a whole file into memory from malloc. Returns false, with errno
+   set, if it cannot be read. */
+bool file_read(const char *path, Str *out);
+
+/* The path that "written" names when it appears in the file at "from": taken
+   from that file's directory unless it is absolute. from may be NULL, for the
+   current directory. The result comes from malloc. */
+char *path_beside(const char *from, Str written);
+
+/* The absolute path of an existing file with every link resolved, from
+   malloc, so that two spellings of one file compare equal. Returns NULL,
+   with errno set, if there is no such file. */
+char *path_canonical(const char *path);
+
 /* For failures of the tool itself (I/O, memory), not of the program being
    compiled; those go through diag_add. */
 _Noreturn void fatal(const char *fmt, ...);

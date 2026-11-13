@@ -1,0 +1,36 @@
+tests/err/modules/good.wind:6:5: warning: function 'secret' is never used
+tests/err/modules/broken.wind:2:27: error: 'bad' returns 'int', found 'string'
+tests/err/modules/script.wind:2:1: error: an imported file can only have declarations at the top level; move this statement into a function
+tests/err/modules/loop_b.wind:1:8: error: import cycle: 'loop_a.wind' leads back to itself
+tests/err/modules/loop_a.wind:1:8: error: 'loop_b.wind' has errors
+tests/err/modules.wind:3:8: error: 'good' is already defined at line 1
+tests/err/modules.wind:4:8: error: cannot open 'tests/err/modules/missing.wind': No such file or directory
+tests/err/modules.wind:5:8: error: 'modules/broken.wind' has errors
+tests/err/modules.wind:6:8: error: 'modules/script.wind' has errors
+tests/err/modules.wind:7:8: error: 'modules/loop_a.wind' has errors
+tests/err/modules.wind:8:8: error: '2d' cannot be used as a name; give the import one with 'as name'
+tests/err/modules.wind:9:29: error: expected a name, found 'for'
+tests/err/modules.wind:10:8: error: import cycle: 'modules.wind' leads back to itself
+tests/err/modules.wind:11:31: warning: module 'unused' is never used
+tests/err/modules.wind:12:8: error: an import needs the path of a file
+tests/err/modules.wind:13:8: error: expected string literal, found a name
+tests/err/modules.wind:15:5: error: an import can only be at the top level of a file
+tests/err/modules.wind:16:18: error: 'secret' is private to module 'good'; mark it 'export' there to use it here
+tests/err/modules.wind:17:14: error: 'hidden' is private to module 'good'; mark it 'export' there to use it here
+tests/err/modules.wind:18:14: error: module 'good' has no 'nope'
+tests/err/modules.wind:19:9: error: 'good' is a module; use what it exports as 'good.name'
+tests/err/modules.wind:20:9: error: 'x' is a variable, not a module
+tests/err/modules.wind:21:9: error: undefined name 'nowhere'
+tests/err/modules.wind:22:5: error: what a module exports can be called or read, but not changed
+tests/err/modules.wind:23:5: error: what a module exports can be called or read, but not changed
+tests/err/modules.wind:24:5: error: cannot assign to module 'good'
+tests/err/modules.wind:25:5: error: what a module exports can be called or read, but not changed
+tests/err/modules.wind:26:5: error: 'nothing' takes 0 arguments, but 1 was given
+tests/err/modules.wind:28:27: error: 'get' is a function; call it with '()'
+tests/err/modules.wind:31:12: error: a variable cannot be exported; export a function that returns it
+tests/err/modules.wind:31:12: warning: variable 'value' is never used
+tests/err/modules.wind:32:8: error: expected a function or a constant after 'export', found 'cout'
+tests/err/modules.wind:32:8: error: a file that defines 'main' can only have declarations at the top level; move this statement into a function
+tests/err/modules.wind:33:6: warning: function 'local' is never used
+tests/err/modules.wind:33:16: error: 'export' can only be used at the top level of a file
+tests/err/modules.wind:33:33: warning: constant 'Y' is never used

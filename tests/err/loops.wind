@@ -17,4 +17,3 @@ int g() { while true { break } }
 int h() { for (;;) { if i > 3 { break } } }
 int ok() { while true { while true { break } } }
 int while = 3
-for (i = 0; i < 3; i++) cout << i

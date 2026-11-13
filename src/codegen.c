@@ -511,12 +511,17 @@ static void emit_c_string(Str s, FILE *out) {
 static void emit_symbol(const Symbol *symbol, FILE *out) {
     int len = (int)symbol->name.len;
     const char *name = symbol->name.data;
+    /* What an imported file declares carries the file's number, so that two
+       files can use one name. */
+    fputs("wind_", out);
+    if (symbol->unit->id) fprintf(out, "m%d_", symbol->unit->id);
     switch (symbol->kind) {
-    case SYM_FUNC:  fprintf(out, "wind_f_%.*s", len, name); break;
-    case SYM_LABEL: fprintf(out, "wind_l_%.*s", len, name); break;
-    case SYM_CONST: fprintf(out, "wind_c%d_%.*s", symbol->id, len, name); break;
+    case SYM_FUNC:   fprintf(out, "f_%.*s", len, name); break;
+    case SYM_LABEL:  fprintf(out, "l_%.*s", len, name); break;
+    case SYM_CONST:  fprintf(out, "c%d_%.*s", symbol->id, len, name); break;
     case SYM_VAR:
-    case SYM_PARAM: fprintf(out, "wind_v%d_%.*s", symbol->id, len, name); break;
+    case SYM_PARAM:  fprintf(out, "v%d_%.*s", symbol->id, len, name); break;
+    case SYM_MODULE: break; /* never emitted: a module is not a value */
     }
 }
 
@@ -650,7 +655,13 @@ static void emit_expr(const Expr *expr, FILE *out) {
     case EXPR_LEN: {
         const Expr *operand = expr->as.len.operand;
         fprintf(out, "((%s)", c_type(TYPE_INT));
-        if (!is_array_name(operand)) {
+        bool is_const_string = operand->kind == EXPR_STRING_LIT ||
+                               (operand->kind == EXPR_IDENT && !is_array_name(operand) &&
+                                operand->as.ident.symbol->kind == SYM_CONST);
+        if (is_const_string) {
+            /* Written as a number so that it can sit in a C initializer. */
+            fprintf(out, "%zu)", const_string(operand).len);
+        } else if (!is_array_name(operand)) {
             fputs("(", out);
             emit_expr(operand, out);
             fputs(").len)", out);
@@ -723,6 +734,15 @@ static void emit_expr(const Expr *expr, FILE *out) {
         fprintf(out, "((%s)", c_type(expr->type));
         emit_expr(expr->as.cast.operand, out);
         fputs(")", out);
+        break;
+    case EXPR_TERNARY:
+        fputs("((", out);
+        emit_expr(expr->as.ternary.cond, out);
+        fputs(") ? (", out);
+        emit_expr(expr->as.ternary.then, out);
+        fputs(") : (", out);
+        emit_expr(expr->as.ternary.otherwise, out);
+        fputs("))", out);
         break;
     case EXPR_CIN_OK:
         used.helpers[HELPER_CIN_STATE] = true;
@@ -861,6 +881,7 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
     switch (stmt->kind) {
     case STMT_CONST:
     case STMT_FUNC:
+    case STMT_IMPORT:
         break;
     case STMT_VAR:
         indent(depth, out);
@@ -1159,10 +1180,10 @@ static void emit_runtime(FILE *out) {
     }
 }
 
-static void emit_program(const Unit *unit, FILE *out) {
-    const Block *top = &unit->program.top;
+/* Emits the constants that need storage and the top-level variables of one
+   file. */
+static void emit_data(const Unit *unit, FILE *out) {
     bool any = false;
-
     for (size_t i = 0; i < unit->symbols.count; i++) {
         const Symbol *symbol = unit->symbols.items[i];
         if (symbol->kind != SYM_CONST) continue;
@@ -1198,9 +1219,11 @@ static void emit_program(const Unit *unit, FILE *out) {
     }
     emit_variables(&unit->program.globals, "static ", out);
     if (any || unit->program.globals.count) fputs("\n", out);
+}
 
-    /* Prototypes first, so functions can call each other in any order. */
-    any = false;
+static void emit_prototypes(const Unit *unit, FILE *out) {
+    const Block *top = &unit->program.top;
+    bool any = false;
     for (size_t i = 0; i < top->count; i++) {
         if (top->stmts[i]->kind != STMT_FUNC) continue;
         emit_signature(top->stmts[i], out);
@@ -1208,7 +1231,10 @@ static void emit_program(const Unit *unit, FILE *out) {
         any = true;
     }
     if (any) fputs("\n", out);
+}
 
+static void emit_functions(const Unit *unit, FILE *out) {
+    const Block *top = &unit->program.top;
     for (size_t i = 0; i < top->count; i++) {
         const Stmt *func = top->stmts[i];
         if (func->kind != STMT_FUNC) continue;
@@ -1218,11 +1244,30 @@ static void emit_program(const Unit *unit, FILE *out) {
         emit_block(&func->as.func.body, 1, out);
         fputs("}\n\n", out);
     }
+}
 
+/* Emits the program's files as one C file: the imported ones in an order
+   that puts each after the files it imports, then the root. All data and
+   prototypes come before any function body, so that functions can call each
+   other in any order and across files. */
+static void emit_program(const Unit *unit, FILE *out) {
+    for (size_t i = 0; i < unit->module_count; i++) emit_data(unit->modules[i], out);
+    emit_data(unit, out);
+    for (size_t i = 0; i < unit->module_count; i++) emit_prototypes(unit->modules[i], out);
+    emit_prototypes(unit, out);
+    for (size_t i = 0; i < unit->module_count; i++) emit_functions(unit->modules[i], out);
+    emit_functions(unit, out);
+
+    const Block *top = &unit->program.top;
     const Stmt *wind_main = unit->program.main;
     bool takes_args = wind_main && wind_main->as.func.param_count > 0;
     fputs(takes_args ? "int main(int argc, char **argv) {\n" : "int main(void) {\n", out);
     emit_variables(&unit->program.locals, "    ", out);
+    /* An imported file's top level holds only declarations; running it
+       initializes the file's variables. */
+    for (size_t i = 0; i < unit->module_count; i++) {
+        emit_block(&unit->modules[i]->program.top, 1, out);
+    }
     emit_block(top, 1, out);
     if (wind_main) {
         /* The value an int main returns is the process exit status. */

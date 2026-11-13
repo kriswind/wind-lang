@@ -3,6 +3,7 @@
 Run from the repository root: python3 tests/lsp.py
 """
 import json
+import os
 import subprocess
 import sys
 
@@ -64,7 +65,8 @@ def at(line, character):
 
 
 caps = request("initialize", {"capabilities": {}})["result"]["capabilities"]
-check("sync", caps["textDocumentSync"], {"openClose": True, "change": 1})
+check("sync", caps["textDocumentSync"], {"openClose": True, "change": 1, "save": True})
+check("completion triggers", caps["completionProvider"], {"triggerCharacters": [".", '"', "/"]})
 notify("initialized", {})
 
 notify("textDocument/didOpen", {"textDocument": {"uri": URI, "languageId": "wind", "version": 1, "text": TEXT}})
@@ -160,6 +162,62 @@ check("unreachable code is tagged and spans lines", read()["params"]["diagnostic
     {"range": rng(6, 14, 23), "severity": 2, "source": "wind",
      "message": "unreachable code: the loop's condition is always false", "tags": [1]},
 ])
+
+# A document that imports a file on disk. The document itself is not on
+# disk; its URI only says where its imports are looked up.
+MODULES = os.path.abspath("tests/ok/modules")
+UTIL_URI = "file://" + MODULES + "/util.wind"
+MAIN_URI = "file://" + MODULES + "/unsaved%20main.wind"
+MAIN = 'import "util.wind" as u\ncout << u.scaled(u.SCALE) << u.calls\ncout << u.\n'
+
+
+def at_main(line, character):
+    return {"textDocument": {"uri": MAIN_URI}, "position": {"line": line, "character": character}}
+
+
+notify("textDocument/didOpen", {"textDocument": {"uri": MAIN_URI, "languageId": "wind", "version": 1, "text": MAIN}})
+check("diagnostics with an import", [d["message"] for d in read()["params"]["diagnostics"]], [
+    "'calls' is private to module 'u'; mark it 'export' there to use it here",
+    "expected a name, found end of line",
+])
+hover = request("textDocument/hover", at_main(1, 12))["result"]
+check("hover imported function", hover["contents"]["value"], "```wind\nexport int scaled(int n)\n```")
+hover = request("textDocument/hover", at_main(1, 20))["result"]
+check("hover imported constant", hover["contents"]["value"], "```wind\nexport const int SCALE = 10\n```")
+hover = request("textDocument/hover", at_main(1, 8))["result"]
+check("hover module", hover["contents"]["value"], '```wind\nimport "util.wind" as u\n```')
+check("definition in imported file", request("textDocument/definition", at_main(1, 12))["result"],
+      {"uri": UTIL_URI, "range": rng(6, 11, 17)})
+check("definition of module", request("textDocument/definition", at_main(1, 8))["result"],
+      {"uri": UTIL_URI, "range": rng(0, 0, 0)})
+check("definition of module name", request("textDocument/definition", at_main(0, 22))["result"],
+      {"uri": UTIL_URI, "range": rng(0, 0, 0)})
+members = sorted(item["label"] for item in request("textDocument/completion", at_main(2, 10))["result"])
+check("completion after a module", members, ["SCALE", "UNIT", "call_count", "scaled"])
+names = [item["label"] for item in request("textDocument/completion", at_main(1, 0))["result"]]
+check("completion offers the module", "u" in names, True)
+notify("textDocument/didSave", {"textDocument": {"uri": MAIN_URI}})
+check("save re-analyzes the first document", read()["params"]["uri"], URI)
+check("save re-analyzes the second document", len(read()["params"]["diagnostics"]), 2)
+notify("textDocument/didChange", {"textDocument": {"uri": MAIN_URI, "version": 2},
+                                  "contentChanges": [{"text": 'import "ut\nimport "../mod\ncout << "import "\n'}]})
+read()
+items = request("textDocument/completion", at_main(0, 10))["result"]
+check("import completion lists the directory's files", sorted(item["label"] for item in items),
+      ["my-counter.wind", "shapes.wind", "util.wind"])
+check("import completion replaces what was typed", [item["textEdit"] for item in items if item["label"] == "util.wind"],
+      [{"range": rng(0, 8, 10), "newText": "util.wind"}])
+items = request("textDocument/completion", at_main(1, 14))["result"]
+check("import completion gives whole paths through directories",
+      [n in [item["label"] for item in items]
+       for n in ("../modules/util.wind", "../hello.wind", "../modules/", "../hello.out", "../modules/unsaved main.wind")],
+      [True, True, False, False, False])
+check("import completion replaces the whole path",
+      [item["textEdit"]["range"] for item in items if item["label"] == "../modules/util.wind"], [rng(1, 8, 14)])
+other = [item["label"] for item in request("textDocument/completion", at_main(2, 16))["result"]]
+check("no path completion in other strings", "util.wind" in other, False)
+notify("textDocument/didClose", {"textDocument": {"uri": MAIN_URI}})
+check("diagnostics after closing the importer", read()["params"]["diagnostics"], [])
 
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)

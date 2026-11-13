@@ -1,0 +1,2 @@
+export int twice(int n) { return n * 2 }
+export int bad() { return "no" }

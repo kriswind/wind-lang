@@ -1,0 +1,8 @@
+int sum(int a[]) {
+    const int from_parameter = len(a)
+    string s = "x"
+    const int from_variable = len(s)
+    int sized[len(a)]
+    return from_parameter + from_variable + sized[0]
+}
+cout << sum(1)

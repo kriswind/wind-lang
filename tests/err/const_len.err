@@ -1,0 +1,4 @@
+tests/err/const_len.wind:2:32: error: a constant's value must be known at compile time; use a variable for this
+tests/err/const_len.wind:4:31: error: a constant's value must be known at compile time; use a variable for this
+tests/err/const_len.wind:5:15: error: an array's length must be an integer known at compile time
+tests/err/const_len.wind:8:13: error: argument 1 of 'sum' must be an array of 'int'

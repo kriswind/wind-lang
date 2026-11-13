@@ -23,6 +23,8 @@ static const struct {
     {"true", TOK_KW_TRUE, TYPE_INVALID},
     {"false", TOK_KW_FALSE, TYPE_INVALID},
     {"sizeof", TOK_KW_SIZEOF, TYPE_INVALID},
+    {"import", TOK_KW_IMPORT, TYPE_INVALID},
+    {"export", TOK_KW_EXPORT, TYPE_INVALID},
     {"void", TOK_TYPE, TYPE_VOID},
     {"bool", TOK_TYPE, TYPE_BOOL},
     {"string", TOK_TYPE, TYPE_STRING},
@@ -112,6 +114,8 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_TRUE:   return "'true'";
     case TOK_KW_FALSE:  return "'false'";
     case TOK_KW_SIZEOF: return "'sizeof'";
+    case TOK_KW_IMPORT: return "'import'";
+    case TOK_KW_EXPORT: return "'export'";
     case TOK_KW_UNSIGNED: return "'unsigned'";
     case TOK_KW_SIGNED: return "'signed'";
     case TOK_KW_LONG:   return "'long'";
@@ -127,6 +131,8 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_RBRACKET:  return "']'";
     case TOK_COMMA:     return "','";
     case TOK_COLON:     return "':'";
+    case TOK_QUESTION:  return "'?'";
+    case TOK_DOT:       return "'.'";
     case TOK_PLUS:      return "'+'";
     case TOK_MINUS:     return "'-'";
     case TOK_STAR:      return "'*'";
@@ -466,6 +472,8 @@ Token lexer_next(Lexer *lexer) {
         case ']': tok.kind = TOK_RBRACKET; break;
         case ',': tok.kind = TOK_COMMA;   break;
         case ':': tok.kind = TOK_COLON;   break;
+        case '?': tok.kind = TOK_QUESTION; break;
+        case '.': tok.kind = TOK_DOT;     break;
         case '+':
             tok.kind = match(lexer, '+') ? TOK_INC : match(lexer, '=') ? TOK_PLUS_EQ : TOK_PLUS;
             break;

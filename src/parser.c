@@ -9,8 +9,10 @@
  *   program    = { statement } EOF
  *   block      = "{" { statement } "}"
  *   statement  = ( const_decl | var_decl | assign | call | cout | cin | goto
- *                | return | do_while | "break" | "continue" ) terminator
- *              | if | while | for | func | label
+ *                | return | do_while | "break" | "continue" | import
+ *                | "export" const_decl ) terminator
+ *              | if | while | for | [ "export" ] func | label
+ *   import     = "import" STRING [ "as" IDENT ]
  *   terminator = NEWLINE | ";" | EOF | before "}"
  *
  *   const_decl = "const" type IDENT "=" expr
@@ -26,17 +28,19 @@
  *   goto       = "goto" IDENT
  *   label      = IDENT ":"
  *   return     = "return" [ expr ]
- *   if         = "if" expr block [ "else" ( if | block ) ]
- *   while      = "while" expr block
- *   do_while   = "do" block "while" expr
- *   for        = "for" "(" clauses ")" block | "for" clauses block
+ *   if         = "if" expr block [ "else" body ]
+ *              | "if" "(" expr ")" body [ "else" body ]
+ *   while      = "while" expr block | "while" "(" expr ")" body
+ *   do_while   = "do" body "while" expr
+ *   for        = "for" "(" clauses ")" body | "for" clauses block
+ *   body       = block | statement
  *   clauses    = [ simple ] ";" [ expr ] ";" [ simple ]
  *   simple     = var_decl | assign | call
  *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
  *   param      = type IDENT [ "[" "]" ]
  *   type       = TYPE | a C spelling such as "unsigned long" (see parse_type)
  *
- *   expr       = or
+ *   expr       = or [ "?" expr ":" expr ]
  *   or         = and { "||" and }
  *   and        = compare { "&&" compare }
  *   compare    = bit_or { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) bit_or }
@@ -48,17 +52,26 @@
  *   term       = unary { ( "*" | "/" | "%" ) unary }
  *   unary      = ( "-" | "!" | "~" ) unary | postfix
  *   postfix    = primary { "[" expr "]" }
- *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | IDENT
- *              | call | type "(" expr ")" | "(" expr ")"
+ *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | name
+ *              | call | type "(" expr ")" | "(" type ")" unary | "(" expr ")"
  *              | "sizeof" "(" type ")" | "sizeof" unary | "cin"
- *   call       = IDENT "(" [ expr { "," expr } ] ")"
+ *   call       = name "(" [ expr { "," expr } ] ")"
+ *   name       = IDENT | IDENT "." IDENT
  *
  * In a cout statement "<<" separates the values, so a shift there must be
  * inside parentheses (or brackets, or a call's arguments).
  *
- * Functions may only appear at the top level. A newline does not end a
+ * A body without braces holds one statement, which may not be a declaration
+ * or a label. It is only allowed where the header before it ends visibly: at
+ * a ")" that closes the whole condition, or after "else" or "do".
+ *
+ * "as" is only special after an import's path, and is otherwise a name.
+ * "IDENT.IDENT" names something that an imported file exports.
+ *
+ * Functions, imports and "export" may only appear at the top level. A newline does not end a
  * statement directly after "=", "<<", ">>", "," or a binary operator, inside
- * parentheses, or between an "if" condition or "}" and what follows it.
+ * parentheses, before or after the "?" and ":" of a conditional, or between a
+ * condition or "}" and what follows it.
  *
  * Error handling: a parse function that fails reports one diagnostic and
  * returns NULL (or false). The statement is dropped and parsing resumes at
@@ -262,6 +275,67 @@ static Expr *parse_call(Parser *p, Token name) {
     return call;
 }
 
+/* Called at the "." that follows a module's name: parses the name taken
+   from the module, and the call if it is one. */
+static Expr *parse_member(Parser *p, Token module) {
+    Token name;
+    next(p);
+    if (!expect(p, TOK_IDENT, &name)) return NULL;
+    if (at(p, TOK_LPAREN)) {
+        Expr *call = parse_call(p, name);
+        if (!call) return NULL;
+        call->as.call.module = module.text;
+        call->as.call.module_loc = module.loc;
+        call->loc = span(module.loc, p->prev);
+        return call;
+    }
+    Expr *expr = new_expr(p, EXPR_IDENT, span(module.loc, name.loc));
+    expr->as.ident.name = name.text;
+    expr->as.ident.name_loc = name.loc;
+    expr->as.ident.module = module.text;
+    expr->as.ident.module_loc = module.loc;
+    return expr;
+}
+
+/* True if the next token that is not a newline is of the given kind, which
+   lets an expression carry on from the start of a following line. Looks
+   ahead without consuming anything. */
+static bool continues_with(Parser *p, TokenKind kind) {
+    if (!at(p, TOK_NEWLINE)) return at(p, kind);
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    Token tok;
+    do tok = lexer_next(&lexer);
+    while (tok.kind == TOK_NEWLINE);
+    /* Problems found while looking ahead are dropped here; they are
+       reported when the tokens are parsed. */
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    return tok.kind == kind;
+}
+
+/* True at a "(" that opens a C-style cast: one holding a type and nothing
+   else. Looks ahead without consuming anything. */
+static bool at_c_cast(Parser *p) {
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    bool has_type = false;
+    Token tok = lexer_next(&lexer);
+    while (tok.kind == TOK_TYPE || tok.kind == TOK_KW_UNSIGNED ||
+           tok.kind == TOK_KW_SIGNED || tok.kind == TOK_KW_LONG ||
+           tok.kind == TOK_KW_SHORT) {
+        has_type = true;
+        tok = lexer_next(&lexer);
+    }
+    /* Problems found while looking ahead are dropped here; they are
+       reported when the tokens are parsed. */
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    return has_type && tok.kind == TOK_RPAREN;
+}
+
 static Expr *parse_primary(Parser *p) {
     Token tok = p->tok;
     Expr *expr;
@@ -314,10 +388,24 @@ static Expr *parse_primary(Parser *p) {
     case TOK_IDENT:
         next(p);
         if (at(p, TOK_LPAREN)) return parse_call(p, tok);
+        if (at(p, TOK_DOT)) return parse_member(p, tok);
         expr = new_expr(p, EXPR_IDENT, tok.loc);
         expr->as.ident.name = tok.text;
+        expr->as.ident.name_loc = tok.loc;
         return expr;
     case TOK_LPAREN:
+        if (at_c_cast(p)) {
+            TypeKind to;
+            next(p);
+            if (!parse_type(p, &to)) return NULL;
+            if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+            Expr *operand = parse_unary(p);
+            if (!operand) return NULL;
+            expr = new_expr(p, EXPR_CAST, span(tok.loc, operand->loc));
+            expr->as.cast.to = to;
+            expr->as.cast.operand = operand;
+            return expr;
+        }
         next(p);
         skip_newlines(p);
         expr = parse_enclosed_expr(p);
@@ -325,6 +413,7 @@ static Expr *parse_primary(Parser *p) {
         skip_newlines(p);
         if (!expect(p, TOK_RPAREN, NULL)) return NULL;
         expr->loc = span(tok.loc, p->prev);
+        expr->parenthesized = true;
         return expr;
     default:
         error_expected(p, "an expression");
@@ -413,7 +502,23 @@ static Expr *parse_binary(Parser *p, int min_precedence) {
 }
 
 static Expr *parse_expr(Parser *p) {
-    return parse_binary(p, 1);
+    Expr *cond = parse_binary(p, 1);
+    if (!cond || !continues_with(p, TOK_QUESTION)) return cond;
+    skip_newlines(p);
+    next(p);
+    skip_newlines(p);
+    Expr *then = parse_expr(p);
+    if (!then) return NULL;
+    if (continues_with(p, TOK_COLON)) skip_newlines(p);
+    if (!expect(p, TOK_COLON, NULL)) return NULL;
+    skip_newlines(p);
+    Expr *otherwise = parse_expr(p);
+    if (!otherwise) return NULL;
+    Expr *expr = new_expr(p, EXPR_TERNARY, span(cond->loc, otherwise->loc));
+    expr->as.ternary.cond = cond;
+    expr->as.ternary.then = then;
+    expr->as.ternary.otherwise = otherwise;
+    return expr;
 }
 
 /* ---- Statements ---- */
@@ -439,6 +544,8 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_CONTINUE:
     case TOK_KW_GOTO:
     case TOK_KW_RETURN:
+    case TOK_KW_IMPORT:
+    case TOK_KW_EXPORT:
         return true;
     default:
         return false;
@@ -633,35 +740,71 @@ static Stmt *parse_cin(Parser *p) {
     return stmt;
 }
 
+static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
+
+/* Parses the body of an if or a loop: a block, or one statement that stands
+   for a block holding it. braces_optional tells whether the header ends in a
+   way that lets a statement follow it. */
+static bool parse_body(Parser *p, Block *block, bool braces_optional) {
+    skip_newlines(p);
+    if (at(p, TOK_LBRACE)) return parse_block(p, block);
+    if (!braces_optional) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "expected '{', found %s; a body without braces needs its condition "
+                 "in parentheses",
+                 token_kind_name(p->tok.kind));
+        return false;
+    }
+    if (at(p, TOK_SEMI)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc, "an empty body is written '{}'");
+        return false;
+    }
+
+    SrcLoc start = p->tok.loc;
+    bool needs_terminator = true;
+    Stmt *stmt = parse_statement(p, false, &needs_terminator);
+    if (!stmt) return false;
+    if (stmt->kind == STMT_CONST || stmt->kind == STMT_VAR || stmt->kind == STMT_LABEL) {
+        diag_add(p->diags, SEV_ERROR, start, "a %s cannot be a body without braces",
+                 stmt->kind == STMT_LABEL ? "label" : "declaration");
+        return false;
+    }
+    stmt->start = start;
+    stmt->end = p->prev;
+    if (needs_terminator) {
+        if (!at_terminator(p) && !at(p, TOK_KW_ELSE)) {
+            error_expected(p, "end of statement");
+            return false;
+        }
+        /* The statement's own ";", after which an "else" or the "while" of
+           a do loop may still follow. */
+        accept(p, TOK_SEMI);
+    }
+
+    block->stmts = arena_alloc(p->arena, sizeof *block->stmts);
+    block->stmts[0] = stmt;
+    block->count = 1;
+    block->open = start;
+    block->close = stmt->end;
+    return true;
+}
+
 static Stmt *parse_if(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_IF, p->tok.loc);
     next(p);
     stmt->as.if_.cond = parse_expr(p);
     if (!stmt->as.if_.cond) return NULL;
-    if (!parse_block(p, &stmt->as.if_.then_block)) return NULL;
+    if (!parse_body(p, &stmt->as.if_.then_block, stmt->as.if_.cond->parenthesized)) {
+        return NULL;
+    }
 
     /* Newlines consumed here would only have ended the statement anyway. */
     skip_newlines(p);
     if (!accept(p, TOK_KW_ELSE)) return stmt;
     stmt->as.if_.has_else = true;
-    if (at(p, TOK_KW_IF)) {
-        Stmt *nested = parse_if(p);
-        if (!nested) return NULL;
-        nested->start = nested->loc;
-        nested->end = p->prev;
-        Block *block = &stmt->as.if_.else_block;
-        block->stmts = arena_alloc(p->arena, sizeof *block->stmts);
-        block->stmts[0] = nested;
-        block->count = 1;
-        block->open = nested->loc;
-        block->close = p->prev;
-        return stmt;
-    }
-    if (!parse_block(p, &stmt->as.if_.else_block)) return NULL;
+    if (!parse_body(p, &stmt->as.if_.else_block, true)) return NULL;
     return stmt;
 }
-
-static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
 
 /* Parses one clause of a for loop's header: a statement of a kind that makes
    sense there. is_init tells whether a declaration is allowed. */
@@ -723,7 +866,7 @@ static Stmt *parse_for(Parser *p) {
         skip_newlines(p);
         if (!expect(p, TOK_RPAREN, NULL)) return abandon_for(p);
     }
-    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    if (!parse_body(p, &stmt->as.loop.body, parenthesized)) return NULL;
     return stmt;
 }
 
@@ -732,14 +875,16 @@ static Stmt *parse_while(Parser *p) {
     next(p);
     stmt->as.loop.cond = parse_expr(p);
     if (!stmt->as.loop.cond) return NULL;
-    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    if (!parse_body(p, &stmt->as.loop.body, stmt->as.loop.cond->parenthesized)) {
+        return NULL;
+    }
     return stmt;
 }
 
 static Stmt *parse_do_while(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_DO_WHILE, p->tok.loc);
     next(p);
-    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    if (!parse_body(p, &stmt->as.loop.body, true)) return NULL;
     skip_newlines(p);
     if (!expect(p, TOK_KW_WHILE, NULL)) return NULL;
     stmt->as.loop.cond = parse_expr(p);
@@ -810,6 +955,52 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         if (!parse_place_index(p, &index)) return NULL;
         return new_step(p, name, index, tok);
     }
+    case TOK_KW_IMPORT: {
+        Token path;
+        next(p);
+        if (!expect(p, TOK_STRING, &path)) return NULL;
+        stmt = new_stmt(p, STMT_IMPORT, path.loc);
+        stmt->as.import.path = path.text;
+        if (at(p, TOK_IDENT) && str_eq_cstr(p->tok.text, "as")) {
+            Token alias;
+            next(p);
+            if (!at(p, TOK_IDENT)) {
+                error_expected(p, "a name");
+                /* Consumed so that a keyword here is not then read as the
+                   start of a statement. */
+                if (!at_terminator(p)) next(p);
+                return NULL;
+            }
+            alias = p->tok;
+            next(p);
+            stmt->as.import.alias = alias.text;
+            stmt->as.import.alias_loc = alias.loc;
+        }
+        if (!top_level) {
+            diag_add(p->diags, SEV_ERROR, tok.loc,
+                     "an import can only be at the top level of a file");
+            return NULL;
+        }
+        return stmt;
+    }
+    case TOK_KW_EXPORT:
+        next(p);
+        if (!at_type(p) && !at(p, TOK_KW_CONST)) {
+            error_expected(p, "a function or a constant after 'export'");
+            return NULL;
+        }
+        stmt = parse_statement(p, top_level, needs_terminator);
+        if (!stmt) return NULL;
+        if (stmt->kind == STMT_VAR) {
+            diag_add(p->diags, SEV_ERROR, stmt->loc,
+                     "a variable cannot be exported; export a function that returns it");
+        } else if (!top_level) {
+            diag_add(p->diags, SEV_ERROR, tok.loc,
+                     "'export' can only be used at the top level of a file");
+        } else {
+            stmt->exported = true;
+        }
+        return stmt;
     case TOK_KW_COUT:
         return parse_cout(p);
     case TOK_KW_CIN:
@@ -857,6 +1048,19 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
             stmt = new_stmt(p, STMT_EXPR, tok.loc);
             stmt->as.expr = parse_call(p, tok);
             return stmt->as.expr ? stmt : NULL;
+        }
+        if (at(p, TOK_DOT)) {
+            /* What a module exports cannot be assigned, which leaves a call
+               as the only statement that starts this way. */
+            stmt = new_stmt(p, STMT_EXPR, tok.loc);
+            stmt->as.expr = parse_member(p, tok);
+            if (!stmt->as.expr) return NULL;
+            if (stmt->as.expr->kind != EXPR_CALL) {
+                diag_add(p->diags, SEV_ERROR, stmt->as.expr->loc,
+                         "what a module exports can be called or read, but not changed");
+                return NULL;
+            }
+            return stmt;
         }
         if (!parse_place_index(p, &index)) return NULL;
         if (accept(p, TOK_ASSIGN)) {

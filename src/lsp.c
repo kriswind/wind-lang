@@ -1,9 +1,13 @@
+#define _DEFAULT_SOURCE
+
 #include "lsp.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 
 #include "ast.h"
 #include "json.h"
@@ -13,6 +17,10 @@
  * Supported: full-document sync, diagnostics, hover, go-to-definition and
  * completion. Each open document keeps its latest text and analysis; every
  * edit re-analyzes the whole document, which is cheap for a single file.
+ *
+ * The files a document imports are read from disk, so what an editor has
+ * not saved is not seen through an import. Saving any document re-analyzes
+ * all of them, which brings the importers of a changed file up to date.
  *
  * LSP positions count UTF-16 code units, while the compiler counts bytes, so
  * every position crossing the protocol boundary is converted against the
@@ -24,7 +32,9 @@ enum {
     LSP_METHOD_NOT_FOUND = -32601,
     LSP_COMPLETION_FUNCTION = 3,
     LSP_COMPLETION_VARIABLE = 6,
+    LSP_COMPLETION_MODULE = 9,
     LSP_COMPLETION_KEYWORD = 14,
+    LSP_COMPLETION_FILE = 17,
     LSP_COMPLETION_CONSTANT = 21,
     /* Guards against allocating for a corrupt Content-Length. */
     LSP_MAX_MESSAGE = 1 << 28,
@@ -32,7 +42,9 @@ enum {
 
 typedef struct {
     char *uri;
+    char *path; /* the file the URI names; NULL if it is not a file */
     char *text;
+    size_t text_len;
     Unit unit;
 } Doc;
 
@@ -169,6 +181,49 @@ static char *copy_cstr(Str s) {
     return copy;
 }
 
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* The path a "file://" URI names, from malloc, or NULL for any other URI. */
+static char *uri_to_path(Str uri) {
+    static const char scheme[] = "file://";
+    size_t skip = sizeof scheme - 1;
+    if (uri.len <= skip || memcmp(uri.data, scheme, skip) != 0) return NULL;
+    char *path = xmalloc(uri.len - skip + 1);
+    size_t len = 0;
+    for (size_t i = skip; i < uri.len; i++) {
+        char c = uri.data[i];
+        if (c == '%' && i + 2 < uri.len && hex_value(uri.data[i + 1]) >= 0 &&
+            hex_value(uri.data[i + 2]) >= 0) {
+            c = (char)(hex_value(uri.data[i + 1]) * 16 + hex_value(uri.data[i + 2]));
+            i += 2;
+        }
+        path[len++] = c;
+    }
+    path[len] = '\0';
+    return path;
+}
+
+/* Writes the "file://" URI of a path as a JSON string. */
+static void write_path_uri(Buf *buf, const char *path) {
+    buf_puts(buf, "\"file://");
+    for (const char *p = path; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') || strchr("/-._~", c);
+        if (plain) {
+            buf_append(buf, p, 1);
+        } else {
+            buf_printf(buf, "%%%02X", c);
+        }
+    }
+    buf_puts(buf, "\"");
+}
+
 static void publish_diagnostics(Arena *arena, Str uri, const Unit *unit) {
     Buf buf = {.arena = arena};
     buf_puts(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\","
@@ -207,10 +262,23 @@ static void set_document(Server *server, Arena *arena, Str uri, Str text) {
         }
         doc = &server->docs[server->doc_count++];
         doc->uri = copy_cstr(uri);
+        doc->path = uri_to_path(uri);
     }
     doc->text = copy_cstr(text);
-    unit_analyze(&doc->unit, (Str){doc->text, text.len});
+    doc->text_len = text.len;
+    unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
     publish_diagnostics(arena, uri, &doc->unit);
+}
+
+/* Analyzes every open document again, for when files they import may have
+   changed on disk. */
+static void refresh_documents(Server *server, Arena *arena) {
+    for (size_t i = 0; i < server->doc_count; i++) {
+        Doc *doc = &server->docs[i];
+        unit_release(&doc->unit);
+        unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
+        publish_diagnostics(arena, (Str){doc->uri, strlen(doc->uri)}, &doc->unit);
+    }
 }
 
 static void close_document(Server *server, Arena *arena, Str uri) {
@@ -219,6 +287,7 @@ static void close_document(Server *server, Arena *arena, Str uri) {
     unit_release(&doc->unit);
     free(doc->text);
     free(doc->uri);
+    free(doc->path);
     *doc = server->docs[--server->doc_count];
     /* Clears the diagnostics the client is still showing for the file. */
     publish_diagnostics(arena, uri, NULL);
@@ -265,10 +334,17 @@ static Doc *request_target(Server *server, const Json *params, size_t *offset) {
 }
 
 /* Writes the symbol's declaration the way it would be spelled in source. */
-static void describe_symbol(Buf *buf, Str src, const Symbol *symbol) {
+static void describe_symbol(Buf *buf, const Symbol *symbol) {
     int len = (int)symbol->name.len;
     const char *name = symbol->name.data;
+    Str src = symbol->unit->src;
+    if (symbol->exported) buf_puts(buf, "export ");
     switch (symbol->kind) {
+    case SYM_MODULE: {
+        Str path = symbol->decl->as.import.path;
+        buf_printf(buf, "import \"%.*s\" as %.*s", (int)path.len, path.data, len, name);
+        break;
+    }
     case SYM_CONST: {
         const Expr *init = symbol->decl->as.decl.init;
         buf_printf(buf, "const %s %.*s", type_name(symbol->type), len, name);
@@ -316,7 +392,7 @@ static void handle_hover(Server *server, Arena *arena, const Json *id,
 
     Buf text = {.arena = arena};
     buf_puts(&text, "```wind\n");
-    describe_symbol(&text, doc->unit.src, symbol);
+    describe_symbol(&text, symbol);
     buf_puts(&text, "\n```");
 
     Buf buf = begin_result(arena, id);
@@ -338,11 +414,23 @@ static void handle_definition(Server *server, Arena *arena, const Json *id,
         send_null_result(arena, id);
         return;
     }
+    /* A module's name leads to the file it stands for; anything else to its
+       declaration, which may be in an imported file. */
+    const Unit *target = symbol->unit;
+    SrcLoc loc = symbol->loc;
+    if (symbol->kind == SYM_MODULE && symbol->module) {
+        target = symbol->module;
+        loc = (SrcLoc){.line = 1, .col = 1};
+    }
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "{\"uri\":");
-    buf_json_string(&buf, (Str){doc->uri, strlen(doc->uri)});
+    if (target == &doc->unit) {
+        buf_json_string(&buf, (Str){doc->uri, strlen(doc->uri)});
+    } else {
+        write_path_uri(&buf, target->real_path);
+    }
     buf_puts(&buf, ",\"range\":");
-    write_range(&buf, doc->unit.src, symbol->loc);
+    write_range(&buf, target->src, loc);
     buf_puts(&buf, "}");
     send_result(&buf);
 }
@@ -364,9 +452,161 @@ static const Stmt *function_at(const Program *program, size_t offset) {
    the functions below it. */
 static bool visible_at(const Symbol *symbol, size_t offset, const Stmt *func) {
     if (symbol->kind == SYM_LABEL) return false;
-    if (symbol->kind == SYM_FUNC) return true;
+    if (symbol->kind == SYM_FUNC || symbol->kind == SYM_MODULE) return true;
     if (offset < symbol->visible_from || offset > symbol->visible_to) return false;
     return symbol->func == func || symbol->global;
+}
+
+static int completion_kind(const Symbol *symbol) {
+    switch (symbol->kind) {
+    case SYM_FUNC:   return LSP_COMPLETION_FUNCTION;
+    case SYM_CONST:  return LSP_COMPLETION_CONSTANT;
+    case SYM_MODULE: return LSP_COMPLETION_MODULE;
+    default:         return LSP_COMPLETION_VARIABLE;
+    }
+}
+
+static void write_completion(Buf *buf, Arena *arena, const Symbol *symbol) {
+    Buf detail = {.arena = arena};
+    describe_symbol(&detail, symbol);
+    buf_puts(buf, "{\"label\":");
+    buf_json_string(buf, symbol->name);
+    buf_printf(buf, ",\"kind\":%d,\"detail\":", completion_kind(symbol));
+    buf_json_string(buf, (Str){detail.data, detail.len});
+    buf_puts(buf, "}");
+}
+
+static bool is_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_';
+}
+
+/* If the text before offset reads "module." followed by the start of a
+   name, returns the module it names; NULL otherwise. */
+static const Symbol *module_before(const Unit *unit, size_t offset) {
+    Str src = unit->src;
+    size_t end = offset;
+    while (end > 0 && is_name_char(src.data[end - 1])) end--;
+    if (end == 0 || src.data[end - 1] != '.') return NULL;
+    end--;
+    size_t start = end;
+    while (start > 0 && is_name_char(src.data[start - 1])) start--;
+    Str name = {src.data + start, end - start};
+    for (size_t i = 0; i < unit->symbols.count; i++) {
+        const Symbol *symbol = unit->symbols.items[i];
+        if (symbol->kind == SYM_MODULE && str_eq(symbol->name, name)) return symbol;
+    }
+    return NULL;
+}
+
+/* If offset is inside the path of an import, as in 'import "lib/sh|', sets
+   *typed to the path up to the cursor and returns true. */
+static bool import_path_before(Str src, size_t offset, Str *typed) {
+    size_t start = offset;
+    while (start > 0 && src.data[start - 1] != '\n') start--;
+    size_t i = start;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (offset - i < 6 || memcmp(src.data + i, "import", 6) != 0) return false;
+    i += 6;
+    if (i == offset || (src.data[i] != ' ' && src.data[i] != '\t')) return false;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (i == offset || src.data[i] != '"') return false;
+    i++;
+    if (memchr(src.data + i, '"', offset - i)) return false;
+    *typed = (Str){src.data + i, offset - i};
+    return true;
+}
+
+enum {
+    /* Bounds on the search for importable files, which keep a document that
+       sits high in a large tree from stalling the editor. */
+    IMPORT_SEARCH_DEPTH = 6,
+    IMPORT_SEARCH_ITEMS = 500,
+};
+
+typedef struct {
+    Buf *buf;
+    const Doc *doc;
+    SrcLoc typed; /* the path written so far, which every item replaces */
+    size_t count;
+} ImportSearch;
+
+/* Adds the Wind files in the directory at dir_path, and in the directories
+   below it, to the completion list. shown is the same directory as an
+   import would spell it: empty, or ending in "/". */
+static void list_importable(ImportSearch *search, const char *dir_path, const char *shown,
+                            int depth) {
+    DIR *entries = opendir(dir_path[0] ? dir_path : ".");
+    if (!entries) return;
+    for (struct dirent *entry; (entry = readdir(entries));) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (name[0] == '.' || search->count >= IMPORT_SEARCH_ITEMS) continue;
+
+        char *full = xmalloc(strlen(dir_path) + len + 2);
+        char *spelled = xmalloc(strlen(shown) + len + 2);
+        sprintf(full, "%s%s", dir_path, name);
+        sprintf(spelled, "%s%s", shown, name);
+        struct stat info;
+        if (stat(full, &info) != 0) {
+            /* unreadable or a dangling link: not importable */
+        } else if (S_ISDIR(info.st_mode)) {
+            if (depth < IMPORT_SEARCH_DEPTH) {
+                strcat(full, "/");
+                strcat(spelled, "/");
+                list_importable(search, full, spelled, depth + 1);
+            }
+        } else if (S_ISREG(info.st_mode) && len > 5 && strcmp(name + len - 5, ".wind") == 0) {
+            /* A file cannot import itself. */
+            char *real_path = path_canonical(full);
+            const char *own = search->doc->unit.real_path;
+            if (!real_path || !own || strcmp(real_path, own) != 0) {
+                Buf *buf = search->buf;
+                Str text = {spelled, strlen(spelled)};
+                if (search->count++) buf_puts(buf, ",");
+                buf_puts(buf, "{\"label\":");
+                buf_json_string(buf, text);
+                buf_printf(buf, ",\"kind\":%d,\"filterText\":", LSP_COMPLETION_FILE);
+                buf_json_string(buf, text);
+                buf_puts(buf, ",\"textEdit\":{\"range\":");
+                write_range(buf, search->doc->unit.src, search->typed);
+                buf_puts(buf, ",\"newText\":");
+                buf_json_string(buf, text);
+                buf_puts(buf, "}}");
+            }
+            free(real_path);
+        }
+        free(full);
+        free(spelled);
+    }
+    closedir(entries);
+}
+
+/* Completes the path of an import with every Wind file at or below the
+   directory the path so far points into, each as the whole path to write.
+   An item replaces all of what was typed, so that the client need not agree
+   with the server on what a word is inside a string. */
+static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str typed) {
+    size_t dir_len = typed.len;
+    while (dir_len > 0 && typed.data[dir_len - 1] != '/') dir_len--;
+
+    ImportSearch search = {.buf = buf, .doc = doc};
+    search.typed = (SrcLoc){.offset = offset - typed.len, .len = typed.len, .line = 1, .col = 1};
+    for (size_t i = 0; i < search.typed.offset; i++) {
+        search.typed.col++;
+        if (doc->unit.src.data[i] == '\n') {
+            search.typed.line++;
+            search.typed.col = 1;
+        }
+    }
+
+    char *shown = xmalloc(dir_len + 1);
+    memcpy(shown, typed.data, dir_len);
+    shown[dir_len] = '\0';
+    char *dir_path = path_beside(doc->path, (Str){typed.data, dir_len});
+    list_importable(&search, dir_path, shown, 0);
+    free(dir_path);
+    free(shown);
 }
 
 static void handle_completion(Server *server, Arena *arena, const Json *id,
@@ -376,6 +616,28 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
 
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "[");
+    Str typed;
+    if (doc && import_path_before(doc->unit.src, offset, &typed)) {
+        complete_import_path(&buf, doc, offset, typed);
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
+    const Symbol *module = doc ? module_before(&doc->unit, offset) : NULL;
+    if (module) {
+        /* After "module." only what the module exports can follow. */
+        bool first = true;
+        for (size_t i = 0; module->module && i < module->module->symbols.count; i++) {
+            const Symbol *symbol = module->module->symbols.items[i];
+            if (!symbol->exported) continue;
+            if (!first) buf_puts(&buf, ",");
+            write_completion(&buf, arena, symbol);
+            first = false;
+        }
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
     for (size_t i = 0; i < keyword_count(); i++) {
         if (i) buf_puts(&buf, ",");
         buf_printf(&buf, "{\"label\":\"%s\",\"kind\":%d}", keyword_name(i),
@@ -385,16 +647,8 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     for (size_t i = 0; doc && i < doc->unit.symbols.count; i++) {
         const Symbol *symbol = doc->unit.symbols.items[i];
         if (!visible_at(symbol, offset, func)) continue;
-        Buf detail = {.arena = arena};
-        describe_symbol(&detail, doc->unit.src, symbol);
-        buf_puts(&buf, ",{\"label\":");
-        buf_json_string(&buf, symbol->name);
-        buf_printf(&buf, ",\"kind\":%d,\"detail\":",
-                   symbol->kind == SYM_FUNC    ? LSP_COMPLETION_FUNCTION
-                   : symbol->kind == SYM_CONST ? LSP_COMPLETION_CONSTANT
-                                               : LSP_COMPLETION_VARIABLE);
-        buf_json_string(&buf, (Str){detail.data, detail.len});
-        buf_puts(&buf, "}");
+        buf_puts(&buf, ",");
+        write_completion(&buf, arena, symbol);
     }
     buf_puts(&buf, "]");
     send_result(&buf);
@@ -404,10 +658,10 @@ static void handle_initialize(Arena *arena, const Json *id) {
     Buf buf = begin_result(arena, id);
     buf_puts(&buf,
              "{\"capabilities\":{"
-             "\"textDocumentSync\":{\"openClose\":true,\"change\":1},"
+             "\"textDocumentSync\":{\"openClose\":true,\"change\":1,\"save\":true},"
              "\"hoverProvider\":true,"
              "\"definitionProvider\":true,"
-             "\"completionProvider\":{}},"
+             "\"completionProvider\":{\"triggerCharacters\":[\".\",\"\\\"\",\"/\"]}},"
              "\"serverInfo\":{\"name\":\"wind\",\"version\":\"" WIND_VERSION "\"}}");
     send_result(&buf);
 }
@@ -454,6 +708,8 @@ static bool dispatch(Server *server, Arena *arena, const Json *message) {
         if (json_string(json_get(document, "uri"), &uri)) {
             close_document(server, arena, uri);
         }
+    } else if (method_is(method, "textDocument/didSave")) {
+        refresh_documents(server, arena);
     } else if (method_is(method, "textDocument/hover")) {
         handle_hover(server, arena, id, params);
     } else if (method_is(method, "textDocument/definition")) {
@@ -491,6 +747,7 @@ int lsp_run(void) {
         unit_release(&server.docs[i].unit);
         free(server.docs[i].text);
         free(server.docs[i].uri);
+        free(server.docs[i].path);
     }
     free(server.docs);
 

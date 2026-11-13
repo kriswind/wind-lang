@@ -7,6 +7,7 @@
 typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 typedef struct Symbol Symbol;
+typedef struct Unit Unit;
 
 /* ---- Symbols ---- */
 
@@ -16,15 +17,18 @@ typedef enum {
     SYM_PARAM,
     SYM_FUNC,
     SYM_LABEL,
+    SYM_MODULE,
 } SymbolKind;
 
 /* A named thing a program declares. Created by unit_analyze. */
 struct Symbol {
     SymbolKind kind;
     Str name;
-    SrcLoc loc;    /* the name at its declaration */
-    /* SYM_FUNC: the return type; SYM_LABEL: unused; an array: the type of
-       its elements. */
+    /* The name at its declaration. A module imported without "as" has no
+       name of its own in the source, and this is its path. */
+    SrcLoc loc;
+    /* SYM_FUNC: the return type; SYM_LABEL, SYM_MODULE: unused; an array:
+       the type of its elements. */
     TypeKind type;
     /* An array is either fixed (declared with a length, which it owns) or a
        slice (an array parameter: a view of someone else's elements, with a
@@ -34,8 +38,14 @@ struct Symbol {
     size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
-    /* The declaring statement: STMT_CONST, STMT_VAR or STMT_FUNC. NULL for
-       parameters and labels. */
+    /* The file the symbol is declared in. */
+    const Unit *unit;
+    /* Marked "export": other files that import this one can use it. */
+    bool exported;
+    /* SYM_MODULE: the imported file, or NULL if it could not be loaded. */
+    const Unit *module;
+    /* The declaring statement: STMT_CONST, STMT_VAR, STMT_FUNC or
+       STMT_IMPORT. NULL for parameters and labels. */
     const Stmt *decl;
     /* The function the symbol is declared in; NULL at the top level. */
     const Stmt *func;
@@ -73,6 +83,7 @@ typedef enum {
     EXPR_BINARY,
     EXPR_CALL,
     EXPR_CAST,
+    EXPR_TERNARY,
     /* "cin" used as a value: whether the most recent read succeeded. */
     EXPR_CIN_OK,
     EXPR_INDEX,
@@ -111,14 +122,20 @@ struct Expr {
     /* The whole expression when it fits on one line, else its first token. */
     SrcLoc loc;
     TypeKind type; /* set by unit_analyze */
+    /* Written as "( expr )", with nothing outside the parentheses. */
+    bool parenthesized;
     union {
         U128 int_lit;
         Str float_lit; /* spelling, without digit separators */
         char char_lit;
         Str string_lit; /* decoded bytes */
         bool bool_lit;
+        /* "name", or "module.name" for something another file exports. */
         struct {
             Str name;
+            SrcLoc name_loc;
+            Str module; /* empty when the name is not qualified */
+            SrcLoc module_loc;
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
         } ident;
         struct {
@@ -133,6 +150,8 @@ struct Expr {
         struct {
             Str name;
             SrcLoc name_loc;
+            Str module; /* as for ident */
+            SrcLoc module_loc;
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
             Expr **args;
             size_t count;
@@ -141,6 +160,12 @@ struct Expr {
             TypeKind to;
             Expr *operand;
         } cast;
+        /* "cond ? then : otherwise" */
+        struct {
+            Expr *cond;
+            Expr *then;
+            Expr *otherwise;
+        } ternary;
         struct {
             TypeKind type; /* used when operand is NULL */
             Expr *operand;
@@ -175,6 +200,7 @@ typedef enum {
     STMT_LABEL,
     STMT_RETURN,
     STMT_FUNC,
+    STMT_IMPORT,
 } StmtKind;
 
 typedef struct {
@@ -211,6 +237,8 @@ struct Stmt {
     /* The first and last tokens of a statement that sits in a block. */
     SrcLoc start;
     SrcLoc end;
+    /* STMT_CONST, STMT_FUNC: declared with "export". */
+    bool exported;
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
@@ -246,7 +274,8 @@ struct Stmt {
             ReadTarget *targets;
             size_t count;
         } cin;
-        /* STMT_IF. "else if" is an else block holding one if statement. */
+        /* STMT_IF. A body written without braces is a block holding its one
+           statement, which is how "else if" appears. */
         struct {
             Expr *cond;
             Block then_block;
@@ -283,6 +312,13 @@ struct Stmt {
             Symbol *symbol;
             SymbolList locals; /* variables declared anywhere in the body */
         } func;
+        /* STMT_IMPORT: import "path" [as alias] */
+        struct {
+            Str path; /* as written */
+            Str alias; /* empty without "as" */
+            SrcLoc alias_loc;
+            Symbol *symbol; /* set by unit_analyze; NULL if the name is unusable */
+        } import;
     } as;
 };
 
@@ -296,8 +332,12 @@ typedef struct {
     const Stmt *main;
 } Program;
 
-/* One analyzed source file. Everything it owns lives in its arena. */
-typedef struct {
+/* One analyzed source file. Everything it owns lives in its arena.
+
+   The unit handed to unit_analyze is the root: the program being compiled.
+   The files it imports, directly or through other imports, are units too,
+   owned by the root and each analyzed once however often it is imported. */
+struct Unit {
     Arena arena;
     Str src;
     Diags diags;
@@ -306,13 +346,32 @@ typedef struct {
     Ref *refs;
     size_t ref_count;
     size_t ref_cap;
-} Unit;
 
-/* Parses and checks src, which must outlive the unit. Never fails: problems
-   are collected in unit->diags (sorted by position), and the program holds
-   every statement that could be parsed. Only a unit with no errors may be
-   passed to emit_c. */
-void unit_analyze(Unit *unit, Str src);
+    /* Where the file is, spelled so that it can be opened and shown to the
+       user; NULL for source that is not in a file. */
+    const char *path;
+    /* The canonical form of path, which identifies the file; NULL if the
+       file does not exist. */
+    const char *real_path;
+    Unit *root; /* itself for the root */
+    /* 0 for the root, and unique among its modules; keeps the generated C
+       names of different files apart. */
+    int id;
+    bool loading; /* its imports are still being followed */
+    /* Root only: every imported file. One whose analysis has finished comes
+       after all the files it imports. */
+    Unit **modules;
+    size_t module_count;
+    size_t module_cap;
+};
+
+/* Parses and checks src, which must outlive the unit. path is the file it
+   came from, against which its imports are resolved, or NULL. Never fails:
+   problems are collected in unit->diags (sorted by position), and the
+   program holds every statement that could be parsed. A file's problems are
+   in its own unit; an import of a file with errors is itself an error. Only
+   a unit with no errors may be passed to emit_c. */
+void unit_analyze(Unit *unit, Str src, const char *path);
 void unit_release(Unit *unit);
 
 const char *op_text(Op op);

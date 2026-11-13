@@ -2,7 +2,9 @@ if exists("b:current_syntax")
   finish
 endif
 
-syn keyword windStorage const
+syn keyword windStorage const export
+syn keyword windInclude import
+syn match windInclude "\<as\>\ze\s\+\h\w*\s*$"
 syn keyword windConditional if else
 syn keyword windStatement goto return break continue
 syn keyword windRepeat while do for
@@ -37,6 +39,7 @@ syn match windComment "//.*$" contains=@Spell
 syn region windComment start="/\*" end="\*/" contains=@Spell
 syn sync minlines=200
 
+hi def link windInclude Include
 hi def link windStorage StorageClass
 hi def link windConditional Conditional
 hi def link windStatement Statement

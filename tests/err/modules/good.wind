@@ -1,0 +1,6 @@
+int hidden = 7
+export const int SIZE = 4
+export const int TABLE[2] = {1, 2}
+export int get() { return hidden }
+export void nothing() { }
+int secret() { return hidden }

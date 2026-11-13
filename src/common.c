@@ -1,5 +1,8 @@
+#define _DEFAULT_SOURCE
+
 #include "common.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,4 +123,46 @@ void diags_sort(Diags *diags) {
         }
         diags->items[j] = d;
     }
+}
+
+bool file_read(const char *path, Str *out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    size_t cap = 4096, len = 0;
+    char *buf = xmalloc(cap);
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
+        len += n;
+        if (len == cap) {
+            cap *= 2;
+            buf = xrealloc(buf, cap);
+        }
+    }
+    if (ferror(f)) {
+        /* Reading a directory fails here, not at fopen. */
+        int error = errno;
+        fclose(f);
+        free(buf);
+        errno = error;
+        return false;
+    }
+    fclose(f);
+    *out = (Str){buf, len};
+    return true;
+}
+
+char *path_beside(const char *from, Str written) {
+    const char *slash = from ? strrchr(from, '/') : NULL;
+    size_t dir_len = slash ? (size_t)(slash - from) + 1 : 0;
+    if (written.len > 0 && written.data[0] == '/') dir_len = 0;
+    char *path = xmalloc(dir_len + written.len + 1);
+    if (dir_len) memcpy(path, from, dir_len);
+    memcpy(path + dir_len, written.data, written.len);
+    path[dir_len + written.len] = '\0';
+    return path;
+}
+
+char *path_canonical(const char *path) {
+    return realpath(path, NULL);
 }

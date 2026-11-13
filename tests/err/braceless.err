@@ -1,0 +1,18 @@
+tests/err/braceless.wind:2:11: error: expected '{', found a name; a body without braces needs its condition in parentheses
+tests/err/braceless.wind:3:13: error: expected '{', found a name; a body without braces needs its condition in parentheses
+tests/err/braceless.wind:4:25: error: expected '{', found a name; a body without braces needs its condition in parentheses
+tests/err/braceless.wind:5:23: error: expected '{', found a name; a body without braces needs its condition in parentheses
+tests/err/braceless.wind:6:13: error: a declaration cannot be a body without braces
+tests/err/braceless.wind:7:13: error: a label cannot be a body without braces
+tests/err/braceless.wind:8:12: error: an empty body is written '{}'
+tests/err/braceless.wind:9:19: error: expected end of statement, found a name
+tests/err/braceless.wind:10:19: error: expected end of statement, found a name
+tests/err/braceless.wind:11:1: error: expected a statement, found 'else'
+tests/err/braceless.wind:12:9: error: the condition of '?:' must be 'bool', found 'int'
+tests/err/braceless.wind:13:9: error: the two results of '?:' have different types: 'int' and 'string'
+tests/err/braceless.wind:14:19: error: expected ':', found end of line
+tests/err/braceless.wind:15:9: error: cannot convert 'int' to 'string'
+tests/err/braceless.wind:15:9: error: cannot initialize 'int' variable with 'string'
+tests/err/braceless.wind:16:9: error: the results of '?:' cannot be 'void'
+tests/err/braceless.wind:19:11: error: expected an expression, found '+'
+tests/err/braceless.wind:20:19: error: undefined name 'z'

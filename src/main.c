@@ -28,34 +28,23 @@ static void usage(FILE *out) {
           out);
 }
 
-static Str read_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) fatal("cannot open '%s': %s", path, strerror(errno));
-
-    size_t cap = 4096, len = 0;
-    char *buf = xmalloc(cap);
-    size_t n;
-    while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
-        len += n;
-        if (len == cap) {
-            cap *= 2;
-            buf = xrealloc(buf, cap);
-        }
+static void print_diags(const Unit *unit) {
+    for (size_t i = 0; i < unit->diags.count; i++) {
+        const Diag *diag = &unit->diags.items[i];
+        fprintf(stderr, "%s:%d:%d: %s: %s\n", unit->path, diag->loc.line,
+                diag->loc.col, severity_name(diag->severity), diag->message);
     }
-    if (ferror(f)) fatal("cannot read '%s': %s", path, strerror(errno));
-    fclose(f);
-    return (Str){buf, len};
 }
 
 /* Analyzes a file and prints its diagnostics to stderr, one per line as
-   "file:line:col: severity: message". */
+   "file:line:col: severity: message": those of the files it imports first,
+   then its own. */
 static void analyze_file(Unit *unit, const char *src_path) {
-    unit_analyze(unit, read_file(src_path));
-    for (size_t i = 0; i < unit->diags.count; i++) {
-        const Diag *diag = &unit->diags.items[i];
-        fprintf(stderr, "%s:%d:%d: %s: %s\n", src_path, diag->loc.line,
-                diag->loc.col, severity_name(diag->severity), diag->message);
-    }
+    Str src;
+    if (!file_read(src_path, &src)) fatal("cannot read '%s': %s", src_path, strerror(errno));
+    unit_analyze(unit, src, src_path);
+    for (size_t i = 0; i < unit->module_count; i++) print_diags(unit->modules[i]);
+    print_diags(unit);
 }
 
 /* Exits with status 1 if the file has errors; warnings do not stop it. */

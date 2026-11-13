@@ -1,0 +1,2 @@
+export const int ONE = 1
+cout << "runs at the top level\n"

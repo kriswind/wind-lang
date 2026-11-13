@@ -1,0 +1,19 @@
+import "util.wind"
+
+export const int SIDES[3] = {3, 4, 0}
+const int LIMIT = 100
+
+// Private: the importer has a function of the same name.
+int helper(int n) { return n > LIMIT ? LIMIT : n }
+
+export int area(int w, int h) { return helper(util.scaled(w) * h) }
+
+export int total(int values[]) {
+    int sum = 0
+    for (int i = 0; i < len(values); i++) sum += values[i]
+    return sum
+}
+
+export string describe(int sides) {
+    return sides == SIDES[0] ? "triangle" : sides == SIDES[1] ? "square" : "shape"
+}

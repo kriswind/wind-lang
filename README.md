@@ -49,9 +49,13 @@ build would.
 - `wind check <file>...` prints every diagnostic as
   `file:line:col: severity: message` and exits with status 1 if there are
   errors. Warnings do not fail a check or a build. They cover an unused
-  constant, variable, function or label, and unreachable code.
+  constant, variable, function, label or import, and unreachable code.
+  Problems in an imported file are listed under that file's own name.
 - `wind lsp` provides diagnostics as you type, hover, go-to-definition and
-  completion for constants, variables, functions, parameters and labels.
+  completion for constants, variables, functions, parameters, labels and
+  modules. Go-to-definition follows a name into the file that exports it, and
+  typing `module.` lists what the module exports. Imported files are read
+  from disk, so save a file for the files that import it to see the change.
 
 Code is reported as unreachable only where that is certain: after a
 `return`, `break`, `continue` or `goto`, after a loop that never ends, and in
@@ -95,7 +99,8 @@ wind program.wind one two     # argc is 3
 
 - A statement ends at a newline or a `;`. Semicolons are optional.
 - A newline does not end a statement directly after `=`, `<<`, `>>`, `,` or a
-  binary operator, or inside parentheses.
+  binary operator, inside parentheses, or before a line that starts with the
+  `?` or `:` of a conditional.
 - `// ...` is a comment to the end of the line; `/* ... */` is a comment that
   may span lines. Block comments do not nest.
 - Names are `[A-Za-z_][A-Za-z0-9_]*`. Keywords and type names are reserved.
@@ -144,7 +149,8 @@ char letter = char(65)
 ```
 
 Conversions work between any two numeric types and between `char` and
-integers.
+integers. C's spelling works too: `(i8)wide` is `i8(wide)`. As in C it applies
+to the one value after it, so `(float)a / b` converts `a` and then divides.
 
 ### Literals
 
@@ -213,6 +219,9 @@ cout << len(scores) << "\n"   // 5
 - `len(x)` gives the number of elements of an array, or of bytes in a
   string, as an `int`. `sizeof(array)` gives its size in bytes, so C's
   `sizeof(a) / sizeof(a[0])` works too.
+- `len` of a fixed array, a string literal or a string constant is known at
+  compile time, so it can give a constant its value or an array its length:
+  `const int count = len(pets)`.
 - A string can be indexed the same way: `word[0]` is a `char`. Strings cannot
   be changed, so a character cannot be assigned.
 - `const int Primes[3] = {2, 3, 5}` declares an array whose elements cannot
@@ -252,8 +261,15 @@ and their elements cannot themselves be arrays.
 | unary `~` (not) | integers | same type |
 | `<<` `>>` (shifts) | an integer, shifted by any integer | type of the value shifted |
 
-From tightest to loosest: unary, `* / %`, `+ -`, `<< >>`, `&`, `^`, `|`,
-comparisons, `&&`, `||`. Integer arithmetic wraps at the width of its type.
+| `c ? a : b` (conditional) | a `bool`, then two values of one type | that type |
+
+From tightest to loosest: unary and casts, `* / %`, `+ -`, `<< >>`, `&`, `^`,
+`|`, comparisons, `&&`, `||`, `?:`. Integer arithmetic wraps at the width of
+its type.
+
+`c ? a : b` is `a` when `c` is true and `b` otherwise; only the chosen one is
+evaluated. Conditionals chain to the right, so `a ? x : b ? y : z` reads as a
+list of cases.
 
 The bitwise operators differ from C in three ways:
 
@@ -267,7 +283,8 @@ The bitwise operators differ from C in three ways:
   negative signed value shifted right.
 
 In a `cout` statement `<<` separates the values, so a shift there goes in
-parentheses: `cout << (flags << 2)`.
+parentheses: `cout << (flags << 2)`. A conditional needs none:
+`cout << n == 1 ? "item" : "items" << "\n"`.
 
 ### Control flow
 
@@ -297,7 +314,12 @@ for (int i = 0; i < count; i++) {
 
 - A condition must be a `bool`. Parentheses around it are optional:
   `if (count > 10) {` and `if count > 10 {` are the same, and likewise for
-  `while`. Braces are always required.
+  `while`.
+- A body of one statement can go without braces, as in C, when its condition
+  is in parentheses: `if (count > 10) count = 10`, `while (n > 0) n--`,
+  `for (int i = 0; i < 3; i++) total += i`. So can the body after `else` or
+  `do`. The statement may be on the next line, and may not be a declaration
+  or a label. An `else` belongs to the nearest `if`. An empty body is `{}`.
 - `while` tests its condition before each pass; `do ... while` tests it
   after, so its body runs at least once.
 - `for (first; condition; last)` runs `first` once, then repeats the body
@@ -334,6 +356,46 @@ report("square", square(7))
 - Parameters cannot be assigned to (the elements of an array parameter can).
 - A function sees every other function, and the constants and variables
   declared directly at the top level above it.
+
+### Modules
+
+Every file is a module. `import` makes another file's exports available
+under a name, and `export` marks what a file offers:
+
+```wind
+// shapes.wind
+export const int SIDES = 4
+export int area(int w, int h) { return clamp(w * h) }
+
+int clamp(int n) { return n > 1000 ? 1000 : n }   // private to this file
+```
+
+```wind
+// main.wind
+import "shapes.wind"
+import "lib/my-text.wind" as text
+
+cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
+```
+
+- A path is relative to the file that contains the import.
+- The module's name is the file's name without `.wind`; `as name` gives it
+  another. A file whose name is not a valid name, such as `my-text.wind`,
+  needs `as`.
+- What a module exports is used as `module.name`. Names never leak into the
+  importing file, so two modules can export the same name.
+- Only functions and constants can be exported. Everything else in a file is
+  private to it, including its top-level variables, which its functions can
+  use and which are initialized before the program starts.
+- A file is loaded once, however many files import it, so its variables
+  exist once. Imports cannot form a cycle.
+- Imports and `export` go at the top level. An import can be used anywhere
+  in the file, including above it.
+- An imported file is not run as a script: it holds declarations only. It may
+  have a `main`, which is ignored when the file is imported, so a module can
+  also be run on its own.
+- The program is compiled as a whole: `wind build main.wind` follows the
+  imports and produces one executable.
 
 ### Output
 
@@ -388,6 +450,9 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
+- A message for an index that is out of range gives the line but not the
+  file, which matters once a program has several files.
+- A module cannot export a variable; export a function that returns it.
 - A constant array cannot be passed to a function, because nothing yet marks
   a parameter as read-only.
 - An index must be an integer of at most 64 bits.

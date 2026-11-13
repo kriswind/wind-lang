@@ -1,0 +1,20 @@
+import "modules/shapes.wind"
+import "modules/util.wind" as u
+import "modules/my-counter.wind" as counter
+
+const int LIMIT = 5
+
+int helper(int n) { return n + LIMIT }
+
+cout << shapes.area(2, 3) << " " << shapes.area(50, 50) << "\n"
+cout << shapes.describe(3) << " " << shapes.describe(4) << " " << shapes.describe(9) << "\n"
+cout << shapes.SIDES << " " << len(shapes.SIDES) << " " << shapes.SIDES[-2] << "\n"
+
+int values[u.SCALE > 5 ? 3 : 1] = {1, 2, 3}
+cout << shapes.total(values) << " " << helper(1) << "\n"
+
+// util.wind is one module, whoever imports it: shapes called it twice.
+cout << u.scaled(2) << u.UNIT << " " << u.call_count() << "\n"
+
+counter.next()
+cout << counter.next() << "\n"

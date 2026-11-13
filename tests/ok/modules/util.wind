@@ -1,0 +1,12 @@
+// Shared by the program and by shapes.wind; loaded once.
+export const int SCALE = 10
+export const string UNIT = "cm"
+
+int calls = 0
+
+export int scaled(int n) {
+    calls++
+    return n * SCALE
+}
+
+export int call_count() { return calls }

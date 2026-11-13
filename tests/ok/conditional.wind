@@ -1,0 +1,43 @@
+// The conditional operator and C-style casts.
+int max(int a, int b) { return a > b ? a : b }
+
+string sign(int n) {
+    return n < 0
+        ? "negative"
+        : n == 0 ? "zero" : "positive"
+}
+
+const int LIMIT = true ? 8 : 16
+int table[LIMIT > 4 ? 2 : 1]
+
+int main() {
+    cout << max(3, 7) << " " << max(7, 3) << "\n"
+    cout << sign(-2) << " " << sign(0) << " " << sign(5) << "\n"
+    cout << LIMIT << " " << len(table) << "\n"
+
+    // Literals take the type the context asks for.
+    i8 small = LIMIT > 4 ? 100 : -100
+    f32 half = small > 0 ? 0.5 : 1.5
+    i8 mixed = small + (small > 0 ? 1 : 2)
+    cout << small << " " << half << " " << mixed << "\n"
+
+    // In cout a conditional needs no parentheses; a shift still does.
+    cout << small > 0 ? "yes" : "no" << "\n"
+    cout << (small > 0 ? 1 << 4 : 0) << "\n"
+
+    // Only the chosen side runs.
+    int zero = 0
+    cout << (zero == 0 ? 0 : 10 / zero) << "\n"
+
+    // Casts in both spellings.
+    float f = 3.99
+    int a = (int)f
+    int b = int(f)
+    cout << a << " " << b << "\n"
+    cout << (float)a / 2.0 << " " << (int)f + 1 << " " << (int)-f << "\n"
+    cout << (unsigned char)200 + 1 << " " << (long long)a * 2 << "\n"
+    cout << (char)(65 + a) << (int)'A' << "\n"
+    cout << (int)(f * 2.0) << " " << (i8)(int)f << " " << (a) + 1 << "\n"
+    cout << sizeof(int) - sizeof (i64) << "\n"
+    return 0;
+}

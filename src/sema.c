@@ -1,8 +1,11 @@
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ast.h"
+#include "lexer.h"
 
 /*
  * Typing rules:
@@ -28,6 +31,17 @@
  * - Names must be declared before use, except functions and labels.
  * - A function sees what is declared directly at the top level: every
  *   function, and the constants and variables declared above it.
+ *
+ * Modules:
+ *
+ * - Every file is a module. "import" analyzes another file and binds a name
+ *   to it, through which the functions and constants that file marks
+ *   "export" are reached as "name.member". Everything else stays private.
+ * - A file is analyzed once, however many files import it, and imports may
+ *   not form a cycle.
+ * - An imported file is not run as a script: without a main it may only hold
+ *   declarations, and a main it has is left uncalled. Its top-level
+ *   variables are initialized before the program starts.
  */
 
 typedef struct Scope Scope;
@@ -105,6 +119,7 @@ static Symbol *new_symbol(Checker *c, SymbolKind kind, Str name, SrcLoc loc,
     symbol->loc = loc;
     symbol->type = type;
     symbol->id = c->next_id++;
+    symbol->unit = c->unit;
     symbol->func = c->func;
     symbol->global = c->scope == c->global;
     symbol->visible_from = loc.offset + loc.len;
@@ -170,6 +185,61 @@ static Symbol *resolve(Checker *c, Str name, SrcLoc loc) {
     return symbol;
 }
 
+static const char *symbol_what(const Symbol *symbol) {
+    switch (symbol->kind) {
+    case SYM_CONST:  return "constant";
+    case SYM_VAR:    return "variable";
+    case SYM_PARAM:  return "parameter";
+    case SYM_FUNC:   return "function";
+    case SYM_LABEL:  return "label";
+    case SYM_MODULE: return "module";
+    }
+    return "name";
+}
+
+/* What a module declares at its top level under a name, exported or not;
+   NULL if there is nothing. */
+static Symbol *module_member(const Unit *module, Str name) {
+    for (size_t i = 0; i < module->symbols.count; i++) {
+        Symbol *symbol = module->symbols.items[i];
+        bool is_member = symbol->global && (symbol->kind == SYM_CONST ||
+                                            symbol->kind == SYM_VAR ||
+                                            symbol->kind == SYM_FUNC);
+        if (is_member && str_eq(symbol->name, name)) return symbol;
+    }
+    return NULL;
+}
+
+/* Looks up "module.name" and records both references. Returns NULL, with
+   the problem reported, if the name cannot be used here. A module that
+   failed to load has had that reported at its import, and yields NULL
+   quietly. */
+static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str name,
+                              SrcLoc name_loc) {
+    Symbol *owner = resolve(c, module, module_loc);
+    if (!owner) return NULL;
+    if (owner->kind != SYM_MODULE) {
+        error(c, module_loc, "'%.*s' is a %s, not a module", NAME(module),
+              symbol_what(owner));
+        return NULL;
+    }
+    owner->used = true;
+    if (!owner->module) return NULL;
+    Symbol *symbol = module_member(owner->module, name);
+    if (!symbol) {
+        error(c, name_loc, "module '%.*s' has no '%.*s'", NAME(module), NAME(name));
+        return NULL;
+    }
+    if (!symbol->exported) {
+        error(c, name_loc, "'%.*s' is private to module '%.*s'; mark it 'export' there "
+                           "to use it here",
+              NAME(name), NAME(module));
+        return NULL;
+    }
+    add_ref(c, name_loc, symbol);
+    return symbol;
+}
+
 /* ---- Expressions ---- */
 
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
@@ -179,9 +249,23 @@ static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
    any other expression. */
 static const Symbol *array_operand(Checker *c, Expr *expr) {
     if (expr->kind != EXPR_IDENT) return NULL;
-    Symbol *symbol = lookup(c, expr->as.ident.name);
+    Str module = expr->as.ident.module;
+    Symbol *symbol;
+    if (module.len) {
+        const Symbol *owner = lookup(c, module);
+        if (!owner || owner->kind != SYM_MODULE || !owner->module) return NULL;
+        symbol = module_member(owner->module, expr->as.ident.name);
+        if (symbol && !symbol->exported) return NULL;
+    } else {
+        symbol = lookup(c, expr->as.ident.name);
+    }
     if (!symbol || (!symbol->is_array && !symbol->is_slice)) return NULL;
-    add_ref(c, expr->loc, symbol);
+    if (module.len) {
+        resolve_member(c, module, expr->as.ident.module_loc, expr->as.ident.name,
+                       expr->as.ident.name_loc);
+    } else {
+        add_ref(c, expr->as.ident.name_loc, symbol);
+    }
     symbol->used = true;
     expr->as.ident.symbol = symbol;
     expr->type = symbol->type;
@@ -233,7 +317,8 @@ static TypeKind check_index(Checker *c, Expr *expr) {
 /* The built-in len(x): the number of elements of an array or bytes of a
    string. Used unless the program declares its own "len". */
 static bool is_builtin_len(const Checker *c, const Expr *expr) {
-    return str_eq_cstr(expr->as.call.name, "len") && !lookup(c, expr->as.call.name);
+    return !expr->as.call.module.len && str_eq_cstr(expr->as.call.name, "len") &&
+           !lookup(c, expr->as.call.name);
 }
 
 static TypeKind check_len(Checker *c, Expr *expr) {
@@ -292,6 +377,9 @@ static bool is_untyped(const Expr *expr) {
     case EXPR_BINARY:
         return is_numeric_op(expr->as.binary.op) &&
                is_untyped(expr->as.binary.left) && is_untyped(expr->as.binary.right);
+    case EXPR_TERNARY:
+        return is_untyped(expr->as.ternary.then) &&
+               is_untyped(expr->as.ternary.otherwise);
     default:
         return false;
     }
@@ -306,6 +394,9 @@ static bool has_float_literal(const Expr *expr) {
     case EXPR_BINARY:
         return has_float_literal(expr->as.binary.left) ||
                has_float_literal(expr->as.binary.right);
+    case EXPR_TERNARY:
+        return has_float_literal(expr->as.ternary.then) ||
+               has_float_literal(expr->as.ternary.otherwise);
     default:
         return false;
     }
@@ -448,9 +539,36 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     return result;
 }
 
+static TypeKind check_ternary(Checker *c, Expr *expr, TypeKind hint) {
+    Expr *cond = expr->as.ternary.cond;
+    Expr *then = expr->as.ternary.then;
+    Expr *otherwise = expr->as.ternary.otherwise;
+
+    TypeKind cond_type = check_expr(c, cond, TYPE_INVALID);
+    if (cond_type != TYPE_BOOL && cond_type != TYPE_INVALID) {
+        error(c, cond->loc, "the condition of '?:' must be 'bool', found '%s'",
+              type_name(cond_type));
+    }
+    check_operands(c, then, otherwise, hint);
+    if (then->type == TYPE_INVALID || otherwise->type == TYPE_INVALID) return TYPE_INVALID;
+    if (then->type != otherwise->type) {
+        error(c, expr->loc, "the two results of '?:' have different types: '%s' and '%s'",
+              type_name(then->type), type_name(otherwise->type));
+        return TYPE_INVALID;
+    }
+    if (then->type == TYPE_VOID) {
+        error(c, expr->loc, "the results of '?:' cannot be 'void'");
+        return TYPE_INVALID;
+    }
+    return then->type;
+}
+
 static TypeKind check_call(Checker *c, Expr *expr) {
     Str name = expr->as.call.name;
-    Symbol *symbol = resolve(c, name, expr->as.call.name_loc);
+    Symbol *symbol = expr->as.call.module.len
+                         ? resolve_member(c, expr->as.call.module, expr->as.call.module_loc,
+                                          name, expr->as.call.name_loc)
+                         : resolve(c, name, expr->as.call.name_loc);
     const Stmt *func = NULL;
     if (symbol && symbol->kind != SYM_FUNC) {
         error(c, expr->as.call.name_loc, "'%.*s' is not a function", NAME(name));
@@ -527,11 +645,21 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     case EXPR_BOOL_LIT:
         return TYPE_BOOL;
     case EXPR_IDENT: {
-        Symbol *symbol = resolve(c, expr->as.ident.name, expr->loc);
+        Symbol *symbol = expr->as.ident.module.len
+                             ? resolve_member(c, expr->as.ident.module,
+                                              expr->as.ident.module_loc,
+                                              expr->as.ident.name, expr->as.ident.name_loc)
+                             : resolve(c, expr->as.ident.name, expr->loc);
         if (!symbol) return TYPE_INVALID;
         if (symbol->kind == SYM_FUNC) {
             error(c, expr->loc, "'%.*s' is a function; call it with '()'",
                   NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
+        if (symbol->kind == SYM_MODULE) {
+            symbol->used = true;
+            error(c, expr->loc, "'%.*s' is a module; use what it exports as '%.*s.name'",
+                  NAME(expr->as.ident.name), NAME(expr->as.ident.name));
             return TYPE_INVALID;
         }
         symbol->used = true;
@@ -557,6 +685,8 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         return is_builtin_len(c, expr) ? check_len(c, expr) : check_call(c, expr);
     case EXPR_CAST:
         return check_cast(c, expr);
+    case EXPR_TERNARY:
+        return check_ternary(c, expr, hint);
     case EXPR_CIN_OK:
         return TYPE_BOOL;
     case EXPR_SIZEOF: {
@@ -595,8 +725,27 @@ static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint) {
     return expr->type;
 }
 
+/* If the operand of len() has a length known at compile time, sets *length
+   and returns true: a fixed array, a string literal, or a string constant. */
+static bool const_len(const Expr *operand, size_t *length) {
+    while (operand->kind == EXPR_IDENT) {
+        const Symbol *symbol = operand->as.ident.symbol;
+        if (!symbol) return false;
+        if (symbol->is_array) {
+            *length = symbol->length;
+            return true;
+        }
+        if (symbol->kind != SYM_CONST || symbol->is_slice) return false;
+        operand = symbol->decl->as.decl.init;
+    }
+    if (operand->kind != EXPR_STRING_LIT) return false;
+    *length = operand->as.string_lit.len;
+    return true;
+}
+
 /* True if the value is known at compile time. */
 static bool is_constant(const Expr *expr) {
+    size_t length;
     switch (expr->kind) {
     case EXPR_INT_LIT:
     case EXPR_FLOAT_LIT:
@@ -612,11 +761,15 @@ static bool is_constant(const Expr *expr) {
         return is_constant(expr->as.binary.left) && is_constant(expr->as.binary.right);
     case EXPR_CAST:
         return is_constant(expr->as.cast.operand);
+    case EXPR_TERNARY:
+        return is_constant(expr->as.ternary.cond) && is_constant(expr->as.ternary.then) &&
+               is_constant(expr->as.ternary.otherwise);
     case EXPR_CALL:
+    case EXPR_LEN:
+        return const_len(expr->as.len.operand, &length);
     case EXPR_SIZEOF:
     case EXPR_CIN_OK:
     case EXPR_INDEX:
-    case EXPR_LEN:
         return false;
     }
     return false;
@@ -626,11 +779,73 @@ static bool is_constant(const Expr *expr) {
 
 static void check_block(Checker *c, Block *block);
 
+static bool eval_const_int(const Expr *expr, long long *out);
+
+/* Evaluates a bool expression made of literals, constants, comparisons of
+   integers and logic. Returns false if it is not one. */
+static bool eval_const_bool(const Expr *expr, bool *out) {
+    long long left, right;
+    bool a, b;
+    switch (expr->kind) {
+    case EXPR_BOOL_LIT:
+        *out = expr->as.bool_lit;
+        return true;
+    case EXPR_IDENT: {
+        const Symbol *symbol = expr->as.ident.symbol;
+        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array) return false;
+        return eval_const_bool(symbol->decl->as.decl.init, out);
+    }
+    case EXPR_UNARY:
+        if (expr->as.unary.op != OP_NOT || !eval_const_bool(expr->as.unary.operand, &a)) {
+            return false;
+        }
+        *out = !a;
+        return true;
+    case EXPR_TERNARY:
+        if (!eval_const_bool(expr->as.ternary.cond, &a)) return false;
+        return eval_const_bool(a ? expr->as.ternary.then : expr->as.ternary.otherwise, out);
+    case EXPR_BINARY:
+        if (expr->as.binary.op == OP_AND || expr->as.binary.op == OP_OR) {
+            if (!eval_const_bool(expr->as.binary.left, &a) ||
+                !eval_const_bool(expr->as.binary.right, &b)) {
+                return false;
+            }
+            *out = expr->as.binary.op == OP_AND ? a && b : a || b;
+            return true;
+        }
+        if (!eval_const_int(expr->as.binary.left, &left) ||
+            !eval_const_int(expr->as.binary.right, &right)) {
+            return false;
+        }
+        switch (expr->as.binary.op) {
+        case OP_EQ: *out = left == right; return true;
+        case OP_NE: *out = left != right; return true;
+        case OP_LT: *out = left < right;  return true;
+        case OP_LE: *out = left <= right; return true;
+        case OP_GT: *out = left > right;  return true;
+        case OP_GE: *out = left >= right; return true;
+        default:    return false;
+        }
+    default:
+        return false;
+    }
+}
+
 /* Evaluates an integer expression made of literals, constants and
    arithmetic. Returns false if it is not one, or overflows. */
 static bool eval_const_int(const Expr *expr, long long *out) {
     long long left, right;
+    bool chosen;
+    size_t length;
     switch (expr->kind) {
+    case EXPR_LEN:
+        if (!const_len(expr->as.len.operand, &length)) return false;
+        *out = (long long)length;
+        return true;
+    case EXPR_TERNARY:
+        if (!eval_const_bool(expr->as.ternary.cond, &chosen)) return false;
+        return eval_const_int(chosen ? expr->as.ternary.then : expr->as.ternary.otherwise,
+                              out);
     case EXPR_INT_LIT:
         if (expr->as.int_lit > (U128)0x7fffffffffffffffLL) return false;
         *out = (long long)expr->as.int_lit;
@@ -740,6 +955,7 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
     Symbol *symbol = new_symbol(c, is_const ? SYM_CONST : SYM_VAR, stmt->as.decl.name,
                                 stmt->loc, type);
     symbol->decl = stmt;
+    symbol->exported = stmt->exported;
     symbol->is_array = true;
     symbol->length = length_known && length ? length : 1;
     stmt->as.decl.symbol = symbol;
@@ -775,6 +991,7 @@ static void check_decl(Checker *c, Stmt *stmt) {
     Symbol *symbol = new_symbol(c, is_const ? SYM_CONST : SYM_VAR, stmt->as.decl.name,
                                 stmt->loc, type);
     symbol->decl = stmt;
+    symbol->exported = stmt->exported;
     stmt->as.decl.symbol = symbol;
     declare(c, symbol);
     if (!is_const) {
@@ -809,10 +1026,7 @@ static void check_assign(Checker *c, Stmt *stmt) {
         error(c, stmt->loc, "cannot assign to array '%.*s' as a whole; assign its elements",
               NAME(name));
     } else if (symbol && symbol->kind != SYM_VAR) {
-        const char *what = symbol->kind == SYM_CONST   ? "constant"
-                           : symbol->kind == SYM_PARAM ? "parameter"
-                                                       : "function";
-        error(c, stmt->loc, "cannot assign to %s '%.*s'", what, NAME(name));
+        error(c, stmt->loc, "cannot assign to %s '%.*s'", symbol_what(symbol), NAME(name));
     } else if (symbol) {
         stmt->as.assign.symbol = symbol;
         expected = symbol->type;
@@ -1207,10 +1421,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                 continue;
             }
             if (symbol->kind != SYM_VAR) {
-                const char *what = symbol->kind == SYM_CONST   ? "constant"
-                                   : symbol->kind == SYM_PARAM ? "parameter"
-                                                               : "function";
-                error(c, target->loc, "cannot read into %s '%.*s'", what,
+                error(c, target->loc, "cannot read into %s '%.*s'", symbol_what(symbol),
                       NAME(target->name));
                 continue;
             }
@@ -1247,27 +1458,29 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_FUNC:
         check_func(c, stmt);
         break;
+    case STMT_IMPORT:
+        break; /* followed before anything else is checked */
     }
 }
 
 static void warn_unused(Checker *c) {
     for (size_t i = 0; i < c->unit->symbols.count; i++) {
         const Symbol *symbol = c->unit->symbols.items[i];
-        const char *what;
-        switch (symbol->kind) {
-        case SYM_CONST: what = "constant"; break;
-        case SYM_VAR:   what = "variable"; break;
-        case SYM_FUNC:  what = "function"; break;
-        case SYM_LABEL: what = "label";    break;
-        default:        continue;
-        }
-        /* main is called by the runtime. */
+        if (symbol->kind == SYM_PARAM) continue;
+        /* main is called by the runtime, and what a file exports is there
+           for the files that import it. */
         if (symbol->decl && symbol->decl == c->unit->program.main) continue;
+        if (symbol->exported) continue;
         if (!symbol->used) {
-            diag_add(c->diags, SEV_WARNING, symbol->loc, "%s '%.*s' is never used", what,
-                     NAME(symbol->name));
+            diag_add(c->diags, SEV_WARNING, symbol->loc, "%s '%.*s' is never used",
+                     symbol_what(symbol), NAME(symbol->name));
         }
     }
+}
+
+static bool is_declaration(const Stmt *stmt) {
+    return stmt->kind == STMT_CONST || stmt->kind == STMT_VAR ||
+           stmt->kind == STMT_FUNC || stmt->kind == STMT_IMPORT;
 }
 
 /* A file that defines main is laid out like a C program: declarations at the
@@ -1290,12 +1503,140 @@ static void check_main(Checker *c, const Stmt *main) {
     const Block *top = &c->unit->program.top;
     for (size_t i = 0; i < top->count; i++) {
         const Stmt *stmt = top->stmts[i];
-        if (stmt->kind != STMT_CONST && stmt->kind != STMT_VAR && stmt->kind != STMT_FUNC) {
+        if (!is_declaration(stmt)) {
             error(c, stmt->loc,
                   "a file that defines 'main' can only have declarations at the top "
                   "level; move this statement into a function");
         }
     }
+}
+
+/* ---- Modules ---- */
+
+static void analyze(Unit *unit);
+
+/* The name a module gets when its import does not give one: the file's name
+   without its directory and ".wind". */
+static Str default_module_name(Str path) {
+    size_t start = path.len;
+    while (start > 0 && path.data[start - 1] != '/') start--;
+    Str name = {path.data + start, path.len - start};
+    if (name.len > 5 && memcmp(name.data + name.len - 5, ".wind", 5) == 0) name.len -= 5;
+    return name;
+}
+
+static bool is_usable_name(Str name) {
+    if (name.len == 0) return false;
+    for (size_t i = 0; i < name.len; i++) {
+        char ch = name.data[i];
+        bool letter = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
+        bool digit = ch >= '0' && ch <= '9';
+        if (!letter && !(digit && i > 0)) return false;
+    }
+    for (size_t i = 0; i < keyword_count(); i++) {
+        if (str_eq_cstr(name, keyword_name(i))) return false;
+    }
+    return true;
+}
+
+static const char *arena_cstr(Arena *arena, const char *text) {
+    size_t size = strlen(text) + 1;
+    char *copy = arena_alloc(arena, size);
+    memcpy(copy, text, size);
+    return copy;
+}
+
+/* Returns the unit for the file an import names, analyzing the file if no
+   import has reached it yet. Returns NULL, with the problem reported, if
+   the file cannot be read or the import closes a cycle. */
+static const Unit *load_module(Checker *c, const Stmt *stmt) {
+    Unit *root = c->unit->root;
+    Str written = stmt->as.import.path;
+    char *path = path_beside(c->unit->path, written);
+    char *real_path = path_canonical(path);
+    Str src;
+    if (!real_path) {
+        error(c, stmt->loc, "cannot open '%s': %s", path, strerror(errno));
+        free(path);
+        return NULL;
+    }
+
+    Unit *module = NULL;
+    if (root->real_path && strcmp(root->real_path, real_path) == 0) module = root;
+    for (size_t i = 0; !module && i < root->module_count; i++) {
+        if (strcmp(root->modules[i]->real_path, real_path) == 0) module = root->modules[i];
+    }
+    if (module) {
+        free(path);
+        free(real_path);
+        if (module->loading) {
+            error(c, stmt->loc, "import cycle: '%.*s' leads back to itself",
+                  NAME(written));
+            return NULL;
+        }
+        return module;
+    }
+
+    if (!file_read(real_path, &src)) {
+        error(c, stmt->loc, "cannot read '%s': %s", path, strerror(errno));
+        free(path);
+        free(real_path);
+        return NULL;
+    }
+    module = arena_alloc(&root->arena, sizeof *module);
+    memset(module, 0, sizeof *module);
+    char *text = arena_alloc(&module->arena, src.len + 1);
+    memcpy(text, src.data, src.len);
+    free((char *)src.data);
+    module->src = (Str){text, src.len};
+    module->path = arena_cstr(&root->arena, path);
+    module->real_path = arena_cstr(&root->arena, real_path);
+    free(path);
+    free(real_path);
+    module->root = root;
+    module->id = (int)root->module_count + 1;
+    size_t index = root->module_count;
+    ARENA_PUSH(&root->arena, root->modules, root->module_count, root->module_cap, module);
+
+    analyze(module);
+
+    /* Everything listed after the module was reached through it, so moving
+       it to the end puts it behind all that it imports. */
+    for (size_t i = index; i + 1 < root->module_count; i++) {
+        root->modules[i] = root->modules[i + 1];
+    }
+    root->modules[root->module_count - 1] = module;
+    return module;
+}
+
+static void check_import(Checker *c, Stmt *stmt) {
+    Str path = stmt->as.import.path;
+    if (path.len == 0 || memchr(path.data, '\0', path.len)) {
+        error(c, stmt->loc, "an import needs the path of a file");
+        return;
+    }
+    const Unit *module = load_module(c, stmt);
+    bool broken = !module || module->diags.error_count > 0;
+    if (module && broken) error(c, stmt->loc, "'%.*s' has errors", NAME(path));
+
+    bool has_alias = stmt->as.import.alias.len > 0;
+    Str name = has_alias ? stmt->as.import.alias : default_module_name(stmt->as.import.path);
+    if (!is_usable_name(name)) {
+        error(c, stmt->loc, "'%.*s' cannot be used as a name; give the import one with "
+                            "'as name'",
+              NAME(name));
+        return;
+    }
+    Symbol *symbol = new_symbol(c, SYM_MODULE, name,
+                                has_alias ? stmt->as.import.alias_loc : stmt->loc,
+                                TYPE_INVALID);
+    symbol->decl = stmt;
+    symbol->module = module;
+    symbol->visible_from = 0;
+    /* An import that failed has its error; "never used" would add nothing. */
+    symbol->used = broken;
+    stmt->as.import.symbol = symbol;
+    declare(c, symbol);
 }
 
 void check_program(Unit *unit) {
@@ -1311,21 +1652,35 @@ void check_program(Unit *unit) {
     push_scope(&c, &global, unit->src.len);
     c.global = &global;
 
-    /* Functions are declared before anything is checked, so they can be
-       called from code above them and from each other. */
+    /* Imports and functions are declared before anything is checked, so
+       they can be used from code above them, and functions from each
+       other. */
+    for (size_t i = 0; i < top->count; i++) {
+        if (top->stmts[i]->kind == STMT_IMPORT) check_import(&c, top->stmts[i]);
+    }
     for (size_t i = 0; i < top->count; i++) {
         Stmt *stmt = top->stmts[i];
         if (stmt->kind != STMT_FUNC) continue;
         Symbol *symbol = new_symbol(&c, SYM_FUNC, stmt->as.func.name, stmt->loc,
                                     stmt->as.func.ret);
         symbol->decl = stmt;
+        symbol->exported = stmt->exported;
         symbol->visible_from = 0;
         stmt->as.func.symbol = symbol;
         declare(&c, symbol);
     }
 
     const Symbol *main_symbol = find_in(&global.symbols, (Str){"main", 4});
-    if (main_symbol) check_main(&c, main_symbol->decl);
+    if (main_symbol && main_symbol->kind == SYM_FUNC) {
+        check_main(&c, main_symbol->decl);
+    } else if (unit->root != unit) {
+        for (size_t i = 0; i < top->count; i++) {
+            if (is_declaration(top->stmts[i])) continue;
+            error(&c, top->stmts[i]->loc,
+                  "an imported file can only have declarations at the top level; move "
+                  "this statement into a function");
+        }
+    }
 
     collect_labels(&c, top);
     for (size_t i = 0; i < top->count; i++) check_stmt(&c, top->stmts[i]);
@@ -1333,16 +1688,32 @@ void check_program(Unit *unit) {
     warn_unused(&c);
 }
 
-void unit_analyze(Unit *unit, Str src) {
-    memset(unit, 0, sizeof *unit);
-    unit->src = src;
+/* Parses and checks a unit whose source and place among the program's files
+   are set. */
+static void analyze(Unit *unit) {
+    unit->loading = true;
     unit->diags.arena = &unit->arena;
-    unit->program = parse_program(src, &unit->arena, &unit->diags);
+    unit->program = parse_program(unit->src, &unit->arena, &unit->diags);
     check_program(unit);
     diags_sort(&unit->diags);
+    unit->loading = false;
+}
+
+void unit_analyze(Unit *unit, Str src, const char *path) {
+    memset(unit, 0, sizeof *unit);
+    unit->src = src;
+    unit->root = unit;
+    if (path) {
+        unit->path = arena_cstr(&unit->arena, path);
+        char *real_path = path_canonical(path);
+        if (real_path) unit->real_path = arena_cstr(&unit->arena, real_path);
+        free(real_path);
+    }
+    analyze(unit);
 }
 
 void unit_release(Unit *unit) {
+    for (size_t i = 0; i < unit->module_count; i++) arena_release(&unit->modules[i]->arena);
     arena_release(&unit->arena);
     memset(unit, 0, sizeof *unit);
 }

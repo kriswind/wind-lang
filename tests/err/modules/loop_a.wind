@@ -1,0 +1,2 @@
+import "loop_b.wind"
+export int a() { return loop_b.b() }

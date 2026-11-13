@@ -1,0 +1,16 @@
+// len() of a fixed array or a constant string is known at compile time.
+const string pets[] = {"cat", "dog", "fish"}
+const int pet_count = len(pets)
+const string greeting = "hello"
+const string same = greeting
+const int sizes[] = {len(greeting), len(same), len("ab"), len(pets) * 2}
+int grid[len(pets) + 1]
+int values[4]
+const int n = len(values)
+i8 small[len("abc")]
+cout << pet_count << " " << sizes << " " << len(grid) << " " << n << " " << len(small) << "\n"
+int sum(int a[]) {
+    string s = "x"
+    return len(a) + len(s)
+}
+cout << sum(values)
