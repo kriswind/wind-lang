@@ -1,0 +1,5 @@
+import "module/example-module.wind" as em
+
+cout << em.pets
+
+cout << em.pet_count
