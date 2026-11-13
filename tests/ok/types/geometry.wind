@@ -1,0 +1,12 @@
+// Types can be exported like functions and constants.
+export struct Point { int x; int y }
+export enum Side { LEFT, RIGHT }
+export typedef Point Vector
+struct Hidden { int n }
+
+export const Point UNIT = {1, 1}
+
+export Point add(Point a, Vector b) { return {a.x + b.x, a.y + b.y} }
+export Side side_of(Point p) { return p.x < 0 ? LEFT : RIGHT }
+Hidden wrap(int n) { return {n} }
+export int unwrap_twice(int n) { return wrap(n).n * 2 }

@@ -24,6 +24,10 @@ static const struct {
     {"false", TOK_KW_FALSE, TYPE_INVALID},
     {"sizeof", TOK_KW_SIZEOF, TYPE_INVALID},
     {"import", TOK_KW_IMPORT, TYPE_INVALID},
+    {"struct", TOK_KW_STRUCT, TYPE_INVALID},
+    {"enum", TOK_KW_ENUM, TYPE_INVALID},
+    {"typedef", TOK_KW_TYPEDEF, TYPE_INVALID},
+    {"typeof", TOK_KW_TYPEOF, TYPE_INVALID},
     {"export", TOK_KW_EXPORT, TYPE_INVALID},
     {"void", TOK_TYPE, TYPE_VOID},
     {"bool", TOK_TYPE, TYPE_BOOL},
@@ -115,6 +119,10 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_FALSE:  return "'false'";
     case TOK_KW_SIZEOF: return "'sizeof'";
     case TOK_KW_IMPORT: return "'import'";
+    case TOK_KW_STRUCT: return "'struct'";
+    case TOK_KW_ENUM:   return "'enum'";
+    case TOK_KW_TYPEDEF: return "'typedef'";
+    case TOK_KW_TYPEOF: return "'typeof'";
     case TOK_KW_EXPORT: return "'export'";
     case TOK_KW_UNSIGNED: return "'unsigned'";
     case TOK_KW_SIGNED: return "'signed'";

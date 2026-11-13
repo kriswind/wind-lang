@@ -1,0 +1,89 @@
+// Structs, enums, typedef and typeof.
+import "types/geometry.wind" as geo
+
+enum Color { RED, GREEN = 5, BLUE, CRIMSON = int(RED), LAST = int(BLUE) + 10 }
+struct Point { int x; int y }
+struct Pixel {
+    Point at
+    Color color
+    string label
+    f32 alpha
+}
+typedef struct Segment { Point from; Point to } Line;
+typedef int Meters
+typedef enum { OFF, ON } Switch
+
+const Point ORIGIN = {0, 0}
+const Line AXIS = {ORIGIN, {.x = 10}}
+const Point CORNERS[] = {{0, 0}, {.y = 4, .x = 3}, ORIGIN}
+const string MODE = sizeof(Point) > 8 ? "wide" : "narrow"
+const Pixel DOT = {{2, 3}, GREEN, MODE, 0.5}
+
+Point shift(Point p, int by) { return {p.x + by, p.y + by} }
+int length(struct Segment line) { return line.to.x - line.from.x }
+string name(Color c) { return c == RED ? "red" : c == GREEN ? "green" : "other" }
+
+int sum_x(Point points[]) {
+    int total = 0
+    for (int i = 0; i < len(points); i++) total += points[i].x
+    points[0].x = 99
+    return total
+}
+
+int main() {
+    // Values, copies and fields.
+    Point p = {1, 2}
+    Point q
+    q = shift(p, 10)
+    q.y += 5
+    q.x++
+    Point copy = p
+    copy.x = 50
+    cout << p << " " << q << " " << copy << "\n"
+
+    // Nested structs, designated fields, and fields left at zero.
+    Pixel px = {.label = "px", .at = {4, 5}}
+    px.at.y <<= 2
+    px.color = BLUE
+    cout << px << "\n" << DOT << "\n"
+
+    // typedef names a type; typeof borrows one.
+    Meters m = length(AXIS)
+    typeof(m) twice = m * 2
+    typeof(p.x + 1) wide = 7
+    typeof(Point) other = (Point){8, 9}
+    cout << m << " " << twice << " " << wide << " " << other.y << "\n"
+
+    // Enums print by name and convert only explicitly.
+    Color c = BLUE
+    Switch sw = ON
+    cout << c << " " << name(c) << " " << int(c) << " " << Color(5) << " " << (Color)9 << "\n"
+    cout << CRIMSON << " " << LAST << " " << sw << " " << (c > RED) << " " << (sw == OFF) << "\n"
+
+    // Arrays of structs.
+    Point pts[3] = {{1, 1}, {.y = 2}}
+    pts[2] = shift(ORIGIN, 7)
+    pts[-2].x += 40
+    cout << pts << " " << sum_x(pts) << " " << pts[0].x << "\n"
+    cout << CORNERS << " " << len(CORNERS) << " " << CORNERS[1].x << "\n"
+
+    // Sizes follow C's layout.
+    cout << sizeof(Point) << " " << sizeof(Pixel) << " " << sizeof(Color) << " " << sizeof(p) << " " << sizeof(pts) << "\n"
+
+    // Reading into fields.
+    cin >> p.x >> pts[1].y >> px.at.x
+    cout << p.x << " " << pts[1].y << " " << px.at.x << "\n"
+
+    // Types from a module.
+    geo.Point g = geo.add(geo.UNIT, {2, 3})
+    geo.Vector v = g
+    geo.Side s = geo.side_of({-1, 0})
+    cout << g << " " << v.y << " " << s << " " << geo.RIGHT << " " << geo.unwrap_twice(4) << "\n"
+    cout << (geo.Point){5, 6} << " " << sizeof(geo.Point) << "\n"
+
+    // A condition in parentheses is still a condition.
+    bool ready = true
+    if (ready) p.x = 0
+    cout << p.x << "\n"
+    return 0
+}

@@ -6,3 +6,6 @@ int sum(int a[]) {
     return from_parameter + from_variable + sized[0]
 }
 cout << sum(1)
+int f() { return 1 }
+const int n = f()
+cout << n

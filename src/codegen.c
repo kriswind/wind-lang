@@ -102,7 +102,8 @@ static struct {
 
 /* The C name of a type, noted as needing its definition. */
 static const char *c_type(TypeKind type) {
-    used.types[type] = true;
+    /* A declared type is always defined; see emit_declared_types. */
+    if (type < TYPE_COUNT) used.types[type] = true;
     return type_c_name(type);
 }
 
@@ -521,7 +522,10 @@ static void emit_symbol(const Symbol *symbol, FILE *out) {
     case SYM_CONST:  fprintf(out, "c%d_%.*s", symbol->id, len, name); break;
     case SYM_VAR:
     case SYM_PARAM:  fprintf(out, "v%d_%.*s", symbol->id, len, name); break;
-    case SYM_MODULE: break; /* never emitted: a module is not a value */
+    case SYM_MODULE:
+    case SYM_TYPE:
+    case SYM_ENUM_VALUE:
+        break; /* never emitted by name: none of these is stored */
     }
 }
 
@@ -534,9 +538,30 @@ static Str const_string(const Expr *expr) {
 
 /* The slice type for an element type, noted as needing its definition. */
 static void emit_slice_type(TypeKind elem, FILE *out) {
+    TypeInfo *info = type_info(elem);
+    if (info) {
+        info->slice_used = true;
+        fprintf(out, "wind_slice_%s", info->c_stem);
+        return;
+    }
     used.slices[elem] = true;
     fprintf(out, "wind_slice_%s", type_name(elem));
 }
+
+/* True for a constant that is stored in the generated program, and so is
+   referred to by name; other constants are written out where they are used. */
+static bool is_stored_const(const Symbol *symbol) {
+    return symbol->kind == SYM_CONST &&
+           (symbol->is_array || symbol->type == TYPE_STRING || type_is_struct(symbol->type));
+}
+
+static void emit_field_name(Str name, FILE *out) {
+    fprintf(out, "f_%.*s", (int)name.len, name.data);
+}
+
+/* Emits the place that an assignment or a read stores into. */
+static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField *fields,
+                       size_t field_count, FILE *out);
 
 static bool is_array_name(const Expr *expr) {
     return expr->kind == EXPR_IDENT && expr->as.ident.symbol &&
@@ -690,9 +715,33 @@ static void emit_expr(const Expr *expr, FILE *out) {
     case EXPR_BOOL_LIT:
         fprintf(out, "((%s)%d)", c_type(TYPE_BOOL), expr->as.bool_lit ? 1 : 0);
         break;
+    case EXPR_FIELD:
+        fputs("(", out);
+        emit_expr(expr->as.field.base, out);
+        fputs(").", out);
+        emit_field_name(expr->as.field.name, out);
+        break;
+    case EXPR_INIT: {
+        const TypeInfo *info = type_info(expr->type);
+        fprintf(out, "((%s){ ", c_type(expr->type));
+        for (size_t i = 0; i < expr->as.init.count; i++) {
+            const InitItem *item = &expr->as.init.items[i];
+            if (i) fputs(", ", out);
+            fputs(".", out);
+            emit_field_name(info->fields[item->index].name, out);
+            fputs(" = ", out);
+            emit_expr(item->value, out);
+        }
+        /* Fields left out are zero, as in C. */
+        if (expr->as.init.count == 0) fputs("0", out);
+        fputs(" })", out);
+        break;
+    }
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
-        if (symbol->kind == SYM_CONST && symbol->type != TYPE_STRING) {
+        if (symbol->kind == SYM_ENUM_VALUE) {
+            fprintf(out, "((%s)%lld)", c_type(symbol->type), symbol->value);
+        } else if (symbol->kind == SYM_CONST && !is_stored_const(symbol)) {
             fprintf(out, "((%s)", c_type(symbol->type));
             emit_expr(symbol->decl->as.decl.init, out);
             fputs(")", out);
@@ -731,6 +780,11 @@ static void emit_expr(const Expr *expr, FILE *out) {
         fputs(")", out);
         break;
     case EXPR_CAST:
+        if (type_is_struct(expr->type)) {
+            /* Only a struct converts to a struct, and C has no cast for it. */
+            emit_expr(expr->as.cast.operand, out);
+            break;
+        }
         fprintf(out, "((%s)", c_type(expr->type));
         emit_expr(expr->as.cast.operand, out);
         fputs(")", out);
@@ -774,6 +828,11 @@ static const char *value_writer(TypeKind type, bool in_array, const char **cast)
     };
     Helper helper;
     *cast = "";
+    TypeInfo *info = type_info(type);
+    if (info) {
+        info->writer_used = true;
+        return info->writer_name;
+    }
     switch (type) {
     case TYPE_STRING: helper = in_array ? HELPER_WRITE_QUOTED_STRING : HELPER_WRITE_STRING; break;
     case TYPE_CHAR:   helper = in_array ? HELPER_WRITE_QUOTED_CHAR : HELPER_WRITE_CHAR;     break;
@@ -799,8 +858,14 @@ static void emit_write(const Expr *arg, FILE *out) {
     if (is_array_name(arg)) {
         /* A whole array prints as "[a, b, c]". */
         const Symbol *array = arg->as.ident.symbol;
-        used.array_writers[array->type] = true;
-        fprintf(out, "wind_write_array_%s(", type_name(array->type));
+        TypeInfo *info = type_info(array->type);
+        if (info) {
+            info->array_writer_used = true;
+            fprintf(out, "wind_write_array_%s(", info->c_stem);
+        } else {
+            used.array_writers[array->type] = true;
+            fprintf(out, "wind_write_array_%s(", type_name(array->type));
+        }
         emit_symbol(array, out);
         if (array->is_slice) {
             fputs(".data, ", out);
@@ -837,7 +902,7 @@ static const char *int_limits(TypeKind type) {
 /* Emits the statement that reads one value from stdin into the target. */
 static void emit_read(const ReadTarget *target, FILE *out) {
     const Symbol *symbol = target->symbol;
-    TypeKind type = symbol->type;
+    TypeKind type = target->type;
     Helper helper;
     const char *call;
     switch (type) {
@@ -857,17 +922,26 @@ static void emit_read(const ReadTarget *target, FILE *out) {
         break;
     }
     used.helpers[helper] = true;
-    if (target->index) {
-        emit_element(symbol, target->index, out);
-    } else {
-        emit_symbol(symbol, out);
-    }
+    emit_place(symbol, target->index, target->fields, target->field_count, out);
     fprintf(out, " = (%s)", c_type(type));
     if (call) {
         fprintf(out, "%s;\n", call);
     } else {
         fprintf(out, "%s(%s);\n", helper == HELPER_READ_INT ? "wind_read_int" : "wind_read_uint",
                 int_limits(type));
+    }
+}
+
+static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField *fields,
+                       size_t field_count, FILE *out) {
+    if (index) {
+        emit_element(symbol, index, out);
+    } else {
+        emit_symbol(symbol, out);
+    }
+    for (size_t i = 0; i < field_count; i++) {
+        fputs(".", out);
+        emit_field_name(fields[i].name, out);
     }
 }
 
@@ -882,6 +956,7 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
     case STMT_CONST:
     case STMT_FUNC:
     case STMT_IMPORT:
+    case STMT_TYPE:
         break;
     case STMT_VAR:
         indent(depth, out);
@@ -916,41 +991,45 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         }
         fputs(";\n", out);
         break;
-    case STMT_ASSIGN:
+    case STMT_ASSIGN: {
+        const Symbol *symbol = stmt->as.assign.symbol;
+        const Expr *index = stmt->as.assign.index;
+        const PlaceField *fields = stmt->as.assign.fields;
+        size_t field_count = stmt->as.assign.field_count;
+        TypeKind type = stmt->as.assign.type;
+        Op op = stmt->as.assign.op;
         indent(depth, out);
-        if (stmt->as.assign.index && stmt->as.assign.compound &&
-            op_is_shift(stmt->as.assign.op)) {
-            /* The element is reached through a pointer so that its index is
+        if (index && stmt->as.assign.compound && op_is_shift(op)) {
+            /* The place is reached through a pointer so that its index is
                evaluated once. */
-            TypeKind type = stmt->as.assign.symbol->type;
-            fprintf(out, "{ %s *element = &", c_type(type));
-            emit_element(stmt->as.assign.symbol, stmt->as.assign.index, out);
-            fputs("; *element = ", out);
-            emit_shift_start(stmt->as.assign.op, type, out);
-            fputs("*element", out);
+            fprintf(out, "{ %s *place = &", c_type(type));
+            emit_place(symbol, index, fields, field_count, out);
+            fputs("; *place = ", out);
+            emit_shift_start(op, type, out);
+            fputs("*place", out);
             emit_shift_end(stmt->as.assign.value, out);
             fputs("; }\n", out);
             break;
         }
-        if (stmt->as.assign.index) {
+        if (index) {
             /* C's own compound operator is used so that the index is
-               evaluated once; it wraps at the element's width as well. */
-            emit_element(stmt->as.assign.symbol, stmt->as.assign.index, out);
-            fprintf(out, " %s= ", stmt->as.assign.compound ? op_text(stmt->as.assign.op) : "");
+               evaluated once; it wraps at the place's width as well. */
+            emit_place(symbol, index, fields, field_count, out);
+            fprintf(out, " %s= ", stmt->as.assign.compound ? op_text(op) : "");
             emit_expr(stmt->as.assign.value, out);
             fputs(";\n", out);
             break;
         }
-        emit_symbol(stmt->as.assign.symbol, out);
+        emit_place(symbol, NULL, fields, field_count, out);
         fputs(" = ", out);
-        if (stmt->as.assign.compound && op_is_shift(stmt->as.assign.op)) {
-            emit_shift_start(stmt->as.assign.op, stmt->as.assign.symbol->type, out);
-            emit_symbol(stmt->as.assign.symbol, out);
+        if (stmt->as.assign.compound && op_is_shift(op)) {
+            emit_shift_start(op, type, out);
+            emit_place(symbol, NULL, fields, field_count, out);
             emit_shift_end(stmt->as.assign.value, out);
         } else if (stmt->as.assign.compound) {
-            fprintf(out, "((%s)(", c_type(stmt->as.assign.symbol->type));
-            emit_symbol(stmt->as.assign.symbol, out);
-            fprintf(out, " %s ", op_text(stmt->as.assign.op));
+            fprintf(out, "((%s)(", c_type(type));
+            emit_place(symbol, NULL, fields, field_count, out);
+            fprintf(out, " %s ", op_text(op));
             emit_expr(stmt->as.assign.value, out);
             fputs("))", out);
         } else {
@@ -958,6 +1037,7 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         }
         fputs(";\n", out);
         break;
+    }
     case STMT_EXPR:
         indent(depth, out);
         emit_expr(stmt->as.expr, out);
@@ -1180,42 +1260,60 @@ static void emit_runtime(FILE *out) {
     }
 }
 
+/* Emits a constant value in the form C accepts for an object that lives for
+   the whole program: braces instead of the compound literals that emit_expr
+   writes, and the value of another stored constant instead of its name. */
+static void emit_static_value(const Expr *expr, FILE *out) {
+    while (expr->kind == EXPR_IDENT && is_stored_const(expr->as.ident.symbol)) {
+        expr = expr->as.ident.symbol->decl->as.decl.init;
+    }
+    if (expr->kind == EXPR_CAST && type_is_struct(expr->type)) {
+        emit_static_value(expr->as.cast.operand, out);
+    } else if (expr->kind == EXPR_STRING_LIT) {
+        fputs("{ ", out);
+        emit_c_string(expr->as.string_lit, out);
+        fprintf(out, ", %zu }", expr->as.string_lit.len);
+    } else if (expr->kind == EXPR_INIT) {
+        const TypeInfo *info = type_info(expr->type);
+        fputs("{ ", out);
+        for (size_t i = 0; i < expr->as.init.count; i++) {
+            const InitItem *item = &expr->as.init.items[i];
+            if (i) fputs(", ", out);
+            fputs(".", out);
+            emit_field_name(info->fields[item->index].name, out);
+            fputs(" = ", out);
+            emit_static_value(item->value, out);
+        }
+        if (expr->as.init.count == 0) fputs("0", out);
+        fputs(" }", out);
+    } else {
+        emit_expr(expr, out);
+    }
+}
+
 /* Emits the constants that need storage and the top-level variables of one
    file. */
 static void emit_data(const Unit *unit, FILE *out) {
     bool any = false;
     for (size_t i = 0; i < unit->symbols.count; i++) {
         const Symbol *symbol = unit->symbols.items[i];
-        if (symbol->kind != SYM_CONST) continue;
+        if (!is_stored_const(symbol)) continue;
+        const Stmt *decl = symbol->decl;
+        fprintf(out, "static const %s ", c_type(symbol->type));
+        emit_symbol(symbol, out);
         if (symbol->is_array) {
-            const Stmt *decl = symbol->decl;
-            fprintf(out, "static const %s ", c_type(symbol->type));
-            emit_symbol(symbol, out);
             fprintf(out, "[%zu] = { ", symbol->length);
             for (size_t j = 0; j < decl->as.decl.elem_count; j++) {
                 if (j) fputs(", ", out);
-                if (symbol->type == TYPE_STRING) {
-                    /* Spelled as a brace list: C does not accept a compound
-                       literal in a static initializer. */
-                    Str value = const_string(decl->as.decl.elems[j]);
-                    fputs("{ ", out);
-                    emit_c_string(value, out);
-                    fprintf(out, ", %zu }", value.len);
-                } else {
-                    emit_expr(decl->as.decl.elems[j], out);
-                }
+                emit_static_value(decl->as.decl.elems[j], out);
             }
             fputs(" };\n", out);
-            any = true;
-        } else if (symbol->type == TYPE_STRING) {
-            Str value = const_string(symbol->decl->as.decl.init);
-            fprintf(out, "static const %s ", c_type(TYPE_STRING));
-            emit_symbol(symbol, out);
-            fputs(" = { ", out);
-            emit_c_string(value, out);
-            fprintf(out, ", %zu };\n", value.len);
-            any = true;
+        } else {
+            fputs(" = ", out);
+            emit_static_value(decl->as.decl.init, out);
+            fputs(";\n", out);
         }
+        any = true;
     }
     emit_variables(&unit->program.globals, "static ", out);
     if (any || unit->program.globals.count) fputs("\n", out);
@@ -1289,17 +1387,144 @@ static void emit_program(const Unit *unit, FILE *out) {
     fputs("    return 0;\n}\n", out);
 }
 
+/* Emits what the program's declared types need: their definitions, in the
+   order they were declared, which puts each after the types of its fields;
+   then the array-parameter types and the printing functions that the
+   program turned out to use. Must run after the program is emitted, which
+   settles what is used, and before the runtime is, which this adds to. */
+static void emit_declared_types(FILE *out) {
+    size_t count = types_count();
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (info->is_enum) {
+            used.headers |= HEADER_STDINT;
+            fprintf(out, "typedef int32_t %s;\n", info->c_name);
+            continue;
+        }
+        fputs("typedef struct {\n", out);
+        for (size_t j = 0; j < info->field_count; j++) {
+            fprintf(out, "    %s ", c_type(info->fields[j].type));
+            emit_field_name(info->fields[j].name, out);
+            fputs(";\n", out);
+        }
+        fprintf(out, "} %s;\n", info->c_name);
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (!info->slice_used) continue;
+        used.headers |= HEADER_STDDEF;
+        fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
+                info->c_name, info->c_stem);
+    }
+    if (count) fputs("\n", out);
+
+    /* Printing a struct prints its fields, which may be of types that
+       nothing else prints, so the set is grown until it stops changing. */
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t i = 0; i < count; i++) {
+            TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+            if (info->array_writer_used) info->writer_used = true;
+            if (!info->writer_used || info->writer_emitted) continue;
+            info->writer_emitted = true;
+            changed = true;
+            used.headers |= HEADER_STDIO;
+            if (info->is_enum) used.helpers[HELPER_WRITE_INT] = true;
+            for (size_t j = 0; j < info->field_count; j++) {
+                const char *cast;
+                value_writer(info->fields[j].type, true, &cast);
+            }
+        }
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (!info->writer_used) continue;
+        fprintf(out, "static void %s(%s value);\n", info->writer_name, info->c_name);
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (!info->writer_used) continue;
+        fprintf(out, "static void %s(%s value) {\n", info->writer_name, info->c_name);
+        if (info->is_enum) {
+            /* A value prints as its name; when several names share a value,
+               as the first of them; when none has it, as the number. */
+            fputs("    switch (value) {\n", out);
+            for (size_t j = 0; j < info->value_count; j++) {
+                bool repeated = false;
+                for (size_t k = 0; k < j; k++) {
+                    if (info->values[k].value == info->values[j].value) repeated = true;
+                }
+                if (repeated) continue;
+                fprintf(out, "    case %lld: fputs(\"%.*s\", stdout); break;\n",
+                        info->values[j].value, (int)info->values[j].name.len,
+                        info->values[j].name.data);
+            }
+            fputs("    default: wind_write_int((long long)value); break;\n    }\n", out);
+        } else {
+            fprintf(out, "    fputs(\"%s{\", stdout);\n", info->short_name);
+            for (size_t j = 0; j < info->field_count; j++) {
+                const Field *field = &info->fields[j];
+                const char *cast;
+                const char *writer = value_writer(field->type, true, &cast);
+                fprintf(out, "    fputs(\"%s%.*s = \", stdout);\n", j ? ", " : "",
+                        (int)field->name.len, field->name.data);
+                fprintf(out, "    %s(%svalue.", writer, cast);
+                emit_field_name(field->name, out);
+                fputs(");\n", out);
+            }
+            fputs("    fputc('}', stdout);\n", out);
+        }
+        fputs("}\n\n", out);
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (!info->array_writer_used) continue;
+        used.headers |= HEADER_STDDEF;
+        fprintf(out,
+                "static void wind_write_array_%s(const %s *data, size_t len) {\n"
+                "    fputc('[', stdout);\n"
+                "    for (size_t i = 0; i < len; i++) {\n"
+                "        if (i) fputs(\", \", stdout);\n"
+                "        %s(data[i]);\n"
+                "    }\n"
+                "    fputc(']', stdout);\n"
+                "}\n\n",
+                info->c_stem, info->c_name, info->writer_name);
+    }
+}
+
+static char *emit_to_memory(void (*emit)(const Unit *, FILE *), const Unit *unit,
+                            size_t *len) {
+    char *text = NULL;
+    FILE *buffer = open_memstream(&text, len);
+    if (!buffer) fatal("out of memory");
+    emit(unit, buffer);
+    if (fclose(buffer) != 0) fatal("out of memory");
+    return text;
+}
+
+static void emit_types_of(const Unit *unit, FILE *out) {
+    (void)unit;
+    emit_declared_types(out);
+}
+
 void emit_c(const Unit *unit, FILE *out) {
     memset(&used, 0, sizeof used);
+    types_use((TypeTable *)&unit->types);
+    for (size_t i = 0; i < types_count(); i++) {
+        TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        info->writer_used = info->writer_emitted = false;
+        info->slice_used = info->array_writer_used = false;
+    }
 
-    char *program = NULL;
-    size_t program_len = 0;
-    FILE *buffer = open_memstream(&program, &program_len);
-    if (!buffer) fatal("out of memory");
-    emit_program(unit, buffer);
-    if (fclose(buffer) != 0) fatal("out of memory");
-
+    /* Written in the reverse of the order they appear in, since each part
+       finds out what the parts before it must provide. */
+    size_t program_len, types_len;
+    char *program = emit_to_memory(emit_program, unit, &program_len);
+    char *types = emit_to_memory(emit_types_of, unit, &types_len);
     emit_runtime(out);
+    fwrite(types, 1, types_len, out);
     fwrite(program, 1, program_len, out);
+    free(types);
     free(program);
 }

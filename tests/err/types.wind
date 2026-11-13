@@ -1,0 +1,47 @@
+import "types/shapes.wind"
+struct Point { int x; int y }
+struct Empty { }
+struct Twice { int a; string a }
+struct Loop { Loop inner }
+struct Uses { Later l }
+struct Later { int n }
+struct Arr { int items[4] }
+struct { int x }
+enum Color { RED, GREEN, RED }
+enum None { }
+enum Big { HUGE = 5000000000, FLOATY = 1.5 }
+typedef Nowhere Alias
+typedef int Point
+int Color = 3
+int main() {
+    struct Inner { int n }
+    Point p = {1, 2, 3}
+    Point q = {.z = 1, .x = "a", .x = 2}
+    Point r = 5
+    int n = p
+    n = p.z + n.x + RED.x
+    p = {1}
+    p.z = 1
+    p.x.y = 1
+    Color c = 1
+    c = GREEN + 1
+    n = RED
+    if (p == q) n = 1
+    cout << {1, 2}
+    Missing m
+    shapes.Secret s
+    shapes.Nope t
+    shapes.Point sp = p
+    Point back = shapes.Point(p)
+    Color k = shapes.ROUND
+    typeof(nothing) u = 1
+    typeof(main) v
+    n = Point
+    n = Point(1, 2)
+    string text = string(c)
+    cin >> p >> c >> p.z
+    cin >> Point fresh
+    n = sizeof(Unknown) + sizeof(struct Point)
+    const Point bad = {n, 1}
+    return n + int(c) + q.x + r.x + back.x + sp.x + int(k) + bad.x + m + s + t + u + len(text) + fresh.x
+}

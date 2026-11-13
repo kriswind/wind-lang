@@ -1,0 +1,13 @@
+Point{x = 1, y = 2} Point{x = 12, y = 17} Point{x = 50, y = 2}
+Pixel{at = Point{x = 4, y = 20}, color = BLUE, label = "px", alpha = 0}
+Pixel{at = Point{x = 2, y = 3}, color = GREEN, label = "wide", alpha = 0.5}
+10 20 7 9
+BLUE other 6 GREEN 9
+RED LAST ON true false
+[Point{x = 1, y = 1}, Point{x = 40, y = 2}, Point{x = 7, y = 7}] 48 99
+[Point{x = 0, y = 0}, Point{x = 3, y = 4}, Point{x = 0, y = 0}] 3 3
+16 48 4 16 48
+11 22 33
+Point{x = 3, y = 4} 4 LEFT RIGHT 8
+Point{x = 5, y = 6} 16
+0

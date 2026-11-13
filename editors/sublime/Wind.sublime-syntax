@@ -18,6 +18,10 @@ contexts:
       scope: constant.character.wind
     - match: '\b(const|export)\b'
       scope: storage.modifier.wind
+    - match: '\b(struct|enum|typedef)\b'
+      scope: keyword.declaration.wind
+    - match: '\btypeof\b'
+      scope: keyword.operator.word.wind
     - match: '\bimport\b'
       scope: keyword.control.import.wind
     - match: '\bas\b(?=\s+[A-Za-z_]\w*\s*$)'

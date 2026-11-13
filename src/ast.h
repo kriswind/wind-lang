@@ -18,6 +18,8 @@ typedef enum {
     SYM_FUNC,
     SYM_LABEL,
     SYM_MODULE,
+    SYM_TYPE,       /* a struct, an enum, or another name for a type */
+    SYM_ENUM_VALUE, /* one of an enum's names */
 } SymbolKind;
 
 /* A named thing a program declares. Created by unit_analyze. */
@@ -27,9 +29,11 @@ struct Symbol {
     /* The name at its declaration. A module imported without "as" has no
        name of its own in the source, and this is its path. */
     SrcLoc loc;
-    /* SYM_FUNC: the return type; SYM_LABEL, SYM_MODULE: unused; an array:
-       the type of its elements. */
+    /* SYM_FUNC: the return type; SYM_TYPE: the type it names;
+       SYM_ENUM_VALUE: its enum; SYM_LABEL, SYM_MODULE: unused; an array: the
+       type of its elements. */
     TypeKind type;
+    long long value; /* SYM_ENUM_VALUE */
     /* An array is either fixed (declared with a length, which it owns) or a
        slice (an array parameter: a view of someone else's elements, with a
        length known only at run time). */
@@ -44,8 +48,8 @@ struct Symbol {
     bool exported;
     /* SYM_MODULE: the imported file, or NULL if it could not be loaded. */
     const Unit *module;
-    /* The declaring statement: STMT_CONST, STMT_VAR, STMT_FUNC or
-       STMT_IMPORT. NULL for parameters and labels. */
+    /* The declaring statement: STMT_CONST, STMT_VAR, STMT_FUNC,
+       STMT_IMPORT or STMT_TYPE. NULL for parameters and labels. */
     const Stmt *decl;
     /* The function the symbol is declared in; NULL at the top level. */
     const Stmt *func;
@@ -70,6 +74,19 @@ typedef struct {
     const Symbol *symbol;
 } Ref;
 
+/* ---- Types as written ---- */
+
+/* A type that is not spelled with a built-in name, and so is only known
+   once the program is analyzed: a declared type's name, or typeof(expr). */
+typedef struct {
+    SrcLoc loc;
+    Str name; /* empty for typeof */
+    Str module; /* set for "module.Name" */
+    SrcLoc module_loc;
+    SrcLoc name_loc;
+    Expr *of; /* typeof's operand */
+} TypeRef;
+
 /* ---- Expressions ---- */
 
 typedef enum {
@@ -84,6 +101,11 @@ typedef enum {
     EXPR_CALL,
     EXPR_CAST,
     EXPR_TERNARY,
+    /* "base.name": a field of a struct value. */
+    EXPR_FIELD,
+    /* "{ a, b }" or "{ .x = a, .y = b }": a struct value, whose type is the
+       one its context asks for. */
+    EXPR_INIT,
     /* "cin" used as a value: whether the most recent read succeeded. */
     EXPR_CIN_OK,
     EXPR_INDEX,
@@ -158,8 +180,19 @@ struct Expr {
         } call;
         struct {
             TypeKind to;
+            TypeRef *to_ref; /* NULL for a built-in type; resolved into "to" */
             Expr *operand;
         } cast;
+        struct {
+            Expr *base;
+            Str name;
+            SrcLoc name_loc;
+            int index; /* the field's position; set by unit_analyze */
+        } field;
+        struct {
+            struct InitItem *items;
+            size_t count;
+        } init;
         /* "cond ? then : otherwise" */
         struct {
             Expr *cond;
@@ -168,6 +201,7 @@ struct Expr {
         } ternary;
         struct {
             TypeKind type; /* used when operand is NULL */
+            TypeRef *type_ref; /* as for cast.to_ref */
             Expr *operand;
         } size_of;
         struct {
@@ -180,6 +214,14 @@ struct Expr {
         } len;
     } as;
 };
+
+/* One value of an EXPR_INIT. */
+typedef struct InitItem {
+    Str field; /* empty when the value is given by position */
+    SrcLoc field_loc;
+    Expr *value;
+    int index; /* the field it sets; set by unit_analyze */
+} InitItem;
 
 /* ---- Statements ---- */
 
@@ -201,7 +243,32 @@ typedef enum {
     STMT_RETURN,
     STMT_FUNC,
     STMT_IMPORT,
+    STMT_TYPE,
 } StmtKind;
+
+typedef enum {
+    TYPE_DECL_STRUCT,
+    TYPE_DECL_ENUM,
+    TYPE_DECL_ALIAS, /* typedef */
+} TypeDeclKind;
+
+/* A field in a struct declaration, or a name in an enum declaration. */
+typedef struct {
+    Str name;
+    SrcLoc loc;
+    TypeKind type; /* field */
+    TypeRef *type_ref;
+    Expr *value; /* enum name: its explicit value, or NULL */
+    Symbol *symbol; /* enum name; set by unit_analyze */
+} Member;
+
+/* The ".field" steps that follow the variable, or its element, in the
+   target of an assignment or a read. */
+typedef struct {
+    Str name;
+    SrcLoc loc;
+    int index; /* the field's position; set by unit_analyze */
+} PlaceField;
 
 typedef struct {
     Stmt **stmts;
@@ -212,6 +279,7 @@ typedef struct {
 
 typedef struct {
     TypeKind type; /* for an array parameter, the type of its elements */
+    TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
     Str name;
     SrcLoc loc;
     bool is_slice;  /* declared as "T name[]" */
@@ -224,8 +292,13 @@ typedef struct {
     Str name;
     SrcLoc loc;
     bool declares;
-    TypeKind type;        /* the declared type, when declares is set */
+    /* The declared type when declares is set; else the type of the place
+       read into, set by unit_analyze. */
+    TypeKind type;
+    TypeRef *type_ref;    /* as for Param */
     Expr *index;          /* set for "cin >> name[index]" */
+    PlaceField *fields;   /* set for "cin >> name.field" */
+    size_t field_count;
     const Symbol *symbol; /* set by unit_analyze; NULL if it cannot be read into */
 } ReadTarget;
 
@@ -237,12 +310,13 @@ struct Stmt {
     /* The first and last tokens of a statement that sits in a block. */
     SrcLoc start;
     SrcLoc end;
-    /* STMT_CONST, STMT_FUNC: declared with "export". */
+    /* STMT_CONST, STMT_FUNC, STMT_TYPE: declared with "export". */
     bool exported;
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
             TypeKind type; /* for an array, the type of its elements */
+            TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
             Str name;
             Expr *init; /* NULL for a variable left at its zero value */
             Symbol *symbol;
@@ -261,6 +335,9 @@ struct Stmt {
             bool compound;
             Op op;
             Expr *index; /* set for "name[index] = value" */
+            PlaceField *fields; /* set for "name.field = value" */
+            size_t field_count;
+            TypeKind type; /* of the place assigned; set by unit_analyze */
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;
@@ -305,6 +382,7 @@ struct Stmt {
         /* STMT_FUNC */
         struct {
             TypeKind ret;
+            TypeRef *ret_ref; /* NULL for a built-in type; resolved into "ret" */
             Str name;
             Param *params;
             size_t param_count;
@@ -312,6 +390,20 @@ struct Stmt {
             Symbol *symbol;
             SymbolList locals; /* variables declared anywhere in the body */
         } func;
+        /* STMT_TYPE: "struct Name { fields }", "enum Name { names }" or
+           "typedef type Name". C's "typedef struct Tag { ... } Name" declares
+           one type under both names. */
+        struct {
+            TypeDeclKind kind;
+            Str name;
+            Str tag; /* the second name, or empty */
+            SrcLoc tag_loc;
+            Member *members;
+            size_t member_count;
+            TypeKind type; /* alias: the type named; else set by unit_analyze */
+            TypeRef *type_ref;
+            Symbol *symbol;
+        } type;
         /* STMT_IMPORT: import "path" [as alias] */
         struct {
             Str path; /* as written */
@@ -363,6 +455,9 @@ struct Unit {
     Unit **modules;
     size_t module_count;
     size_t module_cap;
+    /* Root only: the structs and enums declared in any of the program's
+       files. */
+    TypeTable types;
 };
 
 /* Parses and checks src, which must outlive the unit. path is the file it

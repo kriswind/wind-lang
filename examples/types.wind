@@ -1,0 +1,41 @@
+// Structs, enums, typedef and typeof.
+enum Suit { CLUBS, DIAMONDS, HEARTS, SPADES }
+
+struct Card {
+    Suit suit
+    int rank
+}
+
+typedef int Score
+
+const Card HAND[] = {{HEARTS, 12}, {SPADES, 1}, {CLUBS, 7}, {HEARTS, 3}}
+
+bool is_red(Suit suit) { return suit == DIAMONDS || suit == HEARTS }
+
+Score value(Card card) {
+    if (card.rank == 1) return 11
+    return card.rank > 10 ? 10 : card.rank
+}
+
+Card best(Card cards[]) {
+    Card top = cards[0]
+    for (int i = 1; i < len(cards); i++)
+        if (value(cards[i]) > value(top)) top = cards[i]
+    return top
+}
+
+int main() {
+    Card hand[len(HAND)]
+    typeof(value(HAND[0])) total = 0
+    for (int i = 0; i < len(HAND); i++) {
+        hand[i] = HAND[i]
+        total += value(hand[i])
+        cout << hand[i] << (is_red(hand[i].suit) ? " red" : " black") << "\n"
+    }
+    cout << "total " << total << ", best " << best(hand) << "\n"
+
+    Card joker = {.rank = 0}
+    joker.suit = Suit(int(SPADES))
+    cout << joker << " " << sizeof(Card) << " bytes\n"
+    return 0
+}

@@ -33,7 +33,10 @@ enum {
     LSP_COMPLETION_FUNCTION = 3,
     LSP_COMPLETION_VARIABLE = 6,
     LSP_COMPLETION_MODULE = 9,
+    LSP_COMPLETION_ENUM = 13,
     LSP_COMPLETION_KEYWORD = 14,
+    LSP_COMPLETION_ENUM_VALUE = 20,
+    LSP_COMPLETION_STRUCT = 22,
     LSP_COMPLETION_FILE = 17,
     LSP_COMPLETION_CONSTANT = 21,
     /* Guards against allocating for a corrupt Content-Length. */
@@ -329,7 +332,11 @@ static Doc *request_target(Server *server, const Json *params, size_t *offset) {
         return NULL;
     }
     Doc *doc = find_doc(server, uri);
-    if (doc) *offset = position_to_offset(doc->unit.src, line, character);
+    if (doc) {
+        *offset = position_to_offset(doc->unit.src, line, character);
+        /* Answering names the document's types. */
+        types_use(&doc->unit.types);
+    }
     return doc;
 }
 
@@ -343,6 +350,31 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     case SYM_MODULE: {
         Str path = symbol->decl->as.import.path;
         buf_printf(buf, "import \"%.*s\" as %.*s", (int)path.len, path.data, len, name);
+        break;
+    }
+    case SYM_ENUM_VALUE:
+        buf_printf(buf, "%s %.*s = %lld", type_name(symbol->type), len, name, symbol->value);
+        break;
+    case SYM_TYPE: {
+        const TypeInfo *info = type_info(symbol->type);
+        const Stmt *decl = symbol->decl;
+        if (decl->as.type.kind == TYPE_DECL_ALIAS || !info) {
+            buf_printf(buf, "typedef %s %.*s", type_name(symbol->type), len, name);
+        } else if (info->is_enum) {
+            buf_printf(buf, "enum %s { ", info->short_name);
+            for (size_t i = 0; i < info->value_count; i++) {
+                buf_printf(buf, "%s%.*s", i ? ", " : "", (int)info->values[i].name.len,
+                           info->values[i].name.data);
+            }
+            buf_puts(buf, " }");
+        } else {
+            buf_printf(buf, "struct %s { ", info->short_name);
+            for (size_t i = 0; i < info->field_count; i++) {
+                buf_printf(buf, "%s%s %.*s", i ? "; " : "", type_name(info->fields[i].type),
+                           (int)info->fields[i].name.len, info->fields[i].name.data);
+            }
+            buf_puts(buf, " }");
+        }
         break;
     }
     case SYM_CONST: {
@@ -452,7 +484,10 @@ static const Stmt *function_at(const Program *program, size_t offset) {
    the functions below it. */
 static bool visible_at(const Symbol *symbol, size_t offset, const Stmt *func) {
     if (symbol->kind == SYM_LABEL) return false;
-    if (symbol->kind == SYM_FUNC || symbol->kind == SYM_MODULE) return true;
+    if (symbol->kind == SYM_FUNC || symbol->kind == SYM_MODULE ||
+        symbol->kind == SYM_TYPE || symbol->kind == SYM_ENUM_VALUE) {
+        return true;
+    }
     if (offset < symbol->visible_from || offset > symbol->visible_to) return false;
     return symbol->func == func || symbol->global;
 }
@@ -462,6 +497,9 @@ static int completion_kind(const Symbol *symbol) {
     case SYM_FUNC:   return LSP_COMPLETION_FUNCTION;
     case SYM_CONST:  return LSP_COMPLETION_CONSTANT;
     case SYM_MODULE: return LSP_COMPLETION_MODULE;
+    case SYM_ENUM_VALUE: return LSP_COMPLETION_ENUM_VALUE;
+    case SYM_TYPE:
+        return type_is_enum(symbol->type) ? LSP_COMPLETION_ENUM : LSP_COMPLETION_STRUCT;
     default:         return LSP_COMPLETION_VARIABLE;
     }
 }

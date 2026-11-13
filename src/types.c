@@ -1,5 +1,8 @@
 #include "types.h"
 
+#include <stdio.h>
+#include <string.h>
+
 typedef enum {
     CLASS_OTHER,
     CLASS_SIGNED,
@@ -40,24 +43,111 @@ static const struct {
     [TYPE_F128]    = {"f128", "wind_f128", CLASS_FLOAT, 128},
 };
 
+static TypeTable *table;
+
+void types_use(TypeTable *in_use) {
+    table = in_use;
+}
+
+size_t types_count(void) {
+    return table ? table->count : 0;
+}
+
+TypeInfo *type_info(TypeKind type) {
+    size_t index = (size_t)type - TYPE_COUNT;
+    if (type < TYPE_COUNT || !table || index >= table->count) return NULL;
+    return table->items[index];
+}
+
+static char *format_name(const char *fmt, int number, Str name) {
+    int len = snprintf(NULL, 0, fmt, number, (int)name.len, name.data);
+    char *text = arena_alloc(table->arena, (size_t)len + 1);
+    snprintf(text, (size_t)len + 1, fmt, number, (int)name.len, name.data);
+    return text;
+}
+
+TypeKind type_add(bool is_enum, Str name, Str qualifier) {
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    int number = (int)table->count;
+    info->is_enum = is_enum;
+    char *short_name = arena_alloc(table->arena, name.len + 1);
+    memcpy(short_name, name.data, name.len);
+    short_name[name.len] = '\0';
+    info->short_name = short_name;
+    info->name = short_name;
+    if (qualifier.len) {
+        char *full = arena_alloc(table->arena, qualifier.len + name.len + 2);
+        snprintf(full, qualifier.len + name.len + 2, "%.*s.%s", (int)qualifier.len,
+                 qualifier.data, short_name);
+        info->name = full;
+    }
+    /* The number keeps apart types of one name declared in different files. */
+    info->c_name = format_name("wind_t%d_%.*s", number, name);
+    info->writer_name = format_name("wind_write_t%d_%.*s", number, name);
+    info->c_stem = format_name("t%d_%.*s", number, name);
+    /* An enum is stored as C stores one: in an int. */
+    info->size = is_enum ? 4 : 0;
+    info->align = is_enum ? 4 : 1;
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + number);
+}
+
+void type_layout(TypeInfo *info) {
+    size_t size = 0, align = 1;
+    for (size_t i = 0; i < info->field_count; i++) {
+        size_t field_align = type_align(info->fields[i].type);
+        if (field_align > align) align = field_align;
+        size = (size + field_align - 1) / field_align * field_align;
+        size += type_size(info->fields[i].type);
+    }
+    info->size = (size + align - 1) / align * align;
+    info->align = align;
+}
+
+bool type_is_struct(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && !info->is_enum;
+}
+
+bool type_is_enum(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_enum;
+}
+
+int type_field_index(const TypeInfo *info, Str name) {
+    for (size_t i = 0; i < info->field_count; i++) {
+        if (str_eq(info->fields[i].name, name)) return (int)i;
+    }
+    return -1;
+}
+
+static TypeClass class_of(TypeKind type) {
+    return type < TYPE_COUNT ? types[type].class : CLASS_OTHER;
+}
+
 const char *type_name(TypeKind type) {
-    return types[type].name;
+    const TypeInfo *info = type_info(type);
+    if (info) return info->name;
+    return type < TYPE_COUNT ? types[type].name : "<invalid>";
 }
 
 const char *type_c_name(TypeKind type) {
-    return types[type].c_name;
+    const TypeInfo *info = type_info(type);
+    if (info) return info->c_name;
+    return type < TYPE_COUNT ? types[type].c_name : "void";
 }
 
 bool type_is_signed(TypeKind type) {
-    return types[type].class == CLASS_SIGNED;
+    return class_of(type) == CLASS_SIGNED;
 }
 
 bool type_is_integer(TypeKind type) {
-    return types[type].class == CLASS_SIGNED || types[type].class == CLASS_UNSIGNED;
+    return class_of(type) == CLASS_SIGNED || class_of(type) == CLASS_UNSIGNED;
 }
 
 bool type_is_float(TypeKind type) {
-    return types[type].class == CLASS_FLOAT;
+    return class_of(type) == CLASS_FLOAT;
 }
 
 bool type_is_numeric(TypeKind type) {
@@ -71,6 +161,9 @@ static int int_bits(TypeKind type) {
 }
 
 size_t type_size(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    if (info) return info->size;
+    if (type >= TYPE_COUNT) return 0;
     switch (type) {
     case TYPE_INVALID:
     case TYPE_VOID:
@@ -83,6 +176,16 @@ size_t type_size(TypeKind type) {
     default:
         return (size_t)int_bits(type) / 8;
     }
+}
+
+size_t type_align(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    if (info) return info->align;
+    /* A string is aligned as the pointer it starts with; every other
+       built-in type is aligned to its own size. */
+    if (type == TYPE_STRING) return sizeof(void *);
+    size_t size = type_size(type);
+    return size ? size : 1;
 }
 
 U128 type_int_max(TypeKind type) {

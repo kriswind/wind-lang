@@ -32,6 +32,19 @@
  * - A function sees what is declared directly at the top level: every
  *   function, and the constants and variables declared above it.
  *
+ * Declared types:
+ *
+ * - A struct or an enum is a type of its own, distinct from every other. An
+ *   enum converts to and from integers only explicitly; its names are
+ *   constants of the enum's type. "typedef" gives a type another name and
+ *   makes no new type.
+ * - Types are declared at the top level and are known throughout the file,
+ *   but a type must be declared above another type that uses it.
+ * - "{ ... }" is a struct value whose type comes from where it is used, as
+ *   a number literal's does.
+ * - typeof(expr) is the type the expression has; the expression is checked
+ *   but never run.
+ *
  * Modules:
  *
  * - Every file is a module. "import" analyzes another file and binds a name
@@ -193,6 +206,8 @@ static const char *symbol_what(const Symbol *symbol) {
     case SYM_FUNC:   return "function";
     case SYM_LABEL:  return "label";
     case SYM_MODULE: return "module";
+    case SYM_TYPE:   return "type";
+    case SYM_ENUM_VALUE: return "enum value";
     }
     return "name";
 }
@@ -202,9 +217,10 @@ static const char *symbol_what(const Symbol *symbol) {
 static Symbol *module_member(const Unit *module, Str name) {
     for (size_t i = 0; i < module->symbols.count; i++) {
         Symbol *symbol = module->symbols.items[i];
-        bool is_member = symbol->global && (symbol->kind == SYM_CONST ||
-                                            symbol->kind == SYM_VAR ||
-                                            symbol->kind == SYM_FUNC);
+        bool is_member = symbol->global &&
+                         (symbol->kind == SYM_CONST || symbol->kind == SYM_VAR ||
+                          symbol->kind == SYM_FUNC || symbol->kind == SYM_TYPE ||
+                          symbol->kind == SYM_ENUM_VALUE);
         if (is_member && str_eq(symbol->name, name)) return symbol;
     }
     return NULL;
@@ -243,6 +259,176 @@ static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str nam
 /* ---- Expressions ---- */
 
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
+static const Symbol *array_operand(Checker *c, Expr *expr);
+
+/* If expr is the name of a type, possibly one that a module exports,
+   returns the type's symbol; NULL, with nothing reported, otherwise. */
+static Symbol *type_named_by(const Checker *c, const Expr *expr) {
+    if (expr->kind != EXPR_IDENT) return NULL;
+    Symbol *symbol;
+    if (expr->as.ident.module.len) {
+        const Symbol *owner = lookup(c, expr->as.ident.module);
+        if (!owner || owner->kind != SYM_MODULE || !owner->module) return NULL;
+        symbol = module_member(owner->module, expr->as.ident.name);
+        if (symbol && !symbol->exported) return NULL;
+    } else {
+        symbol = lookup(c, expr->as.ident.name);
+    }
+    return symbol && symbol->kind == SYM_TYPE ? symbol : NULL;
+}
+
+/* Records the references made by an expression that names a type. */
+static void use_type_name(Checker *c, const Expr *expr, Symbol *symbol) {
+    if (expr->as.ident.module.len) {
+        resolve_member(c, expr->as.ident.module, expr->as.ident.module_loc,
+                       expr->as.ident.name, expr->as.ident.name_loc);
+    } else {
+        add_ref(c, expr->as.ident.name_loc, symbol);
+    }
+    symbol->used = true;
+}
+
+/* Finds the type that a type written with a name or typeof stands for.
+   Returns TYPE_INVALID, with the problem reported, if there is none. */
+static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
+    if (ref->of) {
+        Symbol *named = type_named_by(c, ref->of);
+        if (named) {
+            use_type_name(c, ref->of, named);
+            return named->type;
+        }
+        if (array_operand(c, ref->of)) {
+            error(c, ref->of->loc, "typeof needs a value, and an array is not one; use "
+                                   "typeof on one of its elements");
+            return TYPE_INVALID;
+        }
+        return check_expr(c, ref->of, TYPE_INVALID);
+    }
+    Symbol *symbol;
+    if (ref->module.len) {
+        symbol = resolve_member(c, ref->module, ref->module_loc, ref->name, ref->name_loc);
+        if (!symbol) return TYPE_INVALID;
+    } else {
+        symbol = lookup(c, ref->name);
+        if (!symbol) {
+            error(c, ref->name_loc, "unknown type '%.*s'", NAME(ref->name));
+            return TYPE_INVALID;
+        }
+        add_ref(c, ref->name_loc, symbol);
+    }
+    if (symbol->kind != SYM_TYPE) {
+        error(c, ref->name_loc, "'%.*s' is a %s, not a type", NAME(ref->name),
+              symbol_what(symbol));
+        return TYPE_INVALID;
+    }
+    symbol->used = true;
+    return symbol->type;
+}
+
+/* The type of something declared with a type that may need resolving. */
+static TypeKind declared_type(Checker *c, TypeKind type, const TypeRef *ref, SrcLoc loc,
+                              Str name) {
+    if (!ref) return type;
+    type = resolve_type(c, ref);
+    if (type == TYPE_VOID) {
+        error(c, loc, "'%.*s' cannot have type 'void'", NAME(name));
+        return TYPE_INVALID;
+    }
+    return type;
+}
+
+/* Follows the ".field" steps of an assignment or read target, starting from
+   a value of the given type. Returns the type of the place reached, or
+   TYPE_INVALID with the problem reported. */
+static TypeKind check_place_fields(Checker *c, TypeKind type, PlaceField *fields,
+                                   size_t count) {
+    for (size_t i = 0; i < count && type != TYPE_INVALID; i++) {
+        const TypeInfo *info = type_info(type);
+        if (!info || info->is_enum) {
+            error(c, fields[i].loc, "type '%s' has no fields", type_name(type));
+            return TYPE_INVALID;
+        }
+        fields[i].index = type_field_index(info, fields[i].name);
+        if (fields[i].index < 0) {
+            error(c, fields[i].loc, "struct '%s' has no field '%.*s'", info->name,
+                  NAME(fields[i].name));
+            return TYPE_INVALID;
+        }
+        type = info->fields[fields[i].index].type;
+    }
+    return type;
+}
+
+static TypeKind check_field(Checker *c, Expr *expr) {
+    TypeKind base = check_expr(c, expr->as.field.base, TYPE_INVALID);
+    if (base == TYPE_INVALID) return TYPE_INVALID;
+    const TypeInfo *info = type_info(base);
+    if (!info || info->is_enum) {
+        error(c, expr->as.field.name_loc, "type '%s' has no fields", type_name(base));
+        return TYPE_INVALID;
+    }
+    expr->as.field.index = type_field_index(info, expr->as.field.name);
+    if (expr->as.field.index < 0) {
+        error(c, expr->as.field.name_loc, "struct '%s' has no field '%.*s'", info->name,
+              NAME(expr->as.field.name));
+        return TYPE_INVALID;
+    }
+    return info->fields[expr->as.field.index].type;
+}
+
+/* Checks a "{ ... }" value against the struct type its context asks for. */
+static TypeKind check_init(Checker *c, Expr *expr, TypeKind hint) {
+    const TypeInfo *info = type_info(hint);
+    if (!info || info->is_enum) {
+        if (hint == TYPE_INVALID) {
+            error(c, expr->loc, "this '{ ... }' has nothing to tell it which struct it "
+                                "is; write the type first, as in '(Type){ ... }'");
+        } else {
+            error(c, expr->loc, "type '%s' cannot be written as '{ ... }'", type_name(hint));
+        }
+        for (size_t i = 0; i < expr->as.init.count; i++) {
+            check_expr(c, expr->as.init.items[i].value, TYPE_INVALID);
+        }
+        return TYPE_INVALID;
+    }
+    size_t position = 0;
+    for (size_t i = 0; i < expr->as.init.count; i++) {
+        InitItem *item = &expr->as.init.items[i];
+        if (item->field.len) {
+            item->index = type_field_index(info, item->field);
+            if (item->index < 0) {
+                error(c, item->field_loc, "struct '%s' has no field '%.*s'", info->name,
+                      NAME(item->field));
+            } else {
+                position = (size_t)item->index + 1;
+            }
+        } else if (position < info->field_count) {
+            item->index = (int)position++;
+        } else {
+            error(c, item->value->loc, "too many values: struct '%s' has %zu field%s",
+                  info->name, info->field_count, info->field_count == 1 ? "" : "s");
+        }
+        if (item->index < 0) {
+            check_expr(c, item->value, TYPE_INVALID);
+            continue;
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (expr->as.init.items[j].index == item->index) {
+                error(c, item->value->loc, "field '%.*s' is given a value twice",
+                      NAME(info->fields[item->index].name));
+                break;
+            }
+        }
+        TypeKind expected = info->fields[item->index].type;
+        TypeKind found = check_expr(c, item->value, expected);
+        if (expected != TYPE_INVALID && found != TYPE_INVALID && found != expected) {
+            error(c, item->value->loc, "field '%.*s' is '%s', found '%s'",
+                  NAME(info->fields[item->index].name), type_name(expected),
+                  type_name(found));
+        }
+    }
+    return hint;
+}
 
 /* If expr is the name of an array, resolves it and returns its symbol, with
    expr->type set to the element type. Returns NULL, having done nothing, for
@@ -523,13 +709,13 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
 
     bool defined;
     if (op == OP_EQ || op == OP_NE) {
-        defined = type != TYPE_VOID;
+        defined = type != TYPE_VOID && !type_is_struct(type);
     } else if (op == OP_MOD || is_bitwise(op)) {
         defined = type_is_integer(type);
     } else if (arithmetic) {
         defined = type_is_numeric(type);
     } else {
-        defined = type_is_numeric(type) || type == TYPE_CHAR;
+        defined = type_is_numeric(type) || type == TYPE_CHAR || type_is_enum(type);
     }
     if (!defined) {
         error(c, expr->loc, "operator '%s' is not defined for '%s'", op_text(op),
@@ -563,6 +749,8 @@ static TypeKind check_ternary(Checker *c, Expr *expr, TypeKind hint) {
     return then->type;
 }
 
+static TypeKind check_cast(Checker *c, Expr *expr);
+
 static TypeKind check_call(Checker *c, Expr *expr) {
     Str name = expr->as.call.name;
     Symbol *symbol = expr->as.call.module.len
@@ -570,6 +758,21 @@ static TypeKind check_call(Checker *c, Expr *expr) {
                                           name, expr->as.call.name_loc)
                          : resolve(c, name, expr->as.call.name_loc);
     const Stmt *func = NULL;
+    if (symbol && symbol->kind == SYM_TYPE && expr->as.call.count == 1) {
+        /* "Name(value)" converts to a declared type, as "int(value)" does
+           to a built-in one. */
+        Expr *operand = expr->as.call.args[0];
+        symbol->used = true;
+        expr->kind = EXPR_CAST;
+        expr->as.cast.to = symbol->type;
+        expr->as.cast.to_ref = NULL;
+        expr->as.cast.operand = operand;
+        return check_cast(c, expr);
+    }
+    if (symbol && symbol->kind == SYM_TYPE) {
+        error(c, expr->loc, "a conversion to '%.*s' takes one value", NAME(name));
+        symbol = NULL;
+    }
     if (symbol && symbol->kind != SYM_FUNC) {
         error(c, expr->as.call.name_loc, "'%.*s' is not a function", NAME(name));
     } else if (symbol) {
@@ -612,15 +815,24 @@ static TypeKind check_call(Checker *c, Expr *expr) {
 }
 
 static TypeKind check_cast(Checker *c, Expr *expr) {
+    if (expr->as.cast.to_ref) {
+        expr->as.cast.to = resolve_type(c, expr->as.cast.to_ref);
+        expr->as.cast.to_ref = NULL;
+    }
     TypeKind to = expr->as.cast.to;
     Expr *operand = expr->as.cast.operand;
-    TypeKind from = check_expr(c, operand, type_is_numeric(to) ? to : TYPE_INVALID);
-    if (from == TYPE_INVALID) return to;
+    /* A struct type in front of "{ ... }" is what gives that value its
+       type, as in C's "(Point){ 1, 2 }". */
+    bool hinted = type_is_numeric(to) || type_is_struct(to);
+    TypeKind from = check_expr(c, operand, hinted ? to : TYPE_INVALID);
+    if (from == TYPE_INVALID || to == TYPE_INVALID) return to;
 
     bool allowed = from == to ||
                    (type_is_numeric(from) && type_is_numeric(to)) ||
                    (from == TYPE_CHAR && type_is_integer(to)) ||
-                   (type_is_integer(from) && to == TYPE_CHAR);
+                   (type_is_integer(from) && to == TYPE_CHAR) ||
+                   (type_is_enum(from) && type_is_integer(to)) ||
+                   (type_is_integer(from) && type_is_enum(to));
     if (!allowed || to == TYPE_VOID) {
         error(c, expr->loc, "cannot convert '%s' to '%s'", type_name(from),
               type_name(to));
@@ -645,6 +857,27 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     case EXPR_BOOL_LIT:
         return TYPE_BOOL;
     case EXPR_IDENT: {
+        if (expr->as.ident.module.len) {
+            /* "a.b" is a field of the variable a unless a is a module. */
+            const Symbol *owner = lookup(c, expr->as.ident.module);
+            if (owner && owner->kind != SYM_MODULE) {
+                Expr *base = arena_alloc(c->arena, sizeof *base);
+                memset(base, 0, sizeof *base);
+                base->kind = EXPR_IDENT;
+                base->loc = expr->as.ident.module_loc;
+                base->type = TYPE_INVALID;
+                base->as.ident.name = expr->as.ident.module;
+                base->as.ident.name_loc = expr->as.ident.module_loc;
+                Str name = expr->as.ident.name;
+                SrcLoc name_loc = expr->as.ident.name_loc;
+                expr->kind = EXPR_FIELD;
+                expr->as.field.base = base;
+                expr->as.field.name = name;
+                expr->as.field.name_loc = name_loc;
+                expr->as.field.index = -1;
+                return check_field(c, expr);
+            }
+        }
         Symbol *symbol = expr->as.ident.module.len
                              ? resolve_member(c, expr->as.ident.module,
                                               expr->as.ident.module_loc,
@@ -654,6 +887,11 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         if (symbol->kind == SYM_FUNC) {
             error(c, expr->loc, "'%.*s' is a function; call it with '()'",
                   NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
+        if (symbol->kind == SYM_TYPE) {
+            symbol->used = true;
+            error(c, expr->loc, "'%.*s' is a type, not a value", NAME(expr->as.ident.name));
             return TYPE_INVALID;
         }
         if (symbol->kind == SYM_MODULE) {
@@ -675,6 +913,10 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     }
     case EXPR_INDEX:
         return check_index(c, expr);
+    case EXPR_FIELD:
+        return check_field(c, expr);
+    case EXPR_INIT:
+        return check_init(c, expr, hint);
     case EXPR_LEN:
         return TYPE_INT;
     case EXPR_UNARY:
@@ -695,7 +937,14 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
            never see a sizeof. */
         TypeKind of = expr->as.size_of.type;
         size_t count = 1;
-        if (expr->as.size_of.operand) {
+        if (expr->as.size_of.type_ref) of = resolve_type(c, expr->as.size_of.type_ref);
+        Symbol *named = expr->as.size_of.operand
+                            ? type_named_by(c, expr->as.size_of.operand)
+                            : NULL;
+        if (named) {
+            use_type_name(c, expr->as.size_of.operand, named);
+            of = named->type;
+        } else if (expr->as.size_of.operand) {
             const Symbol *array = array_operand(c, expr->as.size_of.operand);
             if (array && array->is_array) {
                 of = array->type;
@@ -754,7 +1003,8 @@ static bool is_constant(const Expr *expr) {
     case EXPR_BOOL_LIT:
         return true;
     case EXPR_IDENT:
-        return !expr->as.ident.symbol || expr->as.ident.symbol->kind == SYM_CONST;
+        return !expr->as.ident.symbol || expr->as.ident.symbol->kind == SYM_CONST ||
+               expr->as.ident.symbol->kind == SYM_ENUM_VALUE;
     case EXPR_UNARY:
         return is_constant(expr->as.unary.operand);
     case EXPR_BINARY:
@@ -762,11 +1012,21 @@ static bool is_constant(const Expr *expr) {
     case EXPR_CAST:
         return is_constant(expr->as.cast.operand);
     case EXPR_TERNARY:
+        /* A string or struct constant is stored, not computed where it is
+           used, so its value must be settled here; see settle_constant. */
+        if (expr->type == TYPE_STRING || type_is_struct(expr->type)) return false;
         return is_constant(expr->as.ternary.cond) && is_constant(expr->as.ternary.then) &&
                is_constant(expr->as.ternary.otherwise);
-    case EXPR_CALL:
+    case EXPR_INIT:
+        for (size_t i = 0; i < expr->as.init.count; i++) {
+            if (!is_constant(expr->as.init.items[i].value)) return false;
+        }
+        return true;
+    case EXPR_FIELD:
+        return false;
     case EXPR_LEN:
         return const_len(expr->as.len.operand, &length);
+    case EXPR_CALL:
     case EXPR_SIZEOF:
     case EXPR_CIN_OK:
     case EXPR_INDEX:
@@ -855,6 +1115,10 @@ static bool eval_const_int(const Expr *expr, long long *out) {
         return true;
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
+        if (symbol && symbol->kind == SYM_ENUM_VALUE) {
+            *out = symbol->value;
+            return true;
+        }
         if (!symbol || symbol->kind != SYM_CONST || symbol->is_array) return false;
         return eval_const_int(symbol->decl->as.decl.init, out);
     }
@@ -904,10 +1168,23 @@ static bool eval_const_int(const Expr *expr, long long *out) {
     }
 }
 
+/* The value of a constant whose choice between alternatives can be made at
+   compile time: the branch that a conditional with a constant condition
+   picks, however deep; any other expression unchanged. */
+static Expr *settle_constant(Expr *expr) {
+    bool chosen;
+    while (expr->kind == EXPR_TERNARY && eval_const_bool(expr->as.ternary.cond, &chosen)) {
+        expr = chosen ? expr->as.ternary.then : expr->as.ternary.otherwise;
+    }
+    return expr;
+}
+
 /* Keeps a mistyped length from asking for an absurd amount of memory. */
 #define MAX_ARRAY_LENGTH (1LL << 28)
 
 static void check_array_decl(Checker *c, Stmt *stmt) {
+    stmt->as.decl.type = declared_type(c, stmt->as.decl.type, stmt->as.decl.type_ref,
+                                       stmt->loc, stmt->as.decl.name);
     TypeKind type = stmt->as.decl.type;
     bool is_const = stmt->kind == STMT_CONST;
     size_t count = stmt->as.decl.elem_count;
@@ -939,6 +1216,8 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
     for (size_t i = 0; i < count; i++) {
         Expr *elem = stmt->as.decl.elems[i];
         TypeKind found = check_expr(c, elem, type);
+        if (is_const) elem = stmt->as.decl.elems[i] = settle_constant(elem);
+        if (type == TYPE_INVALID) continue;
         if (found != TYPE_INVALID && found != type) {
             error(c, elem->loc, "an element of this array must be '%s', found '%s'",
                   type_name(type), type_name(found));
@@ -970,6 +1249,8 @@ static void check_decl(Checker *c, Stmt *stmt) {
         check_array_decl(c, stmt);
         return;
     }
+    stmt->as.decl.type = declared_type(c, stmt->as.decl.type, stmt->as.decl.type_ref,
+                                       stmt->loc, stmt->as.decl.name);
     TypeKind type = stmt->as.decl.type;
     Expr *init = stmt->as.decl.init;
     bool is_const = stmt->kind == STMT_CONST;
@@ -978,7 +1259,10 @@ static void check_decl(Checker *c, Stmt *stmt) {
        declaration cannot refer to itself. */
     if (init) {
         TypeKind found = check_expr(c, init, type);
-        if (found != TYPE_INVALID && found != type) {
+        if (is_const) init = stmt->as.decl.init = settle_constant(init);
+        if (type == TYPE_INVALID) {
+            /* the type's own problem is already reported */
+        } else if (found != TYPE_INVALID && found != type) {
             error(c, init->loc, "cannot initialize '%s' %s with '%s'", type_name(type),
                   is_const ? "constant" : "variable", type_name(found));
         } else if (is_const && !is_constant(init)) {
@@ -1025,6 +1309,9 @@ static void check_assign(Checker *c, Stmt *stmt) {
     } else if (is_array) {
         error(c, stmt->loc, "cannot assign to array '%.*s' as a whole; assign its elements",
               NAME(name));
+    } else if (symbol && symbol->kind == SYM_MODULE && stmt->as.assign.field_count) {
+        symbol->used = true;
+        error(c, stmt->loc, "what a module exports can be called or read, but not changed");
     } else if (symbol && symbol->kind != SYM_VAR) {
         error(c, stmt->loc, "cannot assign to %s '%.*s'", symbol_what(symbol), NAME(name));
     } else if (symbol) {
@@ -1033,6 +1320,12 @@ static void check_assign(Checker *c, Stmt *stmt) {
     } else if (index) {
         check_expr(c, index, TYPE_INT);
     }
+    bool has_fields = stmt->as.assign.field_count > 0;
+    if (has_fields) {
+        expected = check_place_fields(c, expected, stmt->as.assign.fields,
+                                      stmt->as.assign.field_count);
+    }
+    stmt->as.assign.type = expected;
     Op op = stmt->as.assign.op;
     bool compound = stmt->as.assign.compound;
     if (compound && op_is_shift(op)) {
@@ -1053,7 +1346,7 @@ static void check_assign(Checker *c, Stmt *stmt) {
     } else if (found != TYPE_INVALID && found != expected) {
         error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s' %s '%.*s'",
               type_name(found), type_name(expected),
-              index ? "element of" : "variable", NAME(name));
+              has_fields ? "field of" : index ? "element of" : "variable", NAME(name));
     }
 }
 
@@ -1348,6 +1641,21 @@ static void check_loop(Checker *c, Stmt *stmt) {
     pop_scope(c);
 }
 
+/* Settles what a read into a variable, or one of its elements, stores: the
+   place its ".field" steps lead to, which must be of a type that input can
+   be converted to. */
+static void accept_read_target(Checker *c, ReadTarget *target, const Symbol *symbol) {
+    TypeKind type = check_place_fields(c, symbol->type, target->fields, target->field_count);
+    if (type_info(type)) {
+        error(c, target->loc, "a '%s' cannot be read from input%s", type_name(type),
+              type_is_struct(type) ? "; read its fields" : "");
+        return;
+    }
+    if (type == TYPE_INVALID && target->field_count) return;
+    target->type = type;
+    target->symbol = symbol;
+}
+
 static void check_stmt(Checker *c, Stmt *stmt) {
     switch (stmt->kind) {
     case STMT_WHILE:
@@ -1387,6 +1695,13 @@ static void check_stmt(Checker *c, Stmt *stmt) {
         for (size_t i = 0; i < stmt->as.cin.count; i++) {
             ReadTarget *target = &stmt->as.cin.targets[i];
             if (target->declares) {
+                target->type = declared_type(c, target->type, target->type_ref,
+                                             target->loc, target->name);
+                if (type_info(target->type)) {
+                    error(c, target->loc, "a '%s' cannot be read from input",
+                          type_name(target->type));
+                    target->type = TYPE_INVALID;
+                }
                 Symbol *declared =
                     new_symbol(c, SYM_VAR, target->name, target->loc, target->type);
                 declare(c, declared);
@@ -1410,7 +1725,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                           "cannot read into an element of constant array '%.*s'",
                           NAME(target->name));
                 } else {
-                    target->symbol = symbol;
+                    accept_read_target(c, target, symbol);
                 }
                 continue;
             }
@@ -1425,7 +1740,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                       NAME(target->name));
                 continue;
             }
-            target->symbol = symbol;
+            accept_read_target(c, target, symbol);
         }
         break;
     case STMT_IF:
@@ -1459,14 +1774,18 @@ static void check_stmt(Checker *c, Stmt *stmt) {
         check_func(c, stmt);
         break;
     case STMT_IMPORT:
-        break; /* followed before anything else is checked */
+    case STMT_TYPE:
+        break; /* handled before anything else is checked */
     }
 }
 
 static void warn_unused(Checker *c) {
     for (size_t i = 0; i < c->unit->symbols.count; i++) {
         const Symbol *symbol = c->unit->symbols.items[i];
-        if (symbol->kind == SYM_PARAM) continue;
+        if (symbol->kind == SYM_PARAM || symbol->kind == SYM_TYPE ||
+            symbol->kind == SYM_ENUM_VALUE) {
+            continue;
+        }
         /* main is called by the runtime, and what a file exports is there
            for the files that import it. */
         if (symbol->decl && symbol->decl == c->unit->program.main) continue;
@@ -1480,7 +1799,8 @@ static void warn_unused(Checker *c) {
 
 static bool is_declaration(const Stmt *stmt) {
     return stmt->kind == STMT_CONST || stmt->kind == STMT_VAR ||
-           stmt->kind == STMT_FUNC || stmt->kind == STMT_IMPORT;
+           stmt->kind == STMT_FUNC || stmt->kind == STMT_IMPORT ||
+           stmt->kind == STMT_TYPE;
 }
 
 /* A file that defines main is laid out like a C program: declarations at the
@@ -1508,6 +1828,124 @@ static void check_main(Checker *c, const Stmt *main) {
                   "a file that defines 'main' can only have declarations at the top "
                   "level; move this statement into a function");
         }
+    }
+}
+
+/* ---- Type declarations ---- */
+
+static Symbol *declare_type_name(Checker *c, Stmt *stmt, Str name, SrcLoc loc,
+                                 TypeKind type) {
+    Symbol *symbol = new_symbol(c, SYM_TYPE, name, loc, type);
+    symbol->decl = stmt;
+    symbol->exported = stmt->exported;
+    symbol->visible_from = 0;
+    declare(c, symbol);
+    return symbol;
+}
+
+static bool member_repeats(Checker *c, const Stmt *stmt, size_t index, const char *what) {
+    const Member *members = stmt->as.type.members;
+    for (size_t i = 0; i < index; i++) {
+        if (!str_eq(members[i].name, members[index].name)) continue;
+        error(c, members[index].loc, "%s '%.*s' is already declared at line %d", what,
+              NAME(members[index].name), members[i].loc.line);
+        return true;
+    }
+    return false;
+}
+
+static Str default_module_name(Str path);
+
+/* What diagnostics put in front of the name of a type declared in the file
+   being checked: the file's name if it is an imported one. */
+static Str type_qualifier(const Checker *c) {
+    const Unit *unit = c->unit;
+    if (unit->root == unit) return (Str){0};
+    return default_module_name((Str){unit->path, strlen(unit->path)});
+}
+
+static void check_struct_decl(Checker *c, Stmt *stmt) {
+    size_t count = stmt->as.type.member_count;
+    if (count == 0) error(c, stmt->loc, "a struct needs at least one field");
+    Field *fields = arena_alloc(&c->unit->root->arena, (count ? count : 1) * sizeof *fields);
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+        Member *member = &stmt->as.type.members[i];
+        member->type = declared_type(c, member->type, member->type_ref, member->loc,
+                                     member->name);
+        if (member_repeats(c, stmt, i, "field")) continue;
+        fields[kept++] = (Field){member->name, member->loc, member->type};
+    }
+    /* The type is added after its fields are checked, so that a field
+       cannot be of the struct's own type, which would have no size. */
+    TypeKind type = type_add(false, stmt->as.type.name, type_qualifier(c));
+    TypeInfo *info = type_info(type);
+    info->fields = fields;
+    info->field_count = kept;
+    type_layout(info);
+    stmt->as.type.type = type;
+}
+
+static void check_enum_decl(Checker *c, Stmt *stmt) {
+    size_t count = stmt->as.type.member_count;
+    if (count == 0) error(c, stmt->loc, "an enum needs at least one name");
+    TypeKind type = type_add(true, stmt->as.type.name, type_qualifier(c));
+    TypeInfo *info = type_info(type);
+    info->values = arena_alloc(&c->unit->root->arena, (count ? count : 1) * sizeof *info->values);
+    stmt->as.type.type = type;
+
+    long long next = 0;
+    for (size_t i = 0; i < count; i++) {
+        Member *member = &stmt->as.type.members[i];
+        if (member->value) {
+            long long value;
+            TypeKind found = check_expr(c, member->value, TYPE_INT);
+            if (found == TYPE_INVALID) {
+                /* already reported */
+            } else if (!type_is_integer(found) || !eval_const_int(member->value, &value)) {
+                error(c, member->value->loc,
+                      "an enum value must be an integer known at compile time");
+            } else {
+                next = value;
+            }
+        }
+        /* An enum is stored in 32 bits, as in C. */
+        if (next < -2147483647LL - 1 || next > 2147483647LL) {
+            error(c, member->loc, "the value of '%.*s' does not fit in 32 bits",
+                  NAME(member->name));
+            next = 0;
+        }
+        Symbol *symbol = new_symbol(c, SYM_ENUM_VALUE, member->name, member->loc, type);
+        symbol->decl = stmt;
+        symbol->exported = stmt->exported;
+        symbol->visible_from = 0;
+        symbol->value = next;
+        member->symbol = symbol;
+        declare(c, symbol);
+        info->values[info->value_count++] = (EnumValue){member->name, next};
+        next++;
+    }
+}
+
+static void check_type_decl(Checker *c, Stmt *stmt) {
+    switch (stmt->as.type.kind) {
+    case TYPE_DECL_STRUCT:
+        check_struct_decl(c, stmt);
+        break;
+    case TYPE_DECL_ENUM:
+        check_enum_decl(c, stmt);
+        break;
+    case TYPE_DECL_ALIAS:
+        if (stmt->as.type.type_ref) {
+            stmt->as.type.type = resolve_type(c, stmt->as.type.type_ref);
+        }
+        break;
+    }
+    stmt->as.type.symbol = declare_type_name(c, stmt, stmt->as.type.name, stmt->loc,
+                                             stmt->as.type.type);
+    if (stmt->as.type.tag.len) {
+        declare_type_name(c, stmt, stmt->as.type.tag, stmt->as.type.tag_loc,
+                          stmt->as.type.type);
     }
 }
 
@@ -1652,15 +2090,26 @@ void check_program(Unit *unit) {
     push_scope(&c, &global, unit->src.len);
     c.global = &global;
 
-    /* Imports and functions are declared before anything is checked, so
-       they can be used from code above them, and functions from each
+    /* Imports, types and functions are declared before anything is checked,
+       so they can be used from code above them, and functions from each
        other. */
     for (size_t i = 0; i < top->count; i++) {
         if (top->stmts[i]->kind == STMT_IMPORT) check_import(&c, top->stmts[i]);
     }
     for (size_t i = 0; i < top->count; i++) {
+        if (top->stmts[i]->kind == STMT_TYPE) check_type_decl(&c, top->stmts[i]);
+    }
+    for (size_t i = 0; i < top->count; i++) {
         Stmt *stmt = top->stmts[i];
         if (stmt->kind != STMT_FUNC) continue;
+        if (stmt->as.func.ret_ref) {
+            stmt->as.func.ret = resolve_type(&c, stmt->as.func.ret_ref);
+        }
+        for (size_t j = 0; j < stmt->as.func.param_count; j++) {
+            Param *param = &stmt->as.func.params[j];
+            param->type = declared_type(&c, param->type, param->type_ref, param->loc,
+                                        param->name);
+        }
         Symbol *symbol = new_symbol(&c, SYM_FUNC, stmt->as.func.name, stmt->loc,
                                     stmt->as.func.ret);
         symbol->decl = stmt;
@@ -1703,6 +2152,8 @@ void unit_analyze(Unit *unit, Str src, const char *path) {
     memset(unit, 0, sizeof *unit);
     unit->src = src;
     unit->root = unit;
+    unit->types.arena = &unit->arena;
+    types_use(&unit->types);
     if (path) {
         unit->path = arena_cstr(&unit->arena, path);
         char *real_path = path_canonical(path);

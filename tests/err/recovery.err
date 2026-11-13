@@ -5,4 +5,4 @@ tests/err/recovery.wind:3:21: error: unknown escape sequence '\q'
 tests/err/recovery.wind:3:28: error: operator '<' is not defined for 'string'
 tests/err/recovery.wind:5:1: error: expected an expression, found 'const'
 tests/err/recovery.wind:6:15: error: expected end of statement, found integer literal
-tests/err/recovery.wind:7:6: error: expected an assignment, '(', '[' or ':' after a name, found end of line
+tests/err/recovery.wind:7:6: error: expected an assignment, '(', '[', '.' or ':' after a name, found end of line

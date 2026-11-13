@@ -1,0 +1,49 @@
+tests/err/types.wind:3:8: error: a struct needs at least one field
+tests/err/types.wind:4:30: error: field 'a' is already declared at line 4
+tests/err/types.wind:5:15: error: unknown type 'Loop'
+tests/err/types.wind:6:15: error: unknown type 'Later'
+tests/err/types.wind:8:23: error: a field cannot be an array
+tests/err/types.wind:9:1: error: this struct needs a name
+tests/err/types.wind:10:26: error: 'RED' is already defined at line 10
+tests/err/types.wind:11:6: error: an enum needs at least one name
+tests/err/types.wind:12:12: error: the value of 'HUGE' does not fit in 32 bits
+tests/err/types.wind:12:40: error: float literal cannot be used as 'int'
+tests/err/types.wind:13:9: error: unknown type 'Nowhere'
+tests/err/types.wind:14:13: error: 'Point' is already defined at line 2
+tests/err/types.wind:15:5: error: 'Color' is already defined at line 10
+tests/err/types.wind:17:5: error: a type can only be declared at the top level of a file
+tests/err/types.wind:18:22: error: too many values: struct 'Point' has 2 fields
+tests/err/types.wind:19:17: error: struct 'Point' has no field 'z'
+tests/err/types.wind:19:29: error: field 'x' is 'int', found 'string'
+tests/err/types.wind:19:39: error: field 'x' is given a value twice
+tests/err/types.wind:20:15: error: cannot initialize 'Point' variable with 'int'
+tests/err/types.wind:21:13: error: cannot initialize 'int' variable with 'Point'
+tests/err/types.wind:22:11: error: struct 'Point' has no field 'z'
+tests/err/types.wind:22:17: error: type 'int' has no fields
+tests/err/types.wind:22:25: error: type 'Color' has no fields
+tests/err/types.wind:24:7: error: struct 'Point' has no field 'z'
+tests/err/types.wind:25:9: error: type 'int' has no fields
+tests/err/types.wind:26:15: error: cannot initialize 'Color' variable with 'int'
+tests/err/types.wind:27:9: error: mismatched types 'Color' and 'int' for operator '+'
+tests/err/types.wind:28:9: error: cannot assign 'Color' to 'int' variable 'n'
+tests/err/types.wind:29:8: error: operator '==' is not defined for 'Point'
+tests/err/types.wind:30:13: error: this '{ ... }' has nothing to tell it which struct it is; write the type first, as in '(Type){ ... }'
+tests/err/types.wind:31:5: error: unknown type 'Missing'
+tests/err/types.wind:32:12: error: 'Secret' is private to module 'shapes'; mark it 'export' there to use it here
+tests/err/types.wind:33:12: error: module 'shapes' has no 'Nope'
+tests/err/types.wind:34:23: error: cannot initialize 'shapes.Point' variable with 'Point'
+tests/err/types.wind:35:18: error: cannot convert 'Point' to 'shapes.Point'
+tests/err/types.wind:35:18: error: cannot initialize 'Point' variable with 'shapes.Point'
+tests/err/types.wind:36:15: error: cannot initialize 'Color' variable with 'shapes.Kind'
+tests/err/types.wind:37:12: error: undefined name 'nothing'
+tests/err/types.wind:38:12: error: 'main' is a function; call it with '()'
+tests/err/types.wind:38:18: warning: variable 'v' is never used
+tests/err/types.wind:39:9: error: 'Point' is a type, not a value
+tests/err/types.wind:40:9: error: a conversion to 'Point' takes one value
+tests/err/types.wind:41:19: error: cannot convert 'Color' to 'string'
+tests/err/types.wind:42:12: error: a 'Point' cannot be read from input; read its fields
+tests/err/types.wind:42:17: error: a 'Color' cannot be read from input
+tests/err/types.wind:42:24: error: struct 'Point' has no field 'z'
+tests/err/types.wind:43:18: error: a 'Point' cannot be read from input
+tests/err/types.wind:44:16: error: undefined name 'Unknown'
+tests/err/types.wind:45:23: error: a constant's value must be known at compile time; use a variable for this

@@ -219,6 +219,26 @@ check("no path completion in other strings", "util.wind" in other, False)
 notify("textDocument/didClose", {"textDocument": {"uri": MAIN_URI}})
 check("diagnostics after closing the importer", read()["params"]["diagnostics"], [])
 
+TYPES = """enum Color { RED, GREEN }
+struct Point { int x; int y }
+typedef Point Spot
+Spot origin = {0, 0}
+Color c = GREEN
+cout << origin.x << c
+"""
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 8}, "contentChanges": [{"text": TYPES}]})
+check("diagnostics for declared types", read()["params"]["diagnostics"], [])
+check("hover struct", hover_text(1, 9), "```wind\nstruct Point { int x; int y }\n```")
+check("hover enum", hover_text(4, 2), "```wind\nenum Color { RED, GREEN }\n```")
+check("hover enum value", hover_text(4, 12), "```wind\nColor GREEN = 1\n```")
+check("hover typedef", hover_text(3, 2), "```wind\ntypedef Point Spot\n```")
+check("hover variable of declared type", hover_text(5, 10), "```wind\nPoint origin\n```")
+check("definition of type", request("textDocument/definition", at(2, 10))["result"]["range"], rng(1, 7, 12))
+check("definition of enum value", request("textDocument/definition", at(4, 12))["result"]["range"], rng(0, 18, 23))
+kinds = {item["label"]: item["kind"] for item in request("textDocument/completion", at(5, 0))["result"]}
+check("completion kinds for types", [kinds.get(n) for n in ("Point", "Color", "RED", "Spot", "struct", "typeof")],
+      [22, 13, 20, 22, 14, 14])
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 

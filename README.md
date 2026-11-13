@@ -357,6 +357,74 @@ report("square", square(7))
 - A function sees every other function, and the constants and variables
   declared directly at the top level above it.
 
+### Structs, enums and type names
+
+```wind
+struct Point { int x; int y }
+
+enum Color { RED, GREEN, BLUE = 10 }
+
+typedef int Meters
+
+Point shift(Point p, int by) { return {p.x + by, p.y + by} }
+
+Point a = {1, 2}
+Point b = {.y = 5}            // x is 0
+a.x += 10
+Point moved = shift(a, 3)
+Color c = GREEN
+typeof(a.x) n = 7             // n is an int
+
+cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
+```
+
+**Structs**
+
+- Fields are separated by `;`, `,` or a newline. A field can be of any type,
+  including another struct, but not an array.
+- A struct is a value, as in C: assigning it, passing it or returning it
+  copies it. A variable declared without a value has every field zero.
+- `{ ... }` is a struct value. It takes its type from where it is used: a
+  declaration, an assignment, an argument, a `return`. Values are given in
+  field order, or by name as `.field = value`; fields left out are zero.
+  Where nothing gives the type, write it first: `(Point){1, 2}`.
+- `value.field` reads a field and `place.field = value` sets one, through
+  arrays and nested structs: `points[2].at.x = 5`.
+- Structs cannot be compared with `==`; compare their fields.
+- `cout` prints a struct as `Name{field = value, ...}`.
+- `sizeof` gives the size C would lay the struct out in.
+
+**Enums**
+
+- An enum is a type of its own. Its names are constants of that type, used
+  bare as in C: `Color c = RED`.
+- Names count up from 0, or from one past the name before; `NAME = value`
+  sets one, and the value must be an integer known at compile time.
+- An enum converts to and from integers only explicitly: `int(c)`,
+  `Color(2)`. So `Color c = 1` and `c + 1` are errors.
+- Enum values compare with `==`, `!=`, `<`, `<=`, `>` and `>=`.
+- `cout` prints an enum value as its name, or as its number if no name has
+  that value. An enum is stored in 32 bits.
+
+**typedef and typeof**
+
+- `typedef type Name` gives a type another name. It does not make a new
+  type: a `Meters` is an `int`.
+- C's forms work: `typedef struct { ... } Name`, `typedef enum { ... } Name`,
+  and `struct Name` or `enum Name` wherever a type is written.
+- `typeof(expression)` is the type the expression has, and `typeof(type)` is
+  that type. It can be used anywhere a type is written. The expression is
+  checked but never run.
+
+**Rules for all three**
+
+- Types are declared at the top level of a file and can be used anywhere in
+  it, but a type must be declared above another type that uses it.
+- `Name(value)` and `(Name)value` convert to a declared type, as they do for
+  built-in ones.
+- `export` works on `struct`, `enum` and `typedef`. An importing file writes
+  `module.Point`, and an exported enum's names as `module.RED`.
+
 ### Modules
 
 Every file is a module. `import` makes another file's exports available
@@ -384,8 +452,8 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
   needs `as`.
 - What a module exports is used as `module.name`. Names never leak into the
   importing file, so two modules can export the same name.
-- Only functions and constants can be exported. Everything else in a file is
-  private to it, including its top-level variables, which its functions can
+- Functions, constants and types can be exported. Everything else in a file
+  is private to it, including its top-level variables, which its functions can
   use and which are initialized before the program starts.
 - A file is loaded once, however many files import it, so its variables
   exist once. Imports cannot form a cycle.
@@ -450,6 +518,9 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
+- A struct field cannot be an array, and a struct or an enum cannot be read
+  with `cin`; read into the fields.
+- A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.
 - A module cannot export a variable; export a function that returns it.

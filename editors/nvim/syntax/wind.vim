@@ -2,7 +2,9 @@ if exists("b:current_syntax")
   finish
 endif
 
-syn keyword windStorage const export
+syn keyword windStorage const export typedef
+syn keyword windStructure struct enum
+syn keyword windOperator typeof
 syn keyword windInclude import
 syn match windInclude "\<as\>\ze\s\+\h\w*\s*$"
 syn keyword windConditional if else
@@ -40,6 +42,7 @@ syn region windComment start="/\*" end="\*/" contains=@Spell
 syn sync minlines=200
 
 hi def link windInclude Include
+hi def link windStructure Structure
 hi def link windStorage StorageClass
 hi def link windConditional Conditional
 hi def link windStatement Statement
