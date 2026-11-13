@@ -13,6 +13,11 @@ static const struct {
     {"cin", TOK_KW_CIN, TYPE_INVALID},
     {"if", TOK_KW_IF, TYPE_INVALID},
     {"else", TOK_KW_ELSE, TYPE_INVALID},
+    {"while", TOK_KW_WHILE, TYPE_INVALID},
+    {"do", TOK_KW_DO, TYPE_INVALID},
+    {"for", TOK_KW_FOR, TYPE_INVALID},
+    {"break", TOK_KW_BREAK, TYPE_INVALID},
+    {"continue", TOK_KW_CONTINUE, TYPE_INVALID},
     {"goto", TOK_KW_GOTO, TYPE_INVALID},
     {"return", TOK_KW_RETURN, TYPE_INVALID},
     {"true", TOK_KW_TRUE, TYPE_INVALID},
@@ -97,6 +102,11 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_CIN:    return "'cin'";
     case TOK_KW_IF:     return "'if'";
     case TOK_KW_ELSE:   return "'else'";
+    case TOK_KW_WHILE:  return "'while'";
+    case TOK_KW_DO:     return "'do'";
+    case TOK_KW_FOR:    return "'for'";
+    case TOK_KW_BREAK:  return "'break'";
+    case TOK_KW_CONTINUE: return "'continue'";
     case TOK_KW_GOTO:   return "'goto'";
     case TOK_KW_RETURN: return "'return'";
     case TOK_KW_TRUE:   return "'true'";

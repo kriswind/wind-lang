@@ -9,8 +9,8 @@
  *   program    = { statement } EOF
  *   block      = "{" { statement } "}"
  *   statement  = ( const_decl | var_decl | assign | call | cout | cin | goto
- *                | return ) terminator
- *              | if | func | label
+ *                | return | do_while | "break" | "continue" ) terminator
+ *              | if | while | for | func | label
  *   terminator = NEWLINE | ";" | EOF | before "}"
  *
  *   const_decl = "const" type IDENT "=" expr
@@ -27,6 +27,11 @@
  *   label      = IDENT ":"
  *   return     = "return" [ expr ]
  *   if         = "if" expr block [ "else" ( if | block ) ]
+ *   while      = "while" expr block
+ *   do_while   = "do" block "while" expr
+ *   for        = "for" "(" clauses ")" block | "for" clauses block
+ *   clauses    = [ simple ] ";" [ expr ] ";" [ simple ]
+ *   simple     = var_decl | assign | call
  *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
  *   param      = type IDENT [ "[" "]" ]
  *   type       = TYPE | a C spelling such as "unsigned long" (see parse_type)
@@ -427,6 +432,11 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_COUT:
     case TOK_KW_CIN:
     case TOK_KW_IF:
+    case TOK_KW_WHILE:
+    case TOK_KW_DO:
+    case TOK_KW_FOR:
+    case TOK_KW_BREAK:
+    case TOK_KW_CONTINUE:
     case TOK_KW_GOTO:
     case TOK_KW_RETURN:
         return true;
@@ -637,6 +647,8 @@ static Stmt *parse_if(Parser *p) {
     if (at(p, TOK_KW_IF)) {
         Stmt *nested = parse_if(p);
         if (!nested) return NULL;
+        nested->start = nested->loc;
+        nested->end = p->prev;
         Block *block = &stmt->as.if_.else_block;
         block->stmts = arena_alloc(p->arena, sizeof *block->stmts);
         block->stmts[0] = nested;
@@ -647,6 +659,91 @@ static Stmt *parse_if(Parser *p) {
     }
     if (!parse_block(p, &stmt->as.if_.else_block)) return NULL;
     return stmt;
+}
+
+static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
+
+/* Parses one clause of a for loop's header: a statement of a kind that makes
+   sense there. is_init tells whether a declaration is allowed. */
+static Stmt *parse_for_clause(Parser *p, bool is_init) {
+    SrcLoc start = p->tok.loc;
+    bool unused;
+    Stmt *stmt = parse_statement(p, false, &unused);
+    if (!stmt) return NULL;
+    bool allowed = stmt->kind == STMT_ASSIGN || stmt->kind == STMT_EXPR ||
+                   (is_init && stmt->kind == STMT_VAR);
+    if (!allowed) {
+        diag_add(p->diags, SEV_ERROR, start,
+                 is_init ? "a for loop starts with a declaration, an assignment or a call"
+                         : "a for loop's last clause must be an assignment or a call");
+        return NULL;
+    }
+    return stmt;
+}
+
+/* Skips what is left of a for loop whose header failed to parse, body
+   included, so that its clauses are not then read as statements. */
+static Stmt *abandon_for(Parser *p) {
+    while (!at(p, TOK_LBRACE) && !at(p, TOK_NEWLINE) && !at(p, TOK_EOF)) next(p);
+    int depth = 0;
+    while (at(p, TOK_LBRACE) || depth > 0) {
+        if (at(p, TOK_EOF)) break;
+        if (at(p, TOK_LBRACE)) depth++;
+        if (at(p, TOK_RBRACE)) depth--;
+        next(p);
+    }
+    return NULL;
+}
+
+static Stmt *parse_for(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_FOR, p->tok.loc);
+    next(p);
+    bool parenthesized = accept(p, TOK_LPAREN);
+    if (parenthesized) skip_newlines(p);
+
+    if (!at(p, TOK_SEMI)) {
+        stmt->as.loop.init = parse_for_clause(p, true);
+        if (!stmt->as.loop.init) return abandon_for(p);
+    }
+    if (!expect(p, TOK_SEMI, NULL)) return abandon_for(p);
+    if (parenthesized) skip_newlines(p);
+
+    if (!at(p, TOK_SEMI)) {
+        stmt->as.loop.cond = parenthesized ? parse_enclosed_expr(p) : parse_expr(p);
+        if (!stmt->as.loop.cond) return abandon_for(p);
+    }
+    if (!expect(p, TOK_SEMI, NULL)) return abandon_for(p);
+    if (parenthesized) skip_newlines(p);
+
+    if (!at(p, parenthesized ? TOK_RPAREN : TOK_LBRACE)) {
+        stmt->as.loop.step = parse_for_clause(p, false);
+        if (!stmt->as.loop.step) return abandon_for(p);
+    }
+    if (parenthesized) {
+        skip_newlines(p);
+        if (!expect(p, TOK_RPAREN, NULL)) return abandon_for(p);
+    }
+    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    return stmt;
+}
+
+static Stmt *parse_while(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_WHILE, p->tok.loc);
+    next(p);
+    stmt->as.loop.cond = parse_expr(p);
+    if (!stmt->as.loop.cond) return NULL;
+    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    return stmt;
+}
+
+static Stmt *parse_do_while(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_DO_WHILE, p->tok.loc);
+    next(p);
+    if (!parse_block(p, &stmt->as.loop.body)) return NULL;
+    skip_newlines(p);
+    if (!expect(p, TOK_KW_WHILE, NULL)) return NULL;
+    stmt->as.loop.cond = parse_expr(p);
+    return stmt->as.loop.cond ? stmt : NULL;
 }
 
 static bool compound_assign_op(TokenKind kind, Op *op) {
@@ -720,6 +817,18 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     case TOK_KW_IF:
         *needs_terminator = false;
         return parse_if(p);
+    case TOK_KW_WHILE:
+        *needs_terminator = false;
+        return parse_while(p);
+    case TOK_KW_FOR:
+        *needs_terminator = false;
+        return parse_for(p);
+    case TOK_KW_DO:
+        return parse_do_while(p);
+    case TOK_KW_BREAK:
+    case TOK_KW_CONTINUE:
+        next(p);
+        return new_stmt(p, tok.kind == TOK_KW_BREAK ? STMT_BREAK : STMT_CONTINUE, tok.loc);
     case TOK_KW_GOTO: {
         Token name;
         next(p);
@@ -819,11 +928,14 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
             continue;
         }
         bool needs_terminator = true;
+        SrcLoc start = p->tok.loc;
         Stmt *stmt = parse_statement(p, top_level, &needs_terminator);
         if (!stmt) {
             synchronize(p);
             continue;
         }
+        stmt->start = start;
+        stmt->end = p->prev;
         if (needs_terminator && !at_terminator(p)) {
             error_expected(p, "end of statement");
             synchronize(p);

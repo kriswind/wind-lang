@@ -99,9 +99,15 @@ void diag_add(Diags *diags, Severity severity, SrcLoc loc, const char *fmt, ...)
     vsnprintf(message, (size_t)len + 1, fmt, args);
     va_end(args);
 
-    Diag diag = {severity, loc, message};
+    Diag diag = {.severity = severity, .loc = loc, .message = message};
     ARENA_PUSH(diags->arena, diags->items, diags->count, diags->cap, diag);
     if (severity == SEV_ERROR) diags->error_count++;
+}
+
+void diag_mark_unnecessary(Diags *diags, SrcLoc end) {
+    Diag *diag = &diags->items[diags->count - 1];
+    diag->unnecessary = true;
+    diag->end = end;
 }
 
 void diags_sort(Diags *diags) {

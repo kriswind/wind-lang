@@ -166,6 +166,11 @@ typedef enum {
     STMT_COUT,
     STMT_CIN,
     STMT_IF,
+    STMT_WHILE,
+    STMT_DO_WHILE,
+    STMT_FOR,
+    STMT_BREAK,
+    STMT_CONTINUE,
     STMT_GOTO,
     STMT_LABEL,
     STMT_RETURN,
@@ -203,6 +208,9 @@ struct Stmt {
     /* The declared, assigned or jumped-to name where there is one, else the
        statement's keyword. */
     SrcLoc loc;
+    /* The first and last tokens of a statement that sits in a block. */
+    SrcLoc start;
+    SrcLoc end;
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
@@ -245,6 +253,17 @@ struct Stmt {
             Block else_block;
             bool has_else;
         } if_;
+        /* STMT_WHILE, STMT_DO_WHILE, STMT_FOR */
+        struct {
+            Stmt *init; /* for only; NULL if left out */
+            Expr *cond; /* NULL in a for loop without one: loop forever */
+            Stmt *step; /* for only; NULL if left out */
+            Block body;
+            int id; /* set by unit_analyze; unique among the unit's loops */
+        } loop;
+        /* STMT_BREAK, STMT_CONTINUE: the loop it applies to; set by
+           unit_analyze, NULL if it is not inside one. */
+        const Stmt *target;
         /* STMT_GOTO, STMT_LABEL */
         struct {
             Str name;

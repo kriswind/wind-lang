@@ -144,6 +144,23 @@ check("hover array parameter", hover_text(2, 12), "```wind\nint values[]\n```")
 check("hover function with array parameter", hover_text(4, 9), "```wind\nint first(int values[])\n```")
 check("definition of indexed array", request("textDocument/definition", at(4, 24))["result"]["range"], rng(0, 4, 8))
 
+LOOPS = "int total = 0\nfor (int step = 0; step < 3; step++) {\n    total += step\n}\ncout << total\n"
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 6}, "contentChanges": [{"text": LOOPS}]})
+check("diagnostics for loops", read()["params"]["diagnostics"], [])
+check("hover loop variable", hover_text(2, 15), "```wind\nint step\n```")
+in_loop = [item["label"] for item in request("textDocument/completion", at(2, 4))["result"]]
+after_loop = [item["label"] for item in request("textDocument/completion", at(4, 0))["result"]]
+check("loop variable is scoped to the loop", ["step" in in_loop, "step" in after_loop, "while" in in_loop], [True, False, True])
+
+DEAD = "int f(int n) {\n    return n\n    cout << \"a\"\n    cout << \"b\"\n}\ncout << f(1)\nwhile false { cout << 1 }\n"
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 7}, "contentChanges": [{"text": DEAD}]})
+check("unreachable code is tagged and spans lines", read()["params"]["diagnostics"], [
+    {"range": {"start": {"line": 2, "character": 4}, "end": {"line": 3, "character": 15}}, "severity": 2,
+     "source": "wind", "message": "unreachable code: it follows a 'return'", "tags": [1]},
+    {"range": rng(6, 14, 23), "severity": 2, "source": "wind",
+     "message": "unreachable code: the loop's condition is always false", "tags": [1]},
+])
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 

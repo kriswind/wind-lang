@@ -18,7 +18,7 @@ contexts:
       scope: constant.character.wind
     - match: '\bconst\b'
       scope: storage.modifier.wind
-    - match: '\b(if|else|goto|return)\b'
+    - match: '\b(if|else|while|do|for|break|continue|goto|return)\b'
       scope: keyword.control.wind
     - match: '\bsizeof\b'
       scope: keyword.operator.word.wind

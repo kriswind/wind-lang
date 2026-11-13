@@ -1,0 +1,109 @@
+/* while, do-while and C-style for loops, with break and continue. */
+
+int sum_to(int n) {
+    int total = 0
+    for (int i = 1; i <= n; i++) {
+        total += i
+    }
+    return total
+}
+
+// A loop without a condition and without break never ends, so no return is
+// needed after it.
+int first_multiple(int of, int above) {
+    for (int n = above + 1; ; n++) {
+        if n % of == 0 { return n }
+    }
+}
+
+int collatz_steps(int start) {
+    int steps = 0
+    int n = start
+    while n != 1 {
+        if n % 2 == 0 { n /= 2 } else { n = 3 * n + 1 }
+        steps++
+    }
+    return steps
+}
+
+int main() {
+    // while, with and without parentheses
+    int i = 0
+    while i < 3 {
+        cout << i
+        i++
+    }
+    while (i > 0) { i-- }
+    cout << " " << i << "\n"
+
+    // do-while runs its body at least once
+    int runs = 0
+    do {
+        runs++
+    } while runs < 0
+    do { runs += 10 } while (runs < 25)
+    cout << runs << "\n"
+
+    // for, with and without parentheses, and with clauses left out
+    for (int a = 0; a < 5; a += 2) { cout << a }
+    for int b = 3; b > 0; b-- { cout << b }
+    int c = 0
+    for (; c < 2;) { c++ }
+    for (;;) {
+        c++
+        if c == 5 { break }
+    }
+    cout << " " << c << "\n"
+
+    // continue skips to the last clause of a for loop, or the test of a while
+    for (int n = 0; n < 8; n++) {
+        if n % 2 == 0 { continue }
+        if n == 7 { break }
+        cout << n
+    }
+    int w = 0
+    while w < 6 {
+        w++
+        if w % 3 != 0 { continue }
+        cout << w
+    }
+    int d = 0
+    do {
+        d++
+        if d < 3 { continue }
+        cout << d
+    } while d < 4
+    cout << "\n"
+
+    // nested loops: break and continue apply to the innermost one
+    for (int row = 1; row <= 3; row++) {
+        for (int col = 1; col <= 3; col++) {
+            if col > row { break }
+            cout << row * col << " "
+        }
+        cout << "| "
+    }
+    cout << "\n"
+
+    // the loop variable belongs to the loop; arrays and the header clauses
+    int squares[5]
+    for (int k = 0; k < len(squares); k++) {
+        squares[k] = k * k
+    }
+    for (int k = len(squares) - 1; k >= 0; k -= 2) { cout << squares[k] << " " }
+    for (squares[0] = 9; squares[0] > 7; squares[0]--) { cout << squares[0] }
+    cout << squares << "\n"
+
+    // a multi-line header, and goto still works across loops
+    for (
+        int big = 100;
+        big > 0;
+        big >>= 2
+    ) {
+        if big < 10 { goto done }
+        cout << big << " "
+    }
+done:
+    cout << sum_to(100) << " " << first_multiple(7, 50) << " " << collatz_steps(27) << "\n"
+    return 0
+}

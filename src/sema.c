@@ -19,6 +19,10 @@
  *   len() or sizeof, printed, or passed to an array parameter. A Symbol's type is
  *   then the type of the elements.
  *
+ * Unreachable code is reported only where it is certain: after a statement
+ * that never continues, and in a body guarded by a literal true or false. A
+ * region that holds a label is left alone, since a goto may enter it.
+ *
  * Scoping rules:
  *
  * - Names must be declared before use, except functions and labels.
@@ -43,6 +47,8 @@ typedef struct {
     Stmt *func;
     SymbolList *locals;
     SymbolList labels;
+    /* The innermost loop being checked, or NULL outside any loop. */
+    const Stmt *loop;
     int next_id;
 } Checker;
 
@@ -864,6 +870,7 @@ static void check_return(Checker *c, Stmt *stmt) {
 }
 
 static void check_stmt(Checker *c, Stmt *stmt);
+static void warn_after_exit(Checker *c, const Block *block);
 
 /* Checks a block's statements in a scope of their own. */
 static void check_block(Checker *c, Block *block) {
@@ -871,6 +878,7 @@ static void check_block(Checker *c, Block *block) {
     push_scope(c, &scope, block->close.offset);
     for (size_t i = 0; i < block->count; i++) check_stmt(c, block->stmts[i]);
     pop_scope(c);
+    warn_after_exit(c, block);
 }
 
 /* Labels are declared up front so that a goto can jump forward. They belong
@@ -881,6 +889,9 @@ static void collect_labels(Checker *c, Block *block) {
         if (stmt->kind == STMT_IF) {
             collect_labels(c, &stmt->as.if_.then_block);
             if (stmt->as.if_.has_else) collect_labels(c, &stmt->as.if_.else_block);
+        } else if (stmt->kind == STMT_WHILE || stmt->kind == STMT_DO_WHILE ||
+                   stmt->kind == STMT_FOR) {
+            collect_labels(c, &stmt->as.loop.body);
         } else if (stmt->kind == STMT_LABEL) {
             Str name = stmt->as.label.name;
             const Symbol *prev = find_in(&c->labels, name);
@@ -896,22 +907,61 @@ static void collect_labels(Checker *c, Block *block) {
     }
 }
 
-/* True if control cannot run off the end of the block. Conservative: it only
-   recognizes a final return or goto, and an if/else whose branches both
-   qualify. */
-static bool block_terminates(const Block *block) {
-    if (block->count == 0) return false;
-    const Stmt *last = block->stmts[block->count - 1];
-    switch (last->kind) {
-    case STMT_RETURN:
-    case STMT_GOTO:
-        return true;
-    case STMT_IF:
-        return last->as.if_.has_else && block_terminates(&last->as.if_.then_block) &&
-               block_terminates(&last->as.if_.else_block);
-    default:
-        return false;
+/* True if the block holds a break that would leave the loop it is the body
+   of: one not inside a loop nested within it. */
+static bool breaks_out(const Block *block) {
+    for (size_t i = 0; i < block->count; i++) {
+        const Stmt *stmt = block->stmts[i];
+        if (stmt->kind == STMT_BREAK) return true;
+        if (stmt->kind == STMT_IF &&
+            (breaks_out(&stmt->as.if_.then_block) ||
+             (stmt->as.if_.has_else && breaks_out(&stmt->as.if_.else_block)))) {
+            return true;
+        }
     }
+    return false;
+}
+
+/* True if a loop can only be left by a return or goto: it has no condition
+   (or the literal true) and no break. */
+static bool loops_forever(const Stmt *loop) {
+    const Expr *cond = loop->as.loop.cond;
+    bool always = !cond || (cond->kind == EXPR_BOOL_LIT && cond->as.bool_lit);
+    return always && !breaks_out(&loop->as.loop.body);
+}
+
+static bool stmt_has_label(const Stmt *stmt);
+
+/* True if control cannot run off the end of the block. Conservative: it only
+   recognizes a return or goto, an if/else whose branches both qualify, and a
+   loop that never ends. Whatever follows such a statement cannot be reached,
+   unless a label lets a goto back in. */
+static bool block_terminates(const Block *block) {
+    bool exits = false;
+    for (size_t i = 0; i < block->count; i++) {
+        const Stmt *stmt = block->stmts[i];
+        if (stmt_has_label(stmt)) exits = false;
+        switch (stmt->kind) {
+        case STMT_RETURN:
+        case STMT_GOTO:
+            exits = true;
+            break;
+        case STMT_IF:
+            if (stmt->as.if_.has_else && block_terminates(&stmt->as.if_.then_block) &&
+                block_terminates(&stmt->as.if_.else_block)) {
+                exits = true;
+            }
+            break;
+        case STMT_WHILE:
+        case STMT_DO_WHILE:
+        case STMT_FOR:
+            if (loops_forever(stmt)) exits = true;
+            break;
+        default:
+            break;
+        }
+    }
+    return exits;
 }
 
 static void check_func(Checker *c, Stmt *stmt) {
@@ -919,10 +969,12 @@ static void check_func(Checker *c, Stmt *stmt) {
     SymbolList *outer_locals = c->locals;
     SymbolList outer_labels = c->labels;
     Scope *outer_scope = c->scope;
+    const Stmt *outer_loop = c->loop;
 
     /* A function body sees the top level only. */
     c->scope = c->global;
     c->func = stmt;
+    c->loop = NULL;
     c->locals = &stmt->as.func.locals;
     memset(&c->labels, 0, sizeof c->labels);
 
@@ -939,6 +991,7 @@ static void check_func(Checker *c, Stmt *stmt) {
     }
     collect_labels(c, body);
     for (size_t i = 0; i < body->count; i++) check_stmt(c, body->stmts[i]);
+    warn_after_exit(c, body);
     pop_scope(c);
 
     if (stmt->as.func.ret != TYPE_VOID && !block_terminates(body)) {
@@ -949,11 +1002,153 @@ static void check_func(Checker *c, Stmt *stmt) {
     c->func = outer_func;
     c->locals = outer_locals;
     c->labels = outer_labels;
+    c->loop = outer_loop;
     c->scope = outer_scope;
+}
+
+/* ---- Unreachable code ---- */
+
+static bool block_has_label(const Block *block);
+
+static bool stmt_has_label(const Stmt *stmt) {
+    switch (stmt->kind) {
+    case STMT_LABEL:
+        return true;
+    case STMT_IF:
+        return block_has_label(&stmt->as.if_.then_block) ||
+               (stmt->as.if_.has_else && block_has_label(&stmt->as.if_.else_block));
+    case STMT_WHILE:
+    case STMT_DO_WHILE:
+    case STMT_FOR:
+        return block_has_label(&stmt->as.loop.body);
+    default:
+        return false;
+    }
+}
+
+static bool block_has_label(const Block *block) {
+    for (size_t i = 0; i < block->count; i++) {
+        if (stmt_has_label(block->stmts[i])) return true;
+    }
+    return false;
+}
+
+/* Reports the statements from first to last as code that cannot run. */
+static void warn_unreachable(Checker *c, const Stmt *first, const Stmt *last,
+                             const char *why) {
+    diag_add(c->diags, SEV_WARNING, first->start, "unreachable code: %s", why);
+    diag_mark_unnecessary(c->diags, last->end);
+}
+
+/* Reports a whole block that its guarding condition rules out. */
+static void warn_dead_block(Checker *c, const Block *block, const char *why) {
+    if (block->count == 0 || block_has_label(block)) return;
+    warn_unreachable(c, block->stmts[0], block->stmts[block->count - 1], why);
+}
+
+static bool is_literal(const Expr *cond, bool value) {
+    return cond && cond->kind == EXPR_BOOL_LIT && cond->as.bool_lit == value;
+}
+
+/* If control never passes from this statement to the next, returns a
+   description of why; otherwise NULL. */
+static const char *never_continues(const Stmt *stmt) {
+    switch (stmt->kind) {
+    case STMT_RETURN:   return "it follows a 'return'";
+    /* A misplaced break or continue is an error already, and says nothing
+       about what follows it. */
+    case STMT_BREAK:    return stmt->as.target ? "it follows a 'break'" : NULL;
+    case STMT_CONTINUE: return stmt->as.target ? "it follows a 'continue'" : NULL;
+    case STMT_GOTO:     return "it follows a 'goto'";
+    case STMT_WHILE:
+    case STMT_DO_WHILE:
+    case STMT_FOR:
+        return loops_forever(stmt) ? "it follows a loop that never ends" : NULL;
+    case STMT_IF:
+        return stmt->as.if_.has_else && block_terminates(&stmt->as.if_.then_block) &&
+                       block_terminates(&stmt->as.if_.else_block)
+                   ? "every branch of the 'if' before it leaves this block"
+                   : NULL;
+    default:
+        return NULL;
+    }
+}
+
+/* Reports what follows the first statement of a block that never continues,
+   up to the next label. Function declarations are not code that runs, so a
+   region is reported in the pieces between them. */
+static void warn_after_exit(Checker *c, const Block *block) {
+    for (size_t i = 0; i + 1 < block->count; i++) {
+        const char *why = never_continues(block->stmts[i]);
+        if (!why) continue;
+
+        size_t end = i + 1;
+        while (end < block->count && block->stmts[end]->kind != STMT_LABEL) {
+            if (stmt_has_label(block->stmts[end])) return;
+            end++;
+        }
+        const Stmt *first = NULL;
+        for (size_t k = i + 1; k <= end; k++) {
+            bool is_code = k < end && block->stmts[k]->kind != STMT_FUNC;
+            if (is_code && !first) first = block->stmts[k];
+            if (!is_code && first) {
+                warn_unreachable(c, first, block->stmts[k - 1], why);
+                first = NULL;
+            }
+        }
+        return;
+    }
+}
+
+static void check_condition(Checker *c, Expr *cond) {
+    TypeKind type = check_expr(c, cond, TYPE_INVALID);
+    if (type != TYPE_BOOL && type != TYPE_INVALID) {
+        error(c, cond->loc, "condition must be 'bool', found '%s'", type_name(type));
+    }
+}
+
+static void check_loop(Checker *c, Stmt *stmt) {
+    const Stmt *outer_loop = c->loop;
+    Block *body = &stmt->as.loop.body;
+    stmt->as.loop.id = c->next_id++;
+
+    /* A variable declared in a for loop's first clause belongs to the loop. */
+    Scope scope;
+    push_scope(c, &scope, body->close.offset);
+    if (stmt->as.loop.init) check_stmt(c, stmt->as.loop.init);
+    if (stmt->kind != STMT_DO_WHILE && stmt->as.loop.cond) {
+        check_condition(c, stmt->as.loop.cond);
+    }
+    if (stmt->as.loop.step) check_stmt(c, stmt->as.loop.step);
+
+    c->loop = stmt;
+    check_block(c, body);
+    c->loop = outer_loop;
+    /* A do-while runs its body once whatever the condition says. */
+    if (stmt->kind != STMT_DO_WHILE && is_literal(stmt->as.loop.cond, false)) {
+        warn_dead_block(c, body, "the loop's condition is always false");
+    }
+
+    /* A do-while's condition is outside the body's scope, as in C. */
+    if (stmt->kind == STMT_DO_WHILE) check_condition(c, stmt->as.loop.cond);
+    pop_scope(c);
 }
 
 static void check_stmt(Checker *c, Stmt *stmt) {
     switch (stmt->kind) {
+    case STMT_WHILE:
+    case STMT_DO_WHILE:
+    case STMT_FOR:
+        check_loop(c, stmt);
+        break;
+    case STMT_BREAK:
+    case STMT_CONTINUE:
+        stmt->as.target = c->loop;
+        if (!c->loop) {
+            error(c, stmt->loc, "'%s' outside of a loop",
+                  stmt->kind == STMT_BREAK ? "break" : "continue");
+        }
+        break;
     case STMT_CONST:
     case STMT_VAR:
         check_decl(c, stmt);
@@ -1022,16 +1217,16 @@ static void check_stmt(Checker *c, Stmt *stmt) {
             target->symbol = symbol;
         }
         break;
-    case STMT_IF: {
-        Expr *cond = stmt->as.if_.cond;
-        TypeKind type = check_expr(c, cond, TYPE_INVALID);
-        if (type != TYPE_BOOL && type != TYPE_INVALID) {
-            error(c, cond->loc, "condition must be 'bool', found '%s'", type_name(type));
-        }
+    case STMT_IF:
+        check_condition(c, stmt->as.if_.cond);
         check_block(c, &stmt->as.if_.then_block);
         if (stmt->as.if_.has_else) check_block(c, &stmt->as.if_.else_block);
+        if (is_literal(stmt->as.if_.cond, false)) {
+            warn_dead_block(c, &stmt->as.if_.then_block, "the condition is always false");
+        } else if (is_literal(stmt->as.if_.cond, true) && stmt->as.if_.has_else) {
+            warn_dead_block(c, &stmt->as.if_.else_block, "the condition is always true");
+        }
         break;
-    }
     case STMT_GOTO: {
         Str name = stmt->as.label.name;
         Symbol *symbol = find_in(&c->labels, name);
@@ -1134,6 +1329,7 @@ void check_program(Unit *unit) {
 
     collect_labels(&c, top);
     for (size_t i = 0; i < top->count; i++) check_stmt(&c, top->stmts[i]);
+    warn_after_exit(&c, top);
     warn_unused(&c);
 }
 

@@ -1,0 +1,15 @@
+tests/ok/unreachable.wind:8:5: warning: unreachable code: it follows a 'return'
+tests/ok/unreachable.wind:18:5: warning: unreachable code: every branch of the 'if' before it leaves this block
+tests/ok/unreachable.wind:27:5: warning: unreachable code: it follows a loop that never ends
+tests/ok/unreachable.wind:34:13: warning: unreachable code: it follows a 'continue'
+tests/ok/unreachable.wind:37:9: warning: unreachable code: it follows a 'break'
+tests/ok/unreachable.wind:40:9: warning: unreachable code: the loop's condition is always false
+tests/ok/unreachable.wind:42:22: warning: unreachable code: the loop's condition is always false
+tests/ok/unreachable.wind:47:9: warning: unreachable code: the condition is always false
+tests/ok/unreachable.wind:49:43: warning: unreachable code: the condition is always true
+tests/ok/unreachable.wind:50:18: warning: unreachable code: the condition is always false
+tests/ok/unreachable.wind:79:1: warning: unreachable code: it follows a 'goto'
+114 106
+always
+always
+done

@@ -24,6 +24,9 @@
  *   pointer and a length, defined once per element type. Every index goes
  *   through wind_index, which counts a negative index back from the end and
  *   stops the program if the index is out of range.
+ * - A for loop becomes a C while loop with its last clause at the end of the
+ *   body, behind a label that "continue" jumps to. The clauses are whole
+ *   statements here, which C's own for header could not hold.
  * - Shifts go through helpers that give every shift amount a defined
  *   result, where C leaves an oversized or negative one undefined.
  * - Only the runtime support a program uses is emitted. The program is
@@ -964,6 +967,46 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
             indent(depth, out);
         }
         fputs("}\n", out);
+        break;
+    case STMT_WHILE:
+    case STMT_FOR:
+        if (stmt->as.loop.init) emit_stmt(stmt->as.loop.init, depth, out);
+        indent(depth, out);
+        fputs("while (", out);
+        if (stmt->as.loop.cond) {
+            emit_expr(stmt->as.loop.cond, out);
+        } else {
+            fputs("1", out);
+        }
+        fputs(") {\n", out);
+        emit_block(&stmt->as.loop.body, depth + 1, out);
+        if (stmt->as.loop.step) {
+            fprintf(out, "wind_step_%d:;\n", stmt->as.loop.id);
+            emit_stmt(stmt->as.loop.step, depth + 1, out);
+        }
+        indent(depth, out);
+        fputs("}\n", out);
+        break;
+    case STMT_DO_WHILE:
+        indent(depth, out);
+        fputs("do {\n", out);
+        emit_block(&stmt->as.loop.body, depth + 1, out);
+        indent(depth, out);
+        fputs("} while (", out);
+        emit_expr(stmt->as.loop.cond, out);
+        fputs(");\n", out);
+        break;
+    case STMT_BREAK:
+        indent(depth, out);
+        fputs("break;\n", out);
+        break;
+    case STMT_CONTINUE:
+        indent(depth, out);
+        if (stmt->as.target->as.loop.step) {
+            fprintf(out, "goto wind_step_%d;\n", stmt->as.target->as.loop.id);
+        } else {
+            fputs("continue;\n", out);
+        }
         break;
     case STMT_GOTO:
         indent(depth, out);

@@ -140,6 +140,19 @@ static void write_range(Buf *buf, Str src, SrcLoc loc) {
                loc.line - 1, start, loc.line - 1, end);
 }
 
+/* Writes the range from the start of one token to the end of another, which
+   may be on a later line. */
+static void write_span(Buf *buf, Str src, SrcLoc first, SrcLoc last) {
+    size_t first_line_start = first.offset - (size_t)(first.col - 1);
+    size_t last_line_start = last.offset - (size_t)(last.col - 1);
+    buf_printf(buf,
+               "{\"start\":{\"line\":%d,\"character\":%zu},"
+               "\"end\":{\"line\":%d,\"character\":%zu}}",
+               first.line - 1, utf16_units(src, first_line_start, first.offset),
+               last.line - 1,
+               utf16_units(src, last_line_start, last.offset + last.len));
+}
+
 /* ---- Documents ---- */
 
 static Doc *find_doc(Server *server, Str uri) {
@@ -166,10 +179,16 @@ static void publish_diagnostics(Arena *arena, Str uri, const Unit *unit) {
         const Diag *diag = &unit->diags.items[i];
         if (i) buf_puts(&buf, ",");
         buf_puts(&buf, "{\"range\":");
-        write_range(&buf, unit->src, diag->loc);
+        if (diag->unnecessary) {
+            write_span(&buf, unit->src, diag->loc, diag->end);
+        } else {
+            write_range(&buf, unit->src, diag->loc);
+        }
         buf_printf(&buf, ",\"severity\":%d,\"source\":\"wind\",\"message\":",
                    diag->severity == SEV_ERROR ? 1 : 2);
         buf_json_string(&buf, (Str){diag->message, strlen(diag->message)});
+        /* Tag 1 is "unnecessary": clients fade the code out. */
+        if (diag->unnecessary) buf_puts(&buf, ",\"tags\":[1]");
         buf_puts(&buf, "}");
     }
     buf_puts(&buf, "]}}");

@@ -1,0 +1,81 @@
+/* Code that can never run is reported as a warning. The program still
+   builds and runs; its output follows the warnings. */
+
+const bool Debug = false
+
+int after_return(int n) {
+    return n
+    cout << "never\n"
+    cout << "never either\n"
+}
+
+int after_branches(int n) {
+    if n > 0 {
+        return 1
+    } else {
+        return 2
+    }
+    return 3
+}
+
+int after_endless(int from) {
+    int n = from
+    for (;;) {
+        if n > 3 { return n }
+        n++
+    }
+    return -1
+}
+
+void in_loops() {
+    for (int i = 0; i < 3; i++) {
+        if i == 1 {
+            continue
+            cout << "skipped\n"
+        }
+        break
+        cout << "left\n"
+    }
+    while false {
+        cout << "never\n"
+    }
+    for (; false;) { cout << "never\n" }
+}
+
+void conditions() {
+    if false {
+        cout << "never\n"
+    }
+    if true { cout << "always\n" } else { cout << "never\n" }
+    if (false) { cout << "never\n" } else { cout << "always\n" }
+}
+
+// None of these are reported.
+int quiet(int from) {
+    int n = from
+    do { n++ } while false          // the body runs once
+    if Debug { cout << "debug\n" }  // a named constant is a switch
+    while true {
+        if n > 5 { break }
+        n++
+    }
+    goto skip
+again:                              // a label can be jumped to
+    return n
+skip:
+    if false {
+inside:
+        n += 100
+        goto again
+    }
+    if n < 100 { goto inside }
+    return n
+}
+
+cout << after_return(1) << after_branches(1) << after_endless(1) << " " << quiet(0) << "\n"
+in_loops()
+conditions()
+goto end
+cout << "never\n"
+end:
+cout << "done\n"

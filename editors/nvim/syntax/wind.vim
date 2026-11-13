@@ -4,7 +4,8 @@ endif
 
 syn keyword windStorage const
 syn keyword windConditional if else
-syn keyword windStatement goto return
+syn keyword windStatement goto return break continue
+syn keyword windRepeat while do for
 syn keyword windOperator sizeof
 syn keyword windBuiltin cout cin
 syn keyword windBoolean true false
@@ -39,6 +40,7 @@ syn sync minlines=200
 hi def link windStorage StorageClass
 hi def link windConditional Conditional
 hi def link windStatement Statement
+hi def link windRepeat Repeat
 hi def link windBuiltin Function
 hi def link windFunction Function
 hi def link windBoolean Boolean

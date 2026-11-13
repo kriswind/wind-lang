@@ -11,12 +11,8 @@ int add(int a, int b) {
     return a + b
 }
 
-int i = 0
-next:
-if i < 3 {
+for (int i = 0; i < 3; i++) {
     cout << Greeting << " " << add(i, 1) << "\n"
-    i = i + 1
-    goto next
 }
 ```
 
@@ -52,10 +48,17 @@ build would.
 
 - `wind check <file>...` prints every diagnostic as
   `file:line:col: severity: message` and exits with status 1 if there are
-  errors. Warnings (an unused constant, variable, function or label) do not
-  fail a check or a build.
+  errors. Warnings do not fail a check or a build. They cover an unused
+  constant, variable, function or label, and unreachable code.
 - `wind lsp` provides diagnostics as you type, hover, go-to-definition and
   completion for constants, variables, functions, parameters and labels.
+
+Code is reported as unreachable only where that is certain: after a
+`return`, `break`, `continue` or `goto`, after a loop that never ends, and in
+a body whose condition is the literal `true` or `false`. A condition that is a
+named constant is not reported, so `const bool Debug = false` can switch code
+off quietly, and neither is code that a `goto` can reach through a label.
+Editors show unreachable code faded.
 
 Setup for Neovim (including Mason), Sublime Text and Helix is in
 [editors/README.md](editors/README.md).
@@ -224,12 +227,8 @@ for arrays of any length and can change their elements:
 
 ```wind
 void clear(int values[]) {
-    int i = 0
-next:
-    if i < len(values) {
+    for (int i = 0; i < len(values); i++) {
         values[i] = 0
-        i++
-        goto next
     }
 }
 ```
@@ -281,18 +280,38 @@ if count > 10 {
     cout << "none\n"
 }
 
-again:
-count = count - 1
-if count > 0 { goto again }
+while count > 0 {
+    count--
+}
+
+do {
+    count += 3
+} while count < 10
+
+for (int i = 0; i < count; i++) {
+    if i == 2 { continue }
+    if i == 7 { break }
+    cout << i << "\n"
+}
 ```
 
-- An `if` condition must be a `bool`. Parentheses around it are optional:
-  `if (count > 10) {` and `if count > 10 {` are the same. Braces are
-  required.
+- A condition must be a `bool`. Parentheses around it are optional:
+  `if (count > 10) {` and `if count > 10 {` are the same, and likewise for
+  `while`. Braces are always required.
+- `while` tests its condition before each pass; `do ... while` tests it
+  after, so its body runs at least once.
+- `for (first; condition; last)` runs `first` once, then repeats the body
+  and `last` while the condition holds. `first` is a declaration, an
+  assignment or a call, and `last` an assignment or a call. Any of the three
+  can be left out; without a condition the loop runs until something leaves
+  it. The parentheses are optional. A variable declared in `first` belongs to
+  the loop.
+- `break` leaves the innermost loop. `continue` skips to its next pass: to
+  the condition of a `while` or `do`, or to the last clause of a `for`.
 - `name:` declares a label and `goto name` jumps to it. Labels work as in C:
   a label is known throughout the function it is in (or throughout the
   top-level code of a script), so a `goto` can jump forwards or backwards,
-  and into or out of blocks. `goto` is the only loop for now.
+  and into or out of blocks.
 
 ### Functions
 
@@ -343,12 +362,10 @@ type, or did not fit) sets the variable to its zero value:
 
 ```wind
 int total = 0
-int value
-next:
-cin >> value
-if cin {
+for (;;) {
+    cin >> int value
+    if !cin { break }
     total += value
-    goto next
 }
 cout << "total: " << total << "\n"
 ```

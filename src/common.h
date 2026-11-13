@@ -61,6 +61,11 @@ typedef struct {
     Severity severity;
     SrcLoc loc;
     const char *message;
+    /* Set for code that has no effect, such as code that can never run.
+       Editors show it faded instead of underlined. The code may cover
+       several lines: it runs from loc to the end of the token at end. */
+    bool unnecessary;
+    SrcLoc end;
 } Diag;
 
 typedef struct {
@@ -72,6 +77,9 @@ typedef struct {
 } Diags;
 
 void diag_add(Diags *diags, Severity severity, SrcLoc loc, const char *fmt, ...);
+/* Marks the most recently added diagnostic as covering unnecessary code
+   that runs up to the end of the token at end. */
+void diag_mark_unnecessary(Diags *diags, SrcLoc end);
 /* Orders diagnostics by source position, keeping report order among equals. */
 void diags_sort(Diags *diags);
 const char *severity_name(Severity severity);
