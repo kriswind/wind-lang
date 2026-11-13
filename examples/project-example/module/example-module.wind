@@ -1,3 +1,5 @@
-export const string pets[] = {"cat", "dog", "fish"}
+import "sub-module/example-sub-module.wind" as sm
+
+export const string pets[] = {"cat", "dog", sm.favourite_pet}
 
 export const int pet_count = len(pets)
