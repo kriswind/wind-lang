@@ -1,0 +1,305 @@
+// One benchmark program, written the same way in every language in this
+// directory. It runs the kernel named by its first argument and prints one
+// number, which must come out the same in every language. Run them all with
+// bench/run.py.
+
+struct Node {
+    int value
+    Node *next
+}
+
+struct Particle {
+    float x
+    float y
+    float vx
+    float vy
+}
+
+const int SIEVE_LIMIT = 20000000
+const int SORT_COUNT = 2000000
+const int MATRIX_SIZE = 400
+const int LIST_COUNT = 1000000
+const int HASH_SIZE = 2097152
+const int HASH_KEYS = 1000000
+const int BYTES_COUNT = 4000000
+const int PARTICLE_COUNT = 1000
+const int QUEENS = 12
+
+bool composite[SIEVE_LIMIT + 1]
+int numbers[SORT_COUNT]
+float left[MATRIX_SIZE * MATRIX_SIZE]
+float right[MATRIX_SIZE * MATRIX_SIZE]
+float product[MATRIX_SIZE * MATRIX_SIZE]
+Node nodes[LIST_COUNT]
+int order[LIST_COUNT]
+int table[HASH_SIZE]
+char text[BYTES_COUNT]
+int counts[26]
+Particle particles[PARTICLE_COUNT]
+bool columns[QUEENS]
+bool falling[2 * QUEENS]
+bool rising[2 * QUEENS]
+
+int seed = 42
+
+// A small pseudo-random generator, so every language sees the same numbers.
+// Its products stay below 2^53, which keeps them exact in languages whose
+// numbers are all floats.
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+// Function calls: the naive recursive Fibonacci.
+int fib(int n) {
+    if (n < 2) return n
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Array writes and reads: counts the primes up to a limit.
+int sieve() {
+    int count = 0
+    for (int i = 2; i <= SIEVE_LIMIT; i++) {
+        if (composite[i]) continue
+        count++
+        for (int j = i * 2; j <= SIEVE_LIMIT; j += i) composite[j] = true
+    }
+    return count
+}
+
+// Integer arithmetic and branches: the longest Collatz chain below a limit.
+int collatz() {
+    int best = 0
+    int best_start = 0
+    for (int start = 1; start < 300000; start++) {
+        int n = start
+        int steps = 0
+        while (n != 1) {
+            if (n % 2 == 0) n /= 2 else n = 3 * n + 1
+            steps++
+        }
+        if (steps > best) {
+            best = steps
+            best_start = start
+        }
+    }
+    return best_start * 1000 + best
+}
+
+// Division in a called function: greatest common divisors of every pair.
+int gcd(int a, int b) {
+    int x = a
+    int y = b
+    while (y != 0) {
+        int rest = x % y
+        x = y
+        y = rest
+    }
+    return x
+}
+
+int gcd_sum() {
+    int total = 0
+    for (int i = 1; i <= 1200; i++) {
+        for (int j = 1; j <= 1200; j++) total += gcd(i, j)
+    }
+    return total
+}
+
+// Float arithmetic: iterations spent on a grid over the Mandelbrot set.
+int mandelbrot() {
+    int size = 600
+    int total = 0
+    for (int py = 0; py < size; py++) {
+        for (int px = 0; px < size; px++) {
+            float cx = float(px) * 3.0 / float(size) - 2.0
+            float cy = float(py) * 2.0 / float(size) - 1.0
+            float x = 0.0
+            float y = 0.0
+            int i = 0
+            while (i < 200 && x * x + y * y <= 4.0) {
+                float next = x * x - y * y + cx
+                y = 2.0 * x * y + cy
+                x = next
+                i++
+            }
+            total += i
+        }
+    }
+    return total
+}
+
+// Nested loops over flat arrays: a matrix product, summed.
+int matmul() {
+    int n = MATRIX_SIZE
+    for (int i = 0; i < n * n; i++) {
+        left[i] = float(i % 7) + 0.5
+        right[i] = float(i % 5) - 1.5
+    }
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            float sum = 0.0
+            for (int k = 0; k < n; k++) sum += left[i * n + k] * right[k * n + j]
+            product[i * n + j] = sum
+        }
+    }
+    float total = 0.0
+    for (int i = 0; i < n * n; i++) total += product[i]
+    return int(total)
+}
+
+// Structs of floats: points that move and bounce off the walls of a box.
+int particle_sum() {
+    for (int i = 0; i < PARTICLE_COUNT; i++) {
+        Particle *p = &particles[i]
+        p->x = float(random() % 1000)
+        p->y = float(random() % 1000)
+        p->vx = float(random() % 200 - 100) / 8.0
+        p->vy = float(random() % 200 - 100) / 8.0
+    }
+    for (int step = 0; step < 20000; step++) {
+        for (int i = 0; i < PARTICLE_COUNT; i++) {
+            Particle *p = &particles[i]
+            p->x += p->vx * 0.5
+            p->y += p->vy * 0.5
+            if (p->x < 0.0 || p->x > 1000.0) p->vx = -p->vx
+            if (p->y < 0.0 || p->y > 1000.0) p->vy = -p->vy
+        }
+    }
+    float total = 0.0
+    for (int i = 0; i < PARTICLE_COUNT; i++) total += particles[i].x + particles[i].y
+    return int(total)
+}
+
+// Recursion with swaps: quicksort between two positions, both included.
+void quicksort(int values[], int low, int high) {
+    if (low >= high) return
+    int pivot = values[(low + high) / 2]
+    int i = low
+    int j = high
+    while (i <= j) {
+        while (values[i] < pivot) i++
+        while (values[j] > pivot) j--
+        if (i <= j) {
+            int held = values[i]
+            values[i] = values[j]
+            values[j] = held
+            i++
+            j--
+        }
+    }
+    quicksort(values, low, j)
+    quicksort(values, i, high)
+}
+
+int sort() {
+    for (int i = 0; i < SORT_COUNT; i++) numbers[i] = random() % 1000000
+    quicksort(numbers, 0, SORT_COUNT - 1)
+    int check = 0
+    for (int i = 0; i < SORT_COUNT; i += 1000) check += numbers[i] * (i % 7 + 1)
+    return check
+}
+
+// Recursion with backtracking: the ways to place queens that cannot attack
+// each other, one to a row.
+int place(int row) {
+    if (row == QUEENS) return 1
+    int ways = 0
+    for (int column = 0; column < QUEENS; column++) {
+        int down = row + column
+        int up = row - column + QUEENS
+        if (columns[column] || falling[down] || rising[up]) continue
+        columns[column] = true
+        falling[down] = true
+        rising[up] = true
+        ways += place(row + 1)
+        columns[column] = false
+        falling[down] = false
+        rising[up] = false
+    }
+    return ways
+}
+
+// Scattered reads and writes: a hash table of numbers with open addressing,
+// filled and then asked for keys of which half are in it.
+int hash() {
+    for (int i = 0; i < HASH_KEYS; i++) {
+        int key = random()
+        int slot = key % HASH_SIZE
+        while (table[slot] != 0 && table[slot] != key) slot = (slot + 1) % HASH_SIZE
+        table[slot] = key
+    }
+    seed = 42
+    int found = 0
+    int probes = 0
+    for (int i = 0; i < HASH_KEYS; i++) {
+        int key = random() + i % 2
+        int slot = key % HASH_SIZE
+        while (table[slot] != 0 && table[slot] != key) {
+            slot = (slot + 1) % HASH_SIZE
+            probes++
+        }
+        if (table[slot] == key) found++
+    }
+    return found * 100 + probes
+}
+
+// Bytes: letters counted, hashed, and searched for a pair.
+int bytes() {
+    for (int i = 0; i < BYTES_COUNT; i++) text[i] = char(97 + random() % 26)
+    int code = 0
+    for (int i = 0; i < BYTES_COUNT; i++) {
+        int letter = int(text[i])
+        counts[letter - 97]++
+        code = (code * 31 + letter) % 1000000007
+    }
+    int pairs = 0
+    for (int i = 1; i < BYTES_COUNT; i++) {
+        if (text[i - 1] == 'w' && text[i] == 'd') pairs++
+    }
+    return code + counts[4] + pairs * 7
+}
+
+// Pointer chasing: a linked list threaded through its nodes in a shuffled
+// order, walked from end to end many times.
+int list() {
+    for (int i = 0; i < LIST_COUNT; i++) {
+        order[i] = i
+        nodes[i].value = i % 100
+    }
+    for (int i = LIST_COUNT - 1; i > 0; i--) {
+        int j = random() % (i + 1)
+        int held = order[i]
+        order[i] = order[j]
+        order[j] = held
+    }
+    for (int i = 0; i < LIST_COUNT - 1; i++) nodes[order[i]].next = &nodes[order[i + 1]]
+    nodes[order[LIST_COUNT - 1]].next = NULL
+
+    int total = 0
+    for (int pass = 0; pass < 20; pass++) {
+        for (Node *at = &nodes[order[0]]; at != NULL; at = at->next) total += at->value + pass
+    }
+    return total
+}
+
+int main(int argc, string argv[]) {
+    string kernel = argc > 1 ? argv[1] : ""
+    if (kernel == "fib") cout << fib(38) << "\n"
+    else if (kernel == "sieve") cout << sieve() << "\n"
+    else if (kernel == "collatz") cout << collatz() << "\n"
+    else if (kernel == "gcd") cout << gcd_sum() << "\n"
+    else if (kernel == "mandelbrot") cout << mandelbrot() << "\n"
+    else if (kernel == "matmul") cout << matmul() << "\n"
+    else if (kernel == "particles") cout << particle_sum() << "\n"
+    else if (kernel == "sort") cout << sort() << "\n"
+    else if (kernel == "queens") cout << place(0) << "\n"
+    else if (kernel == "hash") cout << hash() << "\n"
+    else if (kernel == "bytes") cout << bytes() << "\n"
+    else if (kernel == "list") cout << list() << "\n"
+    else {
+        cout << "unknown kernel '" << kernel << "'\n"
+        return 2
+    }
+    return 0
+}
