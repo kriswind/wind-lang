@@ -1,8 +1,20 @@
 -- The benchmark program in Lua; see bench.wind for what each kernel measures.
--- It keeps to what Lua 5.1 has, so that LuaJIT runs the same file, and its
--- tables are indexed from 0 as the arrays of the other languages are.
+-- It keeps to what Lua 5.1 has, so that LuaJIT runs the same file, and it is
+-- written for speed: under LuaJIT its arrays are C arrays made through the
+-- FFI library, and elsewhere they are tables; either way they are indexed
+-- from 0. The particles and the list's nodes are numbers side by side in
+-- such arrays, where tables of their own would be.
 
 local floor = math.floor
+local has_ffi, ffi = pcall(require, "ffi")
+
+-- An array of count zeros of a C type, or a table of them without the FFI.
+local function array(ctype, count)
+    if has_ffi then return ffi.new(ctype .. "[?]", count) end
+    local values = {}
+    for i = 0, count - 1 do values[i] = 0 end
+    return values
+end
 
 local SIEVE_LIMIT = 20000000
 local SORT_COUNT = 2000000
@@ -33,13 +45,12 @@ local function fib(n)
 end
 
 local function sieve()
-    local composite = {}
-    for i = 0, SIEVE_LIMIT do composite[i] = false end
+    local composite = array("uint8_t", SIEVE_LIMIT + 1)
     local count = 0
     for i = 2, SIEVE_LIMIT do
-        if not composite[i] then
+        if composite[i] == 0 then
             count = count + 1
-            for j = i * 2, SIEVE_LIMIT, i do composite[j] = true end
+            for j = i * 2, SIEVE_LIMIT, i do composite[j] = 1 end
         end
     end
     return count
@@ -51,9 +62,19 @@ local function collatz()
     for start = 1, 299999 do
         local n = start
         local steps = 0
-        while n ~= 1 do
-            if n % 2 == 0 then n = floor(n / 2) else n = 3 * n + 1 end
-            steps = steps + 1
+        if has_ffi then
+            -- A number is even when its half is whole, which LuaJIT finds
+            -- out more quickly than its remainder.
+            while n ~= 1 do
+                local half = n * 0.5
+                if half == floor(half) then n = half else n = 3 * n + 1 end
+                steps = steps + 1
+            end
+        else
+            while n ~= 1 do
+                if n % 2 == 0 then n = floor(n / 2) else n = 3 * n + 1 end
+                steps = steps + 1
+            end
         end
         if steps > best then
             best = steps
@@ -106,7 +127,9 @@ end
 
 local function matmul()
     local n = MATRIX_SIZE
-    local left, right, product = {}, {}, {}
+    local left = array("double", n * n)
+    local right = array("double", n * n)
+    local product = array("double", n * n)
     for i = 0, n * n - 1 do
         left[i] = i % 7 + 0.5
         right[i] = i % 5 - 1.5
@@ -123,27 +146,27 @@ local function matmul()
     return truncate(total)
 end
 
+-- A particle is four numbers in a row: x, y, vx, vy.
 local function particle_sum()
-    local particles = {}
-    for i = 0, PARTICLE_COUNT - 1 do
-        local p = {}
-        p.x = random() % 1000 + 0.0
-        p.y = random() % 1000 + 0.0
-        p.vx = (random() % 200 - 100) / 8.0
-        p.vy = (random() % 200 - 100) / 8.0
-        particles[i] = p
+    local p = array("double", PARTICLE_COUNT * 4)
+    for i = 0, PARTICLE_COUNT * 4 - 1, 4 do
+        p[i] = random() % 1000 + 0.0
+        p[i + 1] = random() % 1000 + 0.0
+        p[i + 2] = (random() % 200 - 100) / 8.0
+        p[i + 3] = (random() % 200 - 100) / 8.0
     end
     for _ = 1, 20000 do
-        for i = 0, PARTICLE_COUNT - 1 do
-            local p = particles[i]
-            p.x = p.x + p.vx * 0.5
-            p.y = p.y + p.vy * 0.5
-            if p.x < 0.0 or p.x > 1000.0 then p.vx = -p.vx end
-            if p.y < 0.0 or p.y > 1000.0 then p.vy = -p.vy end
+        for i = 0, PARTICLE_COUNT * 4 - 1, 4 do
+            local x = p[i] + p[i + 2] * 0.5
+            local y = p[i + 1] + p[i + 3] * 0.5
+            p[i] = x
+            p[i + 1] = y
+            if x < 0.0 or x > 1000.0 then p[i + 2] = -p[i + 2] end
+            if y < 0.0 or y > 1000.0 then p[i + 3] = -p[i + 3] end
         end
     end
     local total = 0.0
-    for i = 0, PARTICLE_COUNT - 1 do total = total + particles[i].x + particles[i].y end
+    for i = 0, PARTICLE_COUNT * 4 - 1, 4 do total = total + (p[i] + p[i + 1]) end
     return truncate(total)
 end
 
@@ -156,7 +179,9 @@ local function quicksort(values, low, high)
         while values[i] < pivot do i = i + 1 end
         while values[j] > pivot do j = j - 1 end
         if i <= j then
-            values[i], values[j] = values[j], values[i]
+            local held = values[i]
+            values[i] = values[j]
+            values[j] = held
             i = i + 1
             j = j - 1
         end
@@ -166,7 +191,7 @@ local function quicksort(values, low, high)
 end
 
 local function sort()
-    local numbers = {}
+    local numbers = array("int32_t", SORT_COUNT)
     for i = 0, SORT_COUNT - 1 do numbers[i] = random() % 1000000 end
     quicksort(numbers, 0, SORT_COUNT - 1)
     local check = 0
@@ -201,8 +226,7 @@ local function place(row)
 end
 
 local function hash()
-    local table = {}
-    for i = 0, HASH_SIZE - 1 do table[i] = 0 end
+    local table = array("int32_t", HASH_SIZE)
     for _ = 1, HASH_KEYS do
         local key = random()
         local slot = key % HASH_SIZE
@@ -225,10 +249,9 @@ local function hash()
 end
 
 local function bytes()
-    local text = {}
+    local text = array("uint8_t", BYTES_COUNT)
     for i = 0, BYTES_COUNT - 1 do text[i] = 97 + random() % 26 end
-    local counts = {}
-    for i = 0, 25 do counts[i] = 0 end
+    local counts = array("int32_t", 26)
     local code = 0
     for i = 0, BYTES_COUNT - 1 do
         local letter = text[i]
@@ -242,24 +265,31 @@ local function bytes()
     return code + counts[4] + pairs * 7
 end
 
+-- A node is its place in two arrays: one of values, one of the place of the
+-- node after it, with -1 for the end of the list.
 local function list()
-    local nodes, order = {}, {}
+    local values = array("int32_t", LIST_COUNT)
+    local nexts = array("int32_t", LIST_COUNT)
+    local order = array("int32_t", LIST_COUNT)
     for i = 0, LIST_COUNT - 1 do
         order[i] = i
-        nodes[i] = { value = i % 100, next = false }
+        values[i] = i % 100
     end
     for i = LIST_COUNT - 1, 1, -1 do
         local j = random() % (i + 1)
-        order[i], order[j] = order[j], order[i]
+        local held = order[i]
+        order[i] = order[j]
+        order[j] = held
     end
-    for i = 0, LIST_COUNT - 2 do nodes[order[i]].next = nodes[order[i + 1]] end
+    for i = 0, LIST_COUNT - 2 do nexts[order[i]] = order[i + 1] end
+    nexts[order[LIST_COUNT - 1]] = -1
 
     local total = 0
     for pass = 0, 19 do
-        local at = nodes[order[0]]
-        while at do
-            total = total + at.value + pass
-            at = at.next
+        local at = order[0]
+        while at >= 0 do
+            total = total + values[at] + pass
+            at = nexts[at]
         end
     end
     return total

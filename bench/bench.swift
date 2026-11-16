@@ -1,5 +1,7 @@
 // The benchmark program in Swift; see bench.wind for what each kernel
-// measures. Each kernel makes the arrays it uses.
+// measures. It is written for speed: it is built without overflow or bounds
+// checks, the kernels that index heavily work on plain memory, and the list's
+// nodes are structs reached through pointers, so that nothing is counted.
 
 #if canImport(Glibc)
 import Glibc
@@ -7,9 +9,9 @@ import Glibc
 import Darwin
 #endif
 
-final class Node {
+struct Node {
     var value = 0
-    var next: Node? = nil
+    var next: UnsafeMutablePointer<Node>? = nil
 }
 
 struct Particle {
@@ -44,16 +46,21 @@ func fib(_ n: Int) -> Int {
 }
 
 func sieve() -> Int {
-    var composite = [Bool](repeating: false, count: sieveLimit + 1)
+    let composite = UnsafeMutablePointer<Bool>.allocate(capacity: sieveLimit + 1)
+    composite.initialize(repeating: false, count: sieveLimit + 1)
+    defer { composite.deallocate() }
     var count = 0
-    for i in 2...sieveLimit {
-        if composite[i] { continue }
-        count += 1
-        var j = i * 2
-        while j <= sieveLimit {
-            composite[j] = true
-            j += i
+    var i = 2
+    while i <= sieveLimit {
+        if !composite[i] {
+            count += 1
+            var j = i * 2
+            while j <= sieveLimit {
+                composite[j] = true
+                j += i
+            }
         }
+        i += 1
     }
     return count
 }
@@ -159,7 +166,7 @@ func particleSum(_ random: inout Random) -> Int {
     return Int(total)
 }
 
-func quicksort(_ values: inout [Int], _ low: Int, _ high: Int) {
+func quicksort(_ values: UnsafeMutablePointer<Int>, _ low: Int, _ high: Int) {
     if low >= high { return }
     let pivot = values[(low + high) / 2]
     var i = low
@@ -168,31 +175,43 @@ func quicksort(_ values: inout [Int], _ low: Int, _ high: Int) {
         while values[i] < pivot { i += 1 }
         while values[j] > pivot { j -= 1 }
         if i <= j {
-            values.swapAt(i, j)
+            let held = values[i]
+            values[i] = values[j]
+            values[j] = held
             i += 1
             j -= 1
         }
     }
-    quicksort(&values, low, j)
-    quicksort(&values, i, high)
+    quicksort(values, low, j)
+    quicksort(values, i, high)
 }
 
 func sort(_ random: inout Random) -> Int {
-    var numbers = [Int](repeating: 0, count: sortCount)
+    let numbers = UnsafeMutablePointer<Int>.allocate(capacity: sortCount)
+    defer { numbers.deallocate() }
     for i in 0..<sortCount { numbers[i] = random.next() % 1000000 }
-    quicksort(&numbers, 0, sortCount - 1)
+    quicksort(numbers, 0, sortCount - 1)
     var check = 0
     for i in stride(from: 0, to: sortCount, by: 1000) { check += numbers[i] * (i % 7 + 1) }
     return check
 }
 
 struct Board {
-    var columns = [Bool](repeating: false, count: queens)
-    var falling = [Bool](repeating: false, count: 2 * queens)
-    var rising = [Bool](repeating: false, count: 2 * queens)
+    let columns: UnsafeMutablePointer<Bool>
+    let falling: UnsafeMutablePointer<Bool>
+    let rising: UnsafeMutablePointer<Bool>
+
+    init() {
+        columns = .allocate(capacity: queens)
+        falling = .allocate(capacity: 2 * queens)
+        rising = .allocate(capacity: 2 * queens)
+        columns.initialize(repeating: false, count: queens)
+        falling.initialize(repeating: false, count: 2 * queens)
+        rising.initialize(repeating: false, count: 2 * queens)
+    }
 }
 
-func place(_ board: inout Board, _ row: Int) -> Int {
+func place(_ board: Board, _ row: Int) -> Int {
     if row == queens { return 1 }
     var ways = 0
     for column in 0..<queens {
@@ -202,7 +221,7 @@ func place(_ board: inout Board, _ row: Int) -> Int {
         board.columns[column] = true
         board.falling[down] = true
         board.rising[up] = true
-        ways += place(&board, row + 1)
+        ways += place(board, row + 1)
         board.columns[column] = false
         board.falling[down] = false
         board.rising[up] = false
@@ -211,7 +230,9 @@ func place(_ board: inout Board, _ row: Int) -> Int {
 }
 
 func hash(_ random: inout Random) -> Int {
-    var table = [Int](repeating: 0, count: hashSize)
+    let table = UnsafeMutablePointer<Int>.allocate(capacity: hashSize)
+    table.initialize(repeating: 0, count: hashSize)
+    defer { table.deallocate() }
     for _ in 0..<hashKeys {
         let key = random.next()
         var slot = key % hashSize
@@ -251,38 +272,34 @@ func bytes(_ random: inout Random) -> Int {
 }
 
 func list(_ random: inout Random) -> Int {
-    var nodes = [Node]()
-    nodes.reserveCapacity(listCount)
+    let nodes = UnsafeMutablePointer<Node>.allocate(capacity: listCount)
+    nodes.initialize(repeating: Node(), count: listCount)
+    defer { nodes.deallocate() }
     var order = [Int](repeating: 0, count: listCount)
     for i in 0..<listCount {
         order[i] = i
-        let node = Node()
-        node.value = i % 100
-        nodes.append(node)
+        nodes[i].value = i % 100
     }
     for i in stride(from: listCount - 1, to: 0, by: -1) {
         let j = random.next() % (i + 1)
         order.swapAt(i, j)
     }
-    for i in 0..<listCount - 1 { nodes[order[i]].next = nodes[order[i + 1]] }
+    for i in 0..<listCount - 1 { nodes[order[i]].next = nodes + order[i + 1] }
 
     var total = 0
     for pass in 0..<20 {
-        var at: Node? = nodes[order[0]]
+        var at: UnsafeMutablePointer<Node>? = nodes + order[0]
         while let node = at {
-            total += node.value + pass
-            at = node.next
+            total += node.pointee.value + pass
+            at = node.pointee.next
         }
     }
-    // Unlinked one at a time, so that freeing the list does not recurse
-    // through a million nodes.
-    for node in nodes { node.next = nil }
     return total
 }
 
 let kernel = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
 var random = Random()
-var board = Board()
+let board = Board()
 let result: Int
 switch kernel {
 case "fib": result = fib(38)
@@ -293,7 +310,7 @@ case "mandelbrot": result = mandelbrot()
 case "matmul": result = matmul()
 case "particles": result = particleSum(&random)
 case "sort": result = sort(&random)
-case "queens": result = place(&board, 0)
+case "queens": result = place(board, 0)
 case "hash": result = hash(&random)
 case "bytes": result = bytes(&random)
 case "list": result = list(&random)

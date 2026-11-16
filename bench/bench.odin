@@ -1,4 +1,5 @@
 // The benchmark program in Odin; see bench.wind for what each kernel measures.
+// It is built for speed, without bounds checks.
 package main
 
 import "core:fmt"

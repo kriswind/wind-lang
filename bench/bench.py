@@ -1,4 +1,8 @@
 # The benchmark program in Python; see bench.wind for what each kernel measures.
+# It is written for speed in plain CPython: names are kept local, loops run
+# over the values themselves where they can, the sieve marks a whole run of
+# multiples with one slice assignment, bytes are searched with the methods a
+# bytearray has, and the random numbers a kernel needs are made in one go.
 
 import sys
 
@@ -12,25 +16,16 @@ BYTES_COUNT = 4000000
 PARTICLE_COUNT = 1000
 QUEENS = 12
 
-seed = 42
+sys.setrecursionlimit(10000)
 
 
-def random():
-    global seed
-    seed = seed * 48271 % 2147483647
-    return seed
-
-
-class Node:
-    __slots__ = ("value", "next")
-
-    def __init__(self):
-        self.value = 0
-        self.next = None
-
-
-class Particle:
-    __slots__ = ("x", "y", "vx", "vy")
+def randoms(count, seed=42):
+    """The next `count` numbers of the generator that starts from seed."""
+    numbers = [0] * count
+    for i in range(count):
+        seed = seed * 48271 % 2147483647
+        numbers[i] = seed
+    return numbers
 
 
 def fib(n):
@@ -40,14 +35,15 @@ def fib(n):
 
 
 def sieve():
-    composite = [False] * (SIEVE_LIMIT + 1)
+    limit = SIEVE_LIMIT
+    composite = bytearray(limit + 1)
     count = 0
-    for i in range(2, SIEVE_LIMIT + 1):
+    for i in range(2, limit + 1):
         if composite[i]:
             continue
         count += 1
-        for j in range(i * 2, SIEVE_LIMIT + 1, i):
-            composite[j] = True
+        if i * 2 <= limit:
+            composite[i * 2::i] = b"\x01" * ((limit - i * 2) // i + 1)
     return count
 
 
@@ -58,10 +54,10 @@ def collatz():
         n = start
         steps = 0
         while n != 1:
-            if n % 2 == 0:
-                n //= 2
-            else:
+            if n & 1:
                 n = 3 * n + 1
+            else:
+                n >>= 1
             steps += 1
         if steps > best:
             best = steps
@@ -69,19 +65,15 @@ def collatz():
     return best_start * 1000 + best
 
 
-def gcd(a, b):
-    x = a
-    y = b
-    while y != 0:
-        x, y = y, x % y
-    return x
-
-
 def gcd_sum():
     total = 0
     for i in range(1, 1201):
         for j in range(1, 1201):
-            total += gcd(i, j)
+            x = i
+            y = j
+            while y:
+                x, y = y, x % y
+            total += x
     return total
 
 
@@ -89,16 +81,14 @@ def mandelbrot():
     size = 600
     total = 0
     for py in range(size):
+        cy = py * 2.0 / size - 1.0
         for px in range(size):
-            cx = float(px) * 3.0 / float(size) - 2.0
-            cy = float(py) * 2.0 / float(size) - 1.0
+            cx = px * 3.0 / size - 2.0
             x = 0.0
             y = 0.0
             i = 0
             while i < 200 and x * x + y * y <= 4.0:
-                nxt = x * x - y * y + cx
-                y = 2.0 * x * y + cy
-                x = nxt
+                x, y = x * x - y * y + cx, 2.0 * x * y + cy
                 i += 1
             total += i
     return total
@@ -106,48 +96,47 @@ def mandelbrot():
 
 def matmul():
     n = MATRIX_SIZE
-    left = [float(i % 7) + 0.5 for i in range(n * n)]
-    right = [float(i % 5) - 1.5 for i in range(n * n)]
-    product = [0.0] * (n * n)
-    for i in range(n):
-        for j in range(n):
-            total = 0.0
-            for k in range(n):
-                total += left[i * n + k] * right[k * n + j]
-            product[i * n + j] = total
+    left = [i % 7 + 0.5 for i in range(n * n)]
+    right = [i % 5 - 1.5 for i in range(n * n)]
+    rows = [left[i * n:(i + 1) * n] for i in range(n)]
+    columns = [right[j::n] for j in range(n)]
     total = 0.0
-    for i in range(n * n):
-        total += product[i]
+    for row in rows:
+        for column in columns:
+            cell = 0.0
+            for a, b in zip(row, column):
+                cell += a * b
+            total += cell
     return int(total)
 
 
 def particle_sum():
-    particles = []
-    for _ in range(PARTICLE_COUNT):
-        p = Particle()
-        p.x = float(random() % 1000)
-        p.y = float(random() % 1000)
-        p.vx = float(random() % 200 - 100) / 8.0
-        p.vy = float(random() % 200 - 100) / 8.0
-        particles.append(p)
+    numbers = randoms(PARTICLE_COUNT * 4)
+    xs = [float(r % 1000) for r in numbers[0::4]]
+    ys = [float(r % 1000) for r in numbers[1::4]]
+    vxs = [(r % 200 - 100) / 8.0 for r in numbers[2::4]]
+    vys = [(r % 200 - 100) / 8.0 for r in numbers[3::4]]
+    places = range(PARTICLE_COUNT)
     for _ in range(20000):
-        for p in particles:
-            p.x += p.vx * 0.5
-            p.y += p.vy * 0.5
-            if p.x < 0.0 or p.x > 1000.0:
-                p.vx = -p.vx
-            if p.y < 0.0 or p.y > 1000.0:
-                p.vy = -p.vy
+        for i in places:
+            x = xs[i] + vxs[i] * 0.5
+            y = ys[i] + vys[i] * 0.5
+            xs[i] = x
+            ys[i] = y
+            if x < 0.0 or x > 1000.0:
+                vxs[i] = -vxs[i]
+            if y < 0.0 or y > 1000.0:
+                vys[i] = -vys[i]
     total = 0.0
-    for p in particles:
-        total += p.x + p.y
+    for x, y in zip(xs, ys):
+        total += x + y
     return int(total)
 
 
 def quicksort(values, low, high):
     if low >= high:
         return
-    pivot = values[(low + high) // 2]
+    pivot = values[(low + high) >> 1]
     i = low
     j = high
     while i <= j:
@@ -164,7 +153,7 @@ def quicksort(values, low, high):
 
 
 def sort():
-    numbers = [random() % 1000000 for _ in range(SORT_COUNT)]
+    numbers = [r % 1000000 for r in randoms(SORT_COUNT)]
     quicksort(numbers, 0, SORT_COUNT - 1)
     check = 0
     for i in range(0, SORT_COUNT, 1000):
@@ -197,59 +186,65 @@ def place(row):
 
 
 def hash_table():
-    global seed
+    mask = HASH_SIZE - 1
     table = [0] * HASH_SIZE
-    for _ in range(HASH_KEYS):
-        key = random()
-        slot = key % HASH_SIZE
-        while table[slot] != 0 and table[slot] != key:
-            slot = (slot + 1) % HASH_SIZE
+    keys = randoms(HASH_KEYS)
+    for key in keys:
+        slot = key & mask
+        held = table[slot]
+        while held and held != key:
+            slot = (slot + 1) & mask
+            held = table[slot]
         table[slot] = key
-    seed = 42
     found = 0
     probes = 0
-    for i in range(HASH_KEYS):
-        key = random() + i % 2
-        slot = key % HASH_SIZE
-        while table[slot] != 0 and table[slot] != key:
-            slot = (slot + 1) % HASH_SIZE
+    odd = 0
+    for key in keys:
+        key += odd
+        odd ^= 1
+        slot = key & mask
+        held = table[slot]
+        while held and held != key:
+            slot = (slot + 1) & mask
             probes += 1
-        if table[slot] == key:
+            held = table[slot]
+        if held == key:
             found += 1
     return found * 100 + probes
 
 
 def letters():
-    text = bytearray(BYTES_COUNT)
-    for i in range(BYTES_COUNT):
-        text[i] = 97 + random() % 26
-    counts = [0] * 26
+    text = bytearray(97 + r % 26 for r in randoms(BYTES_COUNT))
     code = 0
-    for i in range(BYTES_COUNT):
-        letter = text[i]
-        counts[letter - 97] += 1
+    for letter in text:
         code = (code * 31 + letter) % 1000000007
-    pairs = 0
-    for i in range(1, BYTES_COUNT):
-        if text[i - 1] == 119 and text[i] == 100:
-            pairs += 1
-    return code + counts[4] + pairs * 7
+    return code + text.count(b"e") + text.count(b"wd") * 7
+
+
+class Node:
+    __slots__ = ("value", "next")
+
+    def __init__(self, value):
+        self.value = value
+        self.next = None
 
 
 def linked_list():
     order = list(range(LIST_COUNT))
-    nodes = [Node() for _ in range(LIST_COUNT)]
-    for i in range(LIST_COUNT):
-        nodes[i].value = i % 100
+    nodes = [Node(i % 100) for i in range(LIST_COUNT)]
+    numbers = randoms(LIST_COUNT - 1)
+    at = 0
     for i in range(LIST_COUNT - 1, 0, -1):
-        j = random() % (i + 1)
+        j = numbers[at] % (i + 1)
+        at += 1
         order[i], order[j] = order[j], order[i]
     for i in range(LIST_COUNT - 1):
         nodes[order[i]].next = nodes[order[i + 1]]
 
     total = 0
+    first = nodes[order[0]]
     for pass_number in range(20):
-        at = nodes[order[0]]
+        at = first
         while at is not None:
             total += at.value + pass_number
             at = at.next

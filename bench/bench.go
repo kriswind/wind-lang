@@ -72,10 +72,11 @@ func sieve() int64 {
 }
 
 func collatz() int64 {
-	var best, bestStart int64
-	for start := int64(1); start < 300000; start++ {
+	// Unsigned numbers halve with a shift.
+	var best, bestStart uint64
+	for start := uint64(1); start < 300000; start++ {
 		n := start
-		var steps int64
+		var steps uint64
 		for n != 1 {
 			if n%2 == 0 {
 				n /= 2
@@ -89,7 +90,7 @@ func collatz() int64 {
 			bestStart = start
 		}
 	}
-	return bestStart*1000 + best
+	return int64(bestStart*1000 + best)
 }
 
 func gcd(a, b int64) int64 {

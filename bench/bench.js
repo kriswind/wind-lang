@@ -1,6 +1,8 @@
 // The benchmark program in JavaScript; see bench.wind for what each kernel
-// measures. Arrays of numbers are typed arrays, the closest thing to the
-// arrays the other languages have.
+// measures. It is written for speed: every array is a typed array, the
+// particles and the list's nodes are numbers side by side in such arrays
+// where objects would be, and whole numbers are kept within 32 bits where
+// the engine can then work on them as integers.
 
 const SIEVE_LIMIT = 20000000;
 const SORT_COUNT = 2000000;
@@ -18,8 +20,12 @@ const rising = new Uint8Array(2 * QUEENS);
 
 let seed = 42;
 
+// The same numbers as "seed * 48271 % 2147483647", worked out in steps
+// that each fit in 32 bits (Schrage's method), which is far quicker here
+// than a remainder of a 47-bit product.
 function random() {
-    seed = seed * 48271 % 2147483647;
+    const next = 48271 * (seed % 44488) - 3399 * ((seed / 44488) | 0);
+    seed = next < 0 ? next + 2147483647 : next;
     return seed;
 }
 
@@ -45,8 +51,9 @@ function collatz() {
     for (let start = 1; start < 300000; start++) {
         let n = start;
         let steps = 0;
+        // n outgrows 32 bits, but its lowest bit says whether it is even.
         while (n !== 1) {
-            if (n % 2 === 0) n /= 2; else n = 3 * n + 1;
+            if ((n & 1) === 0) n /= 2; else n = 3 * n + 1;
             steps++;
         }
         if (steps > best) {
@@ -119,26 +126,27 @@ function matmul() {
     return Math.trunc(total);
 }
 
+// A particle is four numbers in a row: x, y, vx, vy.
 function particleSum() {
-    const particles = [];
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-        const x = random() % 1000;
-        const y = random() % 1000;
-        const vx = (random() % 200 - 100) / 8.0;
-        const vy = (random() % 200 - 100) / 8.0;
-        particles.push({ x, y, vx, vy });
+    const p = new Float64Array(PARTICLE_COUNT * 4);
+    for (let i = 0; i < PARTICLE_COUNT * 4; i += 4) {
+        p[i] = random() % 1000;
+        p[i + 1] = random() % 1000;
+        p[i + 2] = (random() % 200 - 100) / 8.0;
+        p[i + 3] = (random() % 200 - 100) / 8.0;
     }
     for (let step = 0; step < 20000; step++) {
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
-            const p = particles[i];
-            p.x += p.vx * 0.5;
-            p.y += p.vy * 0.5;
-            if (p.x < 0.0 || p.x > 1000.0) p.vx = -p.vx;
-            if (p.y < 0.0 || p.y > 1000.0) p.vy = -p.vy;
+        for (let i = 0; i < PARTICLE_COUNT * 4; i += 4) {
+            const x = p[i] + p[i + 2] * 0.5;
+            const y = p[i + 1] + p[i + 3] * 0.5;
+            p[i] = x;
+            p[i + 1] = y;
+            if (x < 0.0 || x > 1000.0) p[i + 2] = -p[i + 2];
+            if (y < 0.0 || y > 1000.0) p[i + 3] = -p[i + 3];
         }
     }
     let total = 0.0;
-    for (let i = 0; i < PARTICLE_COUNT; i++) total += particles[i].x + particles[i].y;
+    for (let i = 0; i < PARTICLE_COUNT * 4; i += 4) total += p[i] + p[i + 1];
     return Math.trunc(total);
 }
 
@@ -190,21 +198,23 @@ function place(row) {
 }
 
 function hash() {
+    // The table's size is a power of two, so a mask finds the slot.
+    const mask = HASH_SIZE - 1;
     const table = new Int32Array(HASH_SIZE);
     for (let i = 0; i < HASH_KEYS; i++) {
-        const key = random();
-        let slot = key % HASH_SIZE;
-        while (table[slot] !== 0 && table[slot] !== key) slot = (slot + 1) % HASH_SIZE;
+        const key = random() | 0;
+        let slot = key & mask;
+        while (table[slot] !== 0 && table[slot] !== key) slot = (slot + 1) & mask;
         table[slot] = key;
     }
     seed = 42;
     let found = 0;
     let probes = 0;
     for (let i = 0; i < HASH_KEYS; i++) {
-        const key = random() + i % 2;
-        let slot = key % HASH_SIZE;
+        const key = (random() + (i & 1)) | 0;
+        let slot = key & mask;
         while (table[slot] !== 0 && table[slot] !== key) {
-            slot = (slot + 1) % HASH_SIZE;
+            slot = (slot + 1) & mask;
             probes++;
         }
         if (table[slot] === key) found++;
@@ -220,7 +230,11 @@ function bytes() {
     for (let i = 0; i < BYTES_COUNT; i++) {
         const letter = text[i];
         counts[letter - 97]++;
-        code = (code * 31 + letter) % 1000000007;
+        // (code * 31 + letter) % 1000000007, again within 32 bits.
+        let next = 31 * (code % 32258064) - 23 * ((code / 32258064) | 0);
+        if (next < 0) next += 1000000007;
+        next += letter;
+        code = next >= 1000000007 ? next - 1000000007 : next;
     }
     let pairs = 0;
     for (let i = 1; i < BYTES_COUNT; i++) {
@@ -229,12 +243,15 @@ function bytes() {
     return code + counts[4] + pairs * 7;
 }
 
+// A node is its place in two arrays: one of values, one of the place of the
+// node after it, with -1 for the end of the list.
 function list() {
-    const nodes = new Array(LIST_COUNT);
+    const values = new Int32Array(LIST_COUNT);
+    const nexts = new Int32Array(LIST_COUNT);
     const order = new Int32Array(LIST_COUNT);
     for (let i = 0; i < LIST_COUNT; i++) {
         order[i] = i;
-        nodes[i] = { value: i % 100, next: null };
+        values[i] = i % 100;
     }
     for (let i = LIST_COUNT - 1; i > 0; i--) {
         const j = random() % (i + 1);
@@ -242,11 +259,12 @@ function list() {
         order[i] = order[j];
         order[j] = held;
     }
-    for (let i = 0; i < LIST_COUNT - 1; i++) nodes[order[i]].next = nodes[order[i + 1]];
+    for (let i = 0; i < LIST_COUNT - 1; i++) nexts[order[i]] = order[i + 1];
+    nexts[order[LIST_COUNT - 1]] = -1;
 
     let total = 0;
     for (let pass = 0; pass < 20; pass++) {
-        for (let at = nodes[order[0]]; at !== null; at = at.next) total += at.value + pass;
+        for (let at = order[0]; at >= 0; at = nexts[at]) total += values[at] + pass;
     }
     return total;
 }

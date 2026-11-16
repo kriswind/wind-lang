@@ -1,6 +1,6 @@
 // The benchmark program in Rust; see bench.wind for what each kernel measures.
-// The linked list holds positions in a vector where the others hold pointers,
-// which is how a list is usually threaded through a vector in Rust.
+// It is written for speed: the loops that index heavily do it without bounds
+// checks, and the linked list is made of raw pointers, both inside "unsafe".
 
 use std::env;
 
@@ -13,12 +13,11 @@ const HASH_KEYS: usize = 1000000;
 const BYTES_COUNT: usize = 4000000;
 const PARTICLE_COUNT: usize = 1000;
 const QUEENS: usize = 12;
-const NONE: usize = usize::MAX;
 
 #[derive(Clone)]
 struct Node {
     value: i64,
-    next: usize,
+    next: *const Node,
 }
 
 #[derive(Clone)]
@@ -51,13 +50,13 @@ fn sieve() -> i64 {
     let mut composite = vec![false; SIEVE_LIMIT + 1];
     let mut count = 0;
     for i in 2..=SIEVE_LIMIT {
-        if composite[i] {
+        if unsafe { *composite.get_unchecked(i) } {
             continue;
         }
         count += 1;
         let mut j = i * 2;
         while j <= SIEVE_LIMIT {
-            composite[j] = true;
+            unsafe { *composite.get_unchecked_mut(j) = true };
             j += i;
         }
     }
@@ -181,28 +180,30 @@ fn particle_sum(random: &mut Random) -> i64 {
     total as i64
 }
 
-fn quicksort(values: &mut [i64], low: i64, high: i64) {
+fn quicksort(values: *mut i64, low: isize, high: isize) {
     if low >= high {
         return;
     }
-    let pivot = values[((low + high) / 2) as usize];
-    let mut i = low;
-    let mut j = high;
-    while i <= j {
-        while values[i as usize] < pivot {
-            i += 1;
+    unsafe {
+        let pivot = *values.offset((low + high) / 2);
+        let mut i = low;
+        let mut j = high;
+        while i <= j {
+            while *values.offset(i) < pivot {
+                i += 1;
+            }
+            while *values.offset(j) > pivot {
+                j -= 1;
+            }
+            if i <= j {
+                std::ptr::swap(values.offset(i), values.offset(j));
+                i += 1;
+                j -= 1;
+            }
         }
-        while values[j as usize] > pivot {
-            j -= 1;
-        }
-        if i <= j {
-            values.swap(i as usize, j as usize);
-            i += 1;
-            j -= 1;
-        }
+        quicksort(values, low, j);
+        quicksort(values, i, high);
     }
-    quicksort(values, low, j);
-    quicksort(values, i, high);
 }
 
 fn sort(random: &mut Random) -> i64 {
@@ -210,7 +211,7 @@ fn sort(random: &mut Random) -> i64 {
     for i in 0..SORT_COUNT {
         numbers[i] = random.next() % 1000000;
     }
-    quicksort(&mut numbers, 0, SORT_COUNT as i64 - 1);
+    quicksort(numbers.as_mut_ptr(), 0, SORT_COUNT as isize - 1);
     let mut check = 0;
     let mut i = 0;
     while i < SORT_COUNT {
@@ -250,13 +251,16 @@ fn place(board: &mut Board, row: usize) -> i64 {
 
 fn hash(random: &mut Random) -> i64 {
     let mut table = vec![0i64; HASH_SIZE];
+    let slots = table.as_mut_ptr();
     for _ in 0..HASH_KEYS {
         let key = random.next();
         let mut slot = key as usize % HASH_SIZE;
-        while table[slot] != 0 && table[slot] != key {
-            slot = (slot + 1) % HASH_SIZE;
+        unsafe {
+            while *slots.add(slot) != 0 && *slots.add(slot) != key {
+                slot = (slot + 1) % HASH_SIZE;
+            }
+            *slots.add(slot) = key;
         }
-        table[slot] = key;
     }
     random.seed = 42;
     let mut found = 0;
@@ -264,12 +268,14 @@ fn hash(random: &mut Random) -> i64 {
     for i in 0..HASH_KEYS as i64 {
         let key = random.next() + i % 2;
         let mut slot = key as usize % HASH_SIZE;
-        while table[slot] != 0 && table[slot] != key {
-            slot = (slot + 1) % HASH_SIZE;
-            probes += 1;
-        }
-        if table[slot] == key {
-            found += 1;
+        unsafe {
+            while *slots.add(slot) != 0 && *slots.add(slot) != key {
+                slot = (slot + 1) % HASH_SIZE;
+                probes += 1;
+            }
+            if *slots.add(slot) == key {
+                found += 1;
+            }
         }
     }
     found * 100 + probes
@@ -297,7 +303,7 @@ fn bytes(random: &mut Random) -> i64 {
 }
 
 fn list(random: &mut Random) -> i64 {
-    let mut nodes = vec![Node { value: 0, next: NONE }; LIST_COUNT];
+    let mut nodes = vec![Node { value: 0, next: std::ptr::null() }; LIST_COUNT];
     let mut order = vec![0usize; LIST_COUNT];
     for i in 0..LIST_COUNT {
         order[i] = i;
@@ -308,16 +314,19 @@ fn list(random: &mut Random) -> i64 {
         order.swap(i, j);
     }
     for i in 0..LIST_COUNT - 1 {
-        nodes[order[i]].next = order[i + 1];
+        let next: *const Node = &nodes[order[i + 1]];
+        nodes[order[i]].next = next;
     }
-    nodes[order[LIST_COUNT - 1]].next = NONE;
+    nodes[order[LIST_COUNT - 1]].next = std::ptr::null();
 
     let mut total = 0;
     for pass in 0..20 {
-        let mut at = order[0];
-        while at != NONE {
-            total += nodes[at].value + pass;
-            at = nodes[at].next;
+        let mut at: *const Node = &nodes[order[0]];
+        while !at.is_null() {
+            unsafe {
+                total += (*at).value + pass;
+                at = (*at).next;
+            }
         }
     }
     total

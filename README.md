@@ -677,8 +677,8 @@ cout << name << " is " << age << "\n"
 
 ## Benchmark
 
-`bench/` holds one program written in fourteen languages, the same way
-wherever the language allows. It has
+`bench/` holds one program written in fourteen languages: the same
+algorithms, each written to run fast in its language. It has
 twelve kernels, each of which leans on one thing:
 
 | Kernel | What it leans on |
@@ -715,71 +715,71 @@ better, and one block is one times C.
 
 ```
 C                        1.00x  █
-Wind, no bounds checks   1.01x  █
-Wind                     1.07x  █▏
-Zig                      1.08x  █▏
-Odin                     1.10x  █▏
-Rust                     1.13x  █▏
-C++                      1.13x  █▏
-Go                       1.36x  █▍
-Swift                    1.69x  █▊
-Haskell                  1.69x  █▊
-Java                     2.38x  ██▍
-Lua (LuaJIT)             3.24x  ███▎
-JavaScript (Bun)         3.44x  ███▌
-JavaScript (Node.js)     3.61x  ███▋
-Elixir                   12.9x  ████████████▉
-Lua                      15.1x  ███████████████▏
-Python                   41.9x  █████████████████████████████████████████▉
+Wind, no bounds checks   0.99x  █
+C++                      1.05x  █
+Wind                     1.06x  █
+Zig                      1.06x  █
+Odin                     1.09x  █▏
+Rust                     1.10x  █▏
+Swift                    1.19x  █▎
+Go                       1.34x  █▍
+Haskell                  1.67x  █▋
+JavaScript (Bun)         1.88x  █▉
+Lua (LuaJIT)             1.97x  ██
+Java                     2.09x  ██▏
+JavaScript (Node.js)     2.35x  ██▍
+Elixir                   12.7x  ████████████▊
+Lua                      13.3x  █████████████▎
+Python                   32.8x  ████████████████████████████████▊
 ```
 
 | | Built with | Relative to C | All twelve kernels |
 | --- | --- | ---: | ---: |
-| C | `cc -O2` | 1.00x | 0.82 s |
-| Wind, no bounds checks | `wind build --no-bounds-check` | 1.01x | 0.82 s |
-| **Wind** | `wind build` | **1.07x** | 0.85 s |
-| Zig | `zig build-exe -O ReleaseFast` | 1.08x | 0.90 s |
-| Odin | `odin build -o:speed` | 1.10x | 0.86 s |
-| Rust | `rustc -C opt-level=3` | 1.13x | 0.93 s |
-| C++ | `c++ -O2` | 1.13x | 0.89 s |
-| Go | `go build` | 1.36x | 1.06 s |
-| Swift | `swiftc -O` | 1.69x | 3.02 s |
-| Haskell | `ghc -O2` | 1.69x | 1.30 s |
-| Java | `javac`, run on the JVM | 2.38x | 2.14 s |
-| Lua (LuaJIT) | `luajit` | 3.24x | 4.11 s |
-| JavaScript (Bun) | `bun` | 3.44x | 3.55 s |
-| JavaScript (Node.js) | `node` | 3.61x | 3.62 s |
-| Elixir | `elixirc`, run on the BEAM | 12.9x | 10.89 s |
-| Lua | `lua` | 15.1x | 12.10 s |
-| Python | `python3` | 41.9x | 31.11 s |
+| C | `cc -O2` | 1.00x | 0.86 s |
+| Wind, no bounds checks | `wind build --no-bounds-check` | 0.99x | 0.85 s |
+| C++ | `c++ -O2` | 1.05x | 0.91 s |
+| **Wind** | `wind build` | **1.06x** | 0.89 s |
+| Zig | `zig build-exe -O ReleaseFast` | 1.06x | 0.93 s |
+| Odin | `odin build -o:aggressive -no-bounds-check` | 1.09x | 0.91 s |
+| Rust | `rustc -C opt-level=3 -C panic=abort` | 1.10x | 0.95 s |
+| Swift | `swiftc -Ounchecked` | 1.19x | 0.97 s |
+| Go | `go build` | 1.34x | 1.08 s |
+| Haskell | `ghc -O2` | 1.67x | 1.34 s |
+| JavaScript (Bun) | `bun` | 1.88x | 1.38 s |
+| Lua (LuaJIT) | `luajit` | 1.97x | 1.57 s |
+| Java | `javac`, run on the JVM | 2.09x | 1.40 s |
+| JavaScript (Node.js) | `node` | 2.35x | 1.67 s |
+| Elixir | `elixirc`, run on the BEAM | 12.7x | 11.13 s |
+| Lua | `lua` | 13.3x | 10.09 s |
+| Python | `python3` | 32.8x | 25.42 s |
 
 Each kernel, as a multiple of C's time:
 
 | | fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Wind, no bounds checks | 1.04 | 1.02 | 1.04 | 1.00 | 1.01 | 1.03 | 1.01 | 1.05 | 1.01 | 0.97 | 0.99 | 0.97 |
-| **Wind** | 1.05 | 1.11 | 1.03 | 1.03 | 1.02 | 1.03 | 1.19 | 1.05 | 1.07 | 1.28 | 1.00 | 1.01 |
-| Zig | 2.12 | 1.02 | 0.84 | 1.02 | 1.00 | 1.96 | 1.02 | 0.97 | 0.78 | 0.99 | 0.84 | 1.08 |
-| Odin | 1.98 | 1.03 | 0.86 | 0.97 | 1.01 | 1.94 | 1.03 | 1.00 | 1.02 | 1.13 | 0.89 | 0.92 |
-| Rust | 1.99 | 1.11 | 0.85 | 0.97 | 1.02 | 2.01 | 1.01 | 1.00 | 1.04 | 1.06 | 0.92 | 1.14 |
-| C++ | 1.02 | 1.10 | 1.18 | 1.03 | 1.03 | 2.05 | 1.22 | 1.00 | 1.02 | 1.16 | 1.03 | 1.06 |
-| Go | 4.08 | 1.14 | 1.54 | 1.07 | 1.06 | 2.08 | 1.70 | 1.05 | 1.07 | 1.22 | 0.97 | 1.05 |
-| Swift | 4.00 | 1.26 | 1.44 | 1.04 | 1.05 | 2.41 | 1.21 | 1.26 | 1.78 | 1.39 | 1.02 | 7.21 |
-| Haskell | 5.13 | 1.35 | 1.64 | 1.29 | 1.54 | 2.24 | 1.96 | 1.54 | 1.41 | 1.65 | 1.28 | 1.18 |
-| Java | 2.89 | 1.58 | 2.56 | 2.10 | 2.55 | 3.72 | 2.94 | 1.44 | 2.11 | 2.69 | 1.73 | 3.47 |
-| Lua (LuaJIT) | 6.90 | 5.27 | 4.59 | 1.98 | 1.07 | 4.58 | 3.19 | 2.65 | 2.47 | 2.61 | 2.00 | 7.61 |
-| JavaScript (Bun) | 5.47 | 1.62 | 14.5 | 1.32 | 1.33 | 3.10 | 3.08 | 2.00 | 1.62 | 8.15 | 9.53 | 5.14 |
-| JavaScript (Node.js) | 8.40 | 1.71 | 11.2 | 1.94 | 1.56 | 4.45 | 3.77 | 1.92 | 2.17 | 3.82 | 6.73 | 5.71 |
-| Elixir | 9.84 | 19.9 | 6.57 | 8.23 | 17.1 | 47.6 | 35.7 | 18.6 | 6.28 | 12.7 | 6.29 | 7.57 |
-| Lua | 51.6 | 11.9 | 27.0 | 4.39 | 15.5 | 62.1 | 58.6 | 7.05 | 9.45 | 8.05 | 7.62 | 8.29 |
-| Python | 98.1 | 24.7 | 65.0 | 11.6 | 55.6 | 284 | 112 | 28.6 | 18.6 | 36.2 | 41.7 | 11.3 |
+| Wind, no bounds checks | 1.04 | 1.01 | 1.03 | 1.00 | 1.00 | 1.01 | 1.00 | 1.05 | 1.01 | 0.82 | 1.00 | 0.97 |
+| C++ | 1.08 | 1.08 | 1.15 | 1.02 | 1.01 | 1.09 | 1.23 | 0.99 | 1.01 | 0.85 | 1.05 | 1.11 |
+| **Wind** | 1.04 | 1.10 | 1.04 | 1.01 | 1.00 | 1.02 | 1.22 | 1.05 | 1.03 | 1.17 | 1.02 | 1.01 |
+| Zig | 2.12 | 1.00 | 0.85 | 1.02 | 0.98 | 1.92 | 1.01 | 0.98 | 0.78 | 0.81 | 0.85 | 1.08 |
+| Odin | 1.77 | 1.01 | 0.92 | 1.04 | 1.01 | 1.97 | 1.02 | 1.00 | 0.99 | 1.02 | 0.86 | 0.99 |
+| Rust | 1.79 | 1.08 | 0.86 | 0.97 | 1.01 | 2.01 | 1.02 | 0.97 | 1.02 | 0.93 | 0.94 | 1.11 |
+| Swift | 1.83 | 1.06 | 0.92 | 1.05 | 1.06 | 2.10 | 1.22 | 1.00 | 1.03 | 1.36 | 1.05 | 1.08 |
+| Go | 4.04 | 1.16 | 1.42 | 1.11 | 1.04 | 2.09 | 1.72 | 1.05 | 1.03 | 1.14 | 0.98 | 1.02 |
+| Haskell | 5.34 | 1.30 | 1.64 | 1.28 | 1.52 | 2.26 | 1.94 | 1.62 | 1.35 | 1.57 | 1.31 | 1.11 |
+| JavaScript (Bun) | 5.47 | 1.59 | 4.65 | 1.33 | 1.30 | 3.08 | 2.00 | 1.28 | 1.55 | 1.58 | 1.69 | 0.88 |
+| Lua (LuaJIT) | 6.81 | 1.22 | 3.60 | 1.98 | 1.06 | 3.05 | 1.24 | 2.81 | 2.32 | 1.50 | 1.71 | 0.84 |
+| Java | 2.89 | 1.55 | 2.63 | 2.10 | 2.52 | 3.69 | 2.84 | 1.50 | 1.99 | 2.15 | 1.75 | 0.96 |
+| JavaScript (Node.js) | 8.38 | 1.70 | 3.77 | 1.95 | 1.52 | 4.54 | 3.26 | 1.59 | 2.12 | 1.70 | 2.25 | 0.92 |
+| Elixir | 9.79 | 19.2 | 6.63 | 8.38 | 16.9 | 47.1 | 35.4 | 20.0 | 6.02 | 10.7 | 6.45 | 7.09 |
+| Lua | 46.6 | 11.8 | 27.3 | 4.24 | 15.6 | 60.0 | 45.5 | 7.51 | 9.24 | 6.62 | 8.45 | 2.83 |
+| Python | 93.1 | 10.1 | 60.2 | 9.45 | 52.1 | 126 | 105 | 33.2 | 18.0 | 22.5 | 29.6 | 10.4 |
 
 C's own times for the kernels, in seconds, to give the ratios a scale:
 
 | fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.044 | 0.085 | 0.033 | 0.026 | 0.048 | 0.024 | 0.022 | 0.133 | 0.031 | 0.027 | 0.034 | 0.309 |
+| 0.044 | 0.088 | 0.033 | 0.026 | 0.049 | 0.024 | 0.023 | 0.133 | 0.033 | 0.034 | 0.034 | 0.337 |
 
 Measured on one x86-64 Linux machine with GCC 16.2, Zig 0.17, Rust 1.91,
 Go 1.27, Odin dev-2026-10, Swift 6.3, GHC 9.6, OpenJDK 17, Node.js 25.8,
@@ -788,38 +788,45 @@ numbers; the script is there to run it again.
 
 ### Reading the numbers
 
+- **Every program is written to be fast in its own language.** They all run
+  the same algorithms, with no threads, no vector instructions written by
+  hand and no library sort, but each uses what its language has for speed.
+  Where that changes the shape of the code, the top of the file says how.
 - **Wind is C with checks.** It compiles to C, so it gets whatever the C
   compiler can do. What it adds is a range check on every array index and a
   `NULL` check on every use of a pointer. That shows where indexes are
   scattered or packed into tight loops (`hash`, `particles`, `sieve`) and
   nowhere else. With `--no-bounds-check` the difference from C is within
   the noise of the measurement.
+- **Most of the others here run without those checks.** Zig, Odin and
+  Swift are built with them off, and Rust and Haskell skip them in their
+  hot loops with unchecked reads and writes. Go, Java, JavaScript, Lua,
+  Elixir and Python keep theirs, as plain Wind does.
 - **The compiler behind the language matters as much as the language.** C,
   C++ and Wind were built with GCC here; Zig, Rust, Odin and Swift use
   LLVM. GCC does better on `fib` and `matmul`, which is why those four take
-  about twice as long there while matching C elsewhere. Building the C program with Clang
-  gives the same doubling on `matmul`.
+  about twice as long there while matching C elsewhere. Building the C
+  program with Clang gives the same doubling on `matmul`.
 - **A time includes starting the program.** That is nothing for the
   compiled languages, tens of milliseconds for Java and JavaScript, whose
   kernels also start out interpreted, and about a tenth of a second for
   Elixir's virtual machine. On kernels this short it is a real part of
   their ratios.
-- **Same algorithm everywhere.** No program uses threads, vector
-  instructions written by hand, or a library sort. Rust, Go, Swift, Java
-  and Odin check array bounds, as Wind does; Zig is built with
-  `ReleaseFast` and Haskell uses unchecked reads and writes, so those two
-  run without them, like C.
-- Some programs depart from the others where the language asks for it.
-  Rust threads its list through a vector by position, where the others hold
-  pointers. JavaScript uses typed arrays for its numbers. Swift's nodes are
-  reference-counted objects, which is what `list` then measures.
-- **Haskell and Elixir are written for speed, not in their usual style.**
-  Neither changes data in place in ordinary code. The Haskell program uses
-  unboxed mutable arrays and strict loops throughout. The Elixir program
-  uses Erlang's `:atomics` for the arrays it writes to, tuples for those it
-  only reads, a binary for the bytes, and whole numbers as sets of bits for
-  `queens`. Both keep their list as two arrays of numbers. Idiomatic code
-  in either language would look different and, on these kernels, be slower.
+- **Managed languages keep their numbers side by side.** Java, JavaScript,
+  Lua, Haskell and Elixir hold the particles and the list's nodes as
+  numbers in arrays, where objects would each be reached through a
+  reference; under LuaJIT those arrays are C arrays made through its FFI.
+  `list` then follows positions where C follows pointers. Python is the
+  exception: there, objects turned out faster than lists of positions.
+- **Haskell and Elixir are far from their usual style.** Neither changes
+  data in place in ordinary code. The Haskell program uses unboxed mutable
+  arrays and strict loops throughout. The Elixir program uses Erlang's
+  `:atomics` for the arrays it writes to, tuples for those it only reads,
+  a binary for the bytes, and whole numbers as sets of bits for `queens`.
+- **The flags are the ones that helped.** Stronger settings were tried for
+  C, C++, Rust and Zig (`-O3`, and building for this exact processor). They
+  made one kernel faster and others slower, with no gain overall, so those
+  four stay at their plain optimized builds.
 
 ## Compiler layout
 

@@ -1,15 +1,9 @@
 // The benchmark program in Java; see bench.wind for what each kernel measures.
+// It is written for speed: the particles and the list's nodes are numbers
+// side by side in arrays, where objects would each be reached through a
+// reference.
 
 public class Bench {
-    static final class Node {
-        long value;
-        Node next;
-    }
-
-    static final class Particle {
-        double x, y, vx, vy;
-    }
-
     static final int SIEVE_LIMIT = 20000000;
     static final int SORT_COUNT = 2000000;
     static final int MATRIX_SIZE = 400;
@@ -127,27 +121,27 @@ public class Bench {
         return (long) total;
     }
 
+    // A particle is four numbers in a row: x, y, vx, vy.
     static long particleSum() {
-        Particle[] particles = new Particle[PARTICLE_COUNT];
-        for (int i = 0; i < PARTICLE_COUNT; i++) {
-            Particle p = new Particle();
-            p.x = (double) (random() % 1000);
-            p.y = (double) (random() % 1000);
-            p.vx = (double) (random() % 200 - 100) / 8.0;
-            p.vy = (double) (random() % 200 - 100) / 8.0;
-            particles[i] = p;
+        double[] p = new double[PARTICLE_COUNT * 4];
+        for (int i = 0; i < PARTICLE_COUNT * 4; i += 4) {
+            p[i] = (double) (random() % 1000);
+            p[i + 1] = (double) (random() % 1000);
+            p[i + 2] = (double) (random() % 200 - 100) / 8.0;
+            p[i + 3] = (double) (random() % 200 - 100) / 8.0;
         }
         for (int step = 0; step < 20000; step++) {
-            for (int i = 0; i < PARTICLE_COUNT; i++) {
-                Particle p = particles[i];
-                p.x += p.vx * 0.5;
-                p.y += p.vy * 0.5;
-                if (p.x < 0.0 || p.x > 1000.0) p.vx = -p.vx;
-                if (p.y < 0.0 || p.y > 1000.0) p.vy = -p.vy;
+            for (int i = 0; i < PARTICLE_COUNT * 4; i += 4) {
+                double x = p[i] + p[i + 2] * 0.5;
+                double y = p[i + 1] + p[i + 3] * 0.5;
+                p[i] = x;
+                p[i + 1] = y;
+                if (x < 0.0 || x > 1000.0) p[i + 2] = -p[i + 2];
+                if (y < 0.0 || y > 1000.0) p[i + 3] = -p[i + 3];
             }
         }
         double total = 0.0;
-        for (int i = 0; i < PARTICLE_COUNT; i++) total += particles[i].x + particles[i].y;
+        for (int i = 0; i < PARTICLE_COUNT * 4; i += 4) total += p[i] + p[i + 1];
         return (long) total;
     }
 
@@ -238,13 +232,15 @@ public class Bench {
         return code + counts[4] + pairs * 7;
     }
 
+    // A node is its place in two arrays: one of values, one of the place of
+    // the node after it, with -1 for the end of the list.
     static long list() {
-        Node[] nodes = new Node[LIST_COUNT];
+        int[] values = new int[LIST_COUNT];
+        int[] nexts = new int[LIST_COUNT];
         int[] order = new int[LIST_COUNT];
         for (int i = 0; i < LIST_COUNT; i++) {
             order[i] = i;
-            nodes[i] = new Node();
-            nodes[i].value = i % 100;
+            values[i] = i % 100;
         }
         for (int i = LIST_COUNT - 1; i > 0; i--) {
             int j = (int) (random() % (i + 1));
@@ -252,12 +248,12 @@ public class Bench {
             order[i] = order[j];
             order[j] = held;
         }
-        for (int i = 0; i < LIST_COUNT - 1; i++) nodes[order[i]].next = nodes[order[i + 1]];
-        nodes[order[LIST_COUNT - 1]].next = null;
+        for (int i = 0; i < LIST_COUNT - 1; i++) nexts[order[i]] = order[i + 1];
+        nexts[order[LIST_COUNT - 1]] = -1;
 
         long total = 0;
         for (long pass = 0; pass < 20; pass++) {
-            for (Node at = nodes[order[0]]; at != null; at = at.next) total += at.value + pass;
+            for (int at = order[0]; at >= 0; at = nexts[at]) total += values[at] + pass;
         }
         return total;
     }

@@ -1,4 +1,7 @@
 // The benchmark program in C++; see bench.wind for what each kernel measures.
+// The matrix product keeps its matrices in fixed arrays, which the compiler
+// does more with than it can with vectors, and the sort works through a
+// plain pointer.
 
 #include <cstdint>
 #include <iostream>
@@ -31,7 +34,9 @@ constexpr int64_t QUEENS = 12;
 // Each kernel sizes the vectors it uses.
 static std::vector<char> composite;
 static std::vector<int64_t> numbers;
-static std::vector<double> left, right, product;
+static double left[MATRIX_SIZE * MATRIX_SIZE];
+static double right[MATRIX_SIZE * MATRIX_SIZE];
+static double product[MATRIX_SIZE * MATRIX_SIZE];
 static std::vector<Node> nodes;
 static std::vector<int64_t> order;
 static std::vector<int64_t> table;
@@ -126,9 +131,6 @@ static int64_t mandelbrot() {
 
 static int64_t matmul() {
     int64_t n = MATRIX_SIZE;
-    left.assign(n * n, 0.0);
-    right.assign(n * n, 0.0);
-    product.assign(n * n, 0.0);
     for (int64_t i = 0; i < n * n; i++) {
         left[i] = (double)(i % 7) + 0.5;
         right[i] = (double)(i % 5) - 1.5;
@@ -147,8 +149,9 @@ static int64_t matmul() {
 
 static int64_t particle_sum() {
     particles.assign(PARTICLE_COUNT, Particle());
+    Particle *all = particles.data();
     for (int64_t i = 0; i < PARTICLE_COUNT; i++) {
-        Particle *p = &particles[i];
+        Particle *p = &all[i];
         p->x = (double)(random_number() % 1000);
         p->y = (double)(random_number() % 1000);
         p->vx = (double)(random_number() % 200 - 100) / 8.0;
@@ -156,7 +159,7 @@ static int64_t particle_sum() {
     }
     for (int64_t step = 0; step < 20000; step++) {
         for (int64_t i = 0; i < PARTICLE_COUNT; i++) {
-            Particle *p = &particles[i];
+            Particle *p = &all[i];
             p->x += p->vx * 0.5;
             p->y += p->vy * 0.5;
             if (p->x < 0.0 || p->x > 1000.0) p->vx = -p->vx;
@@ -168,7 +171,7 @@ static int64_t particle_sum() {
     return (int64_t)total;
 }
 
-static void quicksort(std::vector<int64_t> &values, int64_t low, int64_t high) {
+static void quicksort(int64_t *values, int64_t low, int64_t high) {
     if (low >= high) return;
     int64_t pivot = values[(low + high) / 2];
     int64_t i = low;
@@ -189,7 +192,7 @@ static void quicksort(std::vector<int64_t> &values, int64_t low, int64_t high) {
 static int64_t sort() {
     numbers.assign(SORT_COUNT, 0);
     for (int64_t i = 0; i < SORT_COUNT; i++) numbers[i] = random_number() % 1000000;
-    quicksort(numbers, 0, SORT_COUNT - 1);
+    quicksort(numbers.data(), 0, SORT_COUNT - 1);
     int64_t check = 0;
     for (int64_t i = 0; i < SORT_COUNT; i += 1000) check += numbers[i] * (i % 7 + 1);
     return check;
