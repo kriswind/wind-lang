@@ -1,0 +1,218 @@
+// Pointers: taking addresses, reaching through them, moving them, NULL.
+
+struct Point { int x; int y }
+
+struct Node {
+    int value
+    Node *next
+}
+
+// Two structs that point at each other, the first declared above the second.
+struct Owner { Pet *pet; string name }
+struct Pet { Owner *owner; string name }
+
+typedef struct Tree {
+    int key;
+    struct Tree *left;
+    struct Tree *right;
+} Tree;
+
+typedef int *IntPtr
+
+int total = 0
+
+void swap(int *a, int *b) {
+    int t = *a
+    *a = *b
+    *b = t
+}
+
+void move(Point *p, int dx, int dy) {
+    p->x += dx
+    p.y += dy
+}
+
+int sum(int *first, int count) {
+    int s = 0
+    for (int i = 0; i < count; i++) s += first[i]
+    return s
+}
+
+int length(Node *list) {
+    int n = 0
+    Node *at = list
+    while (at != NULL) {
+        n++
+        at = next_of(at)
+    }
+    return n
+}
+
+Node *next_of(Node *node) {
+    return node->next
+}
+
+int *largest(int *a, int *b) {
+    return *a > *b ? a : b
+}
+
+int depth(Tree *t) {
+    if (t == NULL) return 0
+    int l = depth(t->left)
+    int r = depth(t->right)
+    return 1 + (l > r ? l : r)
+}
+
+void fill(int values[], int with) {
+    int *p = values
+    for (int i = 0; i < len(values); i++) {
+        *p = with
+        p++
+    }
+}
+
+void bump() {
+    int *t = &total
+    *t += 5
+}
+
+int main() {
+    // A variable, through a pointer.
+    int a = 1
+    int b = 2
+    int *p = &a
+    cout << *p << " "
+    *p = 10
+    *p += 5
+    (*p)++
+    cout << a << "\n"
+    swap(&a, &b)
+    cout << a << " " << b << "\n"
+
+    // A pointer given no value is NULL.
+    int *none
+    cout << (none == NULL) << " " << (p != NULL) << " " << none << "\n"
+    none = NULL
+    IntPtr q = p
+    cout << (q == p) << " " << (q == &b) << "\n"
+
+    // A pointer to a pointer.
+    int **pp = &p
+    **pp = 7
+    *pp = &b
+    cout << a << " " << b << " " << *p << " " << **pp << "\n"
+
+    // Structs.
+    Point pt = { 1, 2 }
+    Point *at = &pt
+    move(at, 10, 20)
+    move(&pt, 1, 1)
+    cout << pt << " " << at->x << " " << at.y << " " << (*at).x << "\n"
+    (*at).x = 0
+    at->y <<= 2
+    int *py = &at->y
+    *py -= 1
+    Point copy = *at
+    copy.x = 99
+    cout << pt << " " << copy << "\n"
+
+    // Arrays: elements, and moving along them.
+    int nums[5] = { 1, 2, 3, 4, 5 }
+    int *n = nums
+    int *last = &nums[-1]
+    cout << *n << " " << n[2] << " " << *(n + 1) << " " << *last << " " << last - n << "\n"
+    n += 2
+    n[1] = 40
+    *(n - 1) = 20
+    n--
+    cout << *n << " " << nums << " " << sum(nums, 5) << " " << sum(&nums[3], 2) << "\n"
+    cout << (n < last) << " " << (last <= n) << " " << (1 + n == &nums[2]) << "\n"
+    for (int *it = nums; it != &nums[0] + 5; it++) *it *= 2
+    cout << nums << "\n"
+    fill(nums, 3)
+    cout << nums << " " << *largest(&a, &b) << "\n"
+
+    // An array of pointers, and an array of structs.
+    int *both[2] = { &a, &b }
+    *both[0] = 100
+    cout << a << " " << *both[1] << "\n"
+    Point pts[2] = { { 1, 1 }, { 2, 2 } }
+    Point *second = &pts[1]
+    second->x = 22
+    pts[0].y = 11
+    (second - 1).x = 5
+    cout << pts << "\n"
+
+    // A linked list, and a tree.
+    Node third = { 3, NULL }
+    Node second_node = { 2, &third }
+    Node first = { 1, &second_node }
+    cout << length(&first) << " " << first.next->next->value << " " <<
+         length(NULL) << "\n"
+    first.next->next->value = 30
+    first.next.value += 5
+    cout << second_node.value << " " << third.value << "\n"
+
+    Tree leaf = { 3, NULL, NULL }
+    Tree mid = { .key = 2, .left = &leaf }
+    Tree root = { 1, &mid, NULL }
+    cout << depth(&root) << " " << (root.right == NULL) << "\n"
+
+    Owner owner
+    Pet pet
+    owner.name = "Sam"
+    owner.pet = &pet
+    pet.name = "Rex"
+    pet.owner = &owner
+    cout << owner.pet->name << " " << pet.owner->pet->owner->name << "\n"
+
+    // Sizes and conversions.
+    cout << sizeof(int *) << " " << sizeof(Node *) << " " << sizeof(Node) << " " <<
+         sizeof(p) << "\n"
+    uintptr address = uintptr(p)
+    int *back = (int *)address
+    cout << (back == p) << " " << (typeof(p)(address) == p) << "\n"
+    u32 word = 0x01020304
+    u8 *bytes = (u8 *)&word
+    cout << bytes[0] + bytes[3] << "\n"
+    Point *cast = (Point *)NULL
+    cout << (cast == NULL) << " " << cast << "\n"
+
+    bump()
+    bump()
+    cout << total << "\n"
+
+    // An array's name as a value is a pointer to its first element.
+    int grid[4] = { 1, 2, 3, 4 }
+    int count = 0
+    for (int *it = grid; it < grid + 4; it++) count += *it
+    cout << count << " " << *(grid + 2) << " " << (&grid[3] - grid) << " " << *grid << "\n"
+
+    // A body without braces can start with a "*"; a "*" that no assignment
+    // follows still multiplies.
+    int value = 3
+    int *target = &value
+    if (value == 3) *target = 4
+    if (value == 3) *target = 5 else *target += 10
+    while (value < 20) *target *= 2
+    if ((value) * 2 == 56) { cout << value << "\n" }
+    if (value > 0) (*target)++
+    cout << value << "\n"
+
+    // A pointer is true unless it is NULL.
+    Node *walk = &first
+    int seen = 0
+    while (walk) {
+        seen++
+        walk = walk->next
+    }
+    Node *end = NULL
+    if (!end && target) seen += 10
+    if (end || !target) seen += 100
+    if (end && end->value == 1) seen += 1000
+    do { seen++ } while (end)
+    for (Node *it = &first; it; it = it->next) seen++
+    cout << seen << " " << (end ? "set" : "unset") << " " << (target ? 1 : 0) << " " <<
+         !end << " " << (walk || target) << "\n"
+    return 0
+}

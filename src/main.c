@@ -95,13 +95,15 @@ static void build(const char *src_path, const char *out_path) {
         fatal("cannot write '%s': %s", c_path, strerror(errno));
     }
 
-    /* -fwrapv makes signed overflow wrap, as Wind defines it. -w hides C
-       warnings, which would describe generated code the user never wrote. */
+    /* -fwrapv makes signed overflow wrap, as Wind defines it.
+       -fno-strict-aliasing lets a pointer converted to another pointer type
+       read the bytes it finds. -w hides C warnings, which would describe
+       generated code the user never wrote. */
     const char *cc = getenv("CC");
     if (!cc || !*cc) cc = "cc";
     char *argv[] = {
-        (char *)cc, "-std=c11", "-O2", "-w", "-fwrapv", "-o", (char *)out_path,
-        c_path,     NULL,
+        (char *)cc,     "-std=c11", "-O2",   "-w", "-fwrapv", "-fno-strict-aliasing",
+        "-o",           (char *)out_path, c_path, NULL,
     };
     int code = spawn_and_wait(cc, argv);
     unlink(c_path);

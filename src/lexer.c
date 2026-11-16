@@ -22,6 +22,7 @@ static const struct {
     {"return", TOK_KW_RETURN, TYPE_INVALID},
     {"true", TOK_KW_TRUE, TYPE_INVALID},
     {"false", TOK_KW_FALSE, TYPE_INVALID},
+    {"NULL", TOK_KW_NULL, TYPE_INVALID},
     {"sizeof", TOK_KW_SIZEOF, TYPE_INVALID},
     {"import", TOK_KW_IMPORT, TYPE_INVALID},
     {"struct", TOK_KW_STRUCT, TYPE_INVALID},
@@ -117,6 +118,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_RETURN: return "'return'";
     case TOK_KW_TRUE:   return "'true'";
     case TOK_KW_FALSE:  return "'false'";
+    case TOK_KW_NULL:   return "'NULL'";
     case TOK_KW_SIZEOF: return "'sizeof'";
     case TOK_KW_IMPORT: return "'import'";
     case TOK_KW_STRUCT: return "'struct'";
@@ -141,6 +143,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_COLON:     return "':'";
     case TOK_QUESTION:  return "'?'";
     case TOK_DOT:       return "'.'";
+    case TOK_ARROW:     return "'->'";
     case TOK_PLUS:      return "'+'";
     case TOK_MINUS:     return "'-'";
     case TOK_STAR:      return "'*'";
@@ -486,7 +489,10 @@ Token lexer_next(Lexer *lexer) {
             tok.kind = match(lexer, '+') ? TOK_INC : match(lexer, '=') ? TOK_PLUS_EQ : TOK_PLUS;
             break;
         case '-':
-            tok.kind = match(lexer, '-') ? TOK_DEC : match(lexer, '=') ? TOK_MINUS_EQ : TOK_MINUS;
+            tok.kind = match(lexer, '-')   ? TOK_DEC
+                       : match(lexer, '=') ? TOK_MINUS_EQ
+                       : match(lexer, '>') ? TOK_ARROW
+                                           : TOK_MINUS;
             break;
         case '*': tok.kind = match(lexer, '=') ? TOK_STAR_EQ : TOK_STAR;       break;
         case '/': tok.kind = match(lexer, '=') ? TOK_SLASH_EQ : TOK_SLASH;     break;

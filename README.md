@@ -114,6 +114,7 @@ wind program.wind one two     # argc is 3
 | Floats | `float`, `f16`, `f32`, `f64`, `f128` |
 | Text | `string`, `char` |
 | Other | `bool`, `void` (function return type only) |
+| Pointers | `T *` for any type `T`; see [Pointers](#pointers) |
 
 - `int`, `uint` and `uintptr` are pointer-sized. `float` is 64-bit.
 - `byte` is another name for `u8`.
@@ -243,9 +244,11 @@ void clear(int values[]) {
 ```
 
 An array is not a value in itself. Its name can be indexed, measured,
-printed, and passed to an array parameter, but one array cannot be assigned to another,
-compared with `==`, or returned from a function. Arrays have one dimension,
-and their elements cannot themselves be arrays.
+printed, and passed to an array parameter, but one array cannot be assigned
+to another, compared with `==`, or returned from a function. Used any other
+way, the name is a pointer to the array's first element; see
+[Pointers](#pointers). Arrays have one dimension, and their elements cannot
+themselves be arrays.
 
 ### Operators
 
@@ -256,9 +259,10 @@ and their elements cannot themselves be arrays.
 | unary `-` | numbers | same type |
 | `==` `!=` | any two values of one type | `bool` |
 | `<` `<=` `>` `>=` | numbers, `char` | `bool` |
-| `&&` `\|\|` `!` | `bool` | `bool` |
+| `&&` `\|\|` `!` | `bool`, or a pointer (true unless `NULL`) | `bool` |
 | `&` `\|` `^` (and, or, xor) | integers | same type |
 | unary `~` (not) | integers | same type |
+| unary `&` `*`, and `+` `-` on pointers | see [Pointers](#pointers) | |
 | `<<` `>>` (shifts) | an integer, shifted by any integer | type of the value shifted |
 
 | `c ? a : b` (conditional) | a `bool`, then two values of one type | that type |
@@ -419,11 +423,78 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
 **Rules for all three**
 
 - Types are declared at the top level of a file and can be used anywhere in
-  it, but a type must be declared above another type that uses it.
+  it. A type that holds a struct by value must be declared below that
+  struct; a pointer can point to a struct declared anywhere, its own
+  included.
 - `Name(value)` and `(Name)value` convert to a declared type, as they do for
   built-in ones.
 - `export` works on `struct`, `enum` and `typedef`. An importing file writes
   `module.Point`, and an exported enum's names as `module.RED`.
+
+### Pointers
+
+```wind
+struct Node { int value; Node *next }
+
+void swap(int *a, int *b) {
+    int t = *a
+    *a = *b
+    *b = t
+}
+
+int a = 1
+int b = 2
+swap(&a, &b)
+
+int *p = &a
+*p += 10                      // a is 12
+
+Node second = {2, NULL}
+Node first = {1, &second}
+Node *at = &first
+while (at != NULL) {
+    cout << at->value << " "  // 1 2
+    at = at->next
+}
+
+int nums[4] = {1, 2, 3, 4}
+int *n = nums                 // points to nums[0]
+n += 2
+cout << *n << " " << n[1] << " " << n - &nums[0] << "\n"   // 3 4 2
+```
+
+- `T *` is a pointer to a `T`, and `T **` a pointer to that. It can be the
+  type of a variable, a parameter, a return value, a field or an array's
+  elements.
+- `&place` is a pointer to a variable, an array element, a field, or what
+  another pointer points to. Constants and parameters have no address.
+- `*p` is what `p` points to, to read or to assign. `p->field` reaches a
+  field through a pointer to a struct, and so does `p.field`.
+- A pointer declared without a value is `NULL`. `NULL` takes its type from
+  where it is used, so it needs a pointer beside it: `p == NULL`,
+  `Node *n = NULL`.
+- Using `*`, `->` or `[]` on a `NULL` pointer stops the program with the line
+  it happened on.
+- A pointer moves by whole elements, as in C: `p + n`, `p - n`, `p++`,
+  `p += n`, and `p[n]` for `*(p + n)`. `p - q` is how many elements apart two
+  pointers of one type are, as an `int`. None of this is checked: moving a
+  pointer outside the array it points into, or keeping one to a variable
+  whose function has returned, is undefined, as in C. Returning a pointer
+  to one of the function's own variables is reported as a warning.
+- An array's name used as a value is a pointer to its first element, as in
+  C: `int *n = nums`, `*(nums + 1)`, `p < nums + 4`. A constant array's name
+  is not, since the pointer could change it. Comparing two arrays by name is
+  an error, because it would compare where they are and not what they hold.
+- Pointers of one type compare with `==`, `!=`, `<`, `<=`, `>` and `>=`.
+- A pointer can be tested directly, as in C: `if (p)`, `while (at)`, `!p`,
+  `p && p->next`, `p ? a : b`. It counts as true unless it is `NULL`. It is
+  still not a `bool`: `bool ok = p` is an error; write `p != NULL`.
+- A pointer converts only explicitly: to another pointer type, `(u8 *)p`,
+  and to and from `uintptr`.
+- `cout` prints a pointer as its address, or `NULL`.
+- `*p++` is an error, because C reads it as moving `p`. Write `(*p)++` to
+  change what `p` points to, or `p++` to move it.
+- A body without braces can start with `*`: `if (ready) *p = 1`.
 
 ### Modules
 
@@ -520,6 +591,9 @@ cout << name << " is " << age << "\n"
 
 - A struct field cannot be an array, and a struct or an enum cannot be read
   with `cin`; read into the fields.
+- There is no `void *`, no pointer to a function, and no way to allocate
+  memory while the program runs: a pointer points to a variable, an element
+  or a field. `cin` reads into a variable, not through a pointer.
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.

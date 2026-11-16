@@ -239,6 +239,28 @@ kinds = {item["label"]: item["kind"] for item in request("textDocument/completio
 check("completion kinds for types", [kinds.get(n) for n in ("Point", "Color", "RED", "Spot", "struct", "typeof")],
       [22, 13, 20, 22, 14, 14])
 
+POINTERS = """struct Node { int value; Node *next }
+Node tail = { 2, NULL }
+Node head = { 1, &tail }
+Node *at = &head
+int **deep
+Node *step(Node *from) { return from->next }
+at->next->value = 3
+cout << step(at).value << (deep == NULL)
+"""
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 9}, "contentChanges": [{"text": POINTERS}]})
+check("diagnostics for pointers", read()["params"]["diagnostics"], [])
+check("hover self-referential struct", hover_text(1, 2), "```wind\nstruct Node { int value; Node *next }\n```")
+check("hover pointer variable", hover_text(6, 1), "```wind\nNode *at\n```")
+check("hover pointer to pointer", hover_text(7, 28), "```wind\nint **deep\n```")
+check("hover function returning a pointer", hover_text(7, 10), "```wind\nNode *step(Node *from)\n```")
+check("definition through an assignment target", request("textDocument/definition", at(6, 1))["result"]["range"],
+      rng(3, 6, 8))
+check("definition of a pointer's type", request("textDocument/definition", at(5, 13))["result"]["range"],
+      rng(0, 7, 11))
+check("NULL is offered", "NULL" in [item["label"] for item in request("textDocument/completion", at(7, 0))["result"]],
+      True)
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 

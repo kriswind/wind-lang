@@ -37,7 +37,7 @@ tests/err/semantics.wind:23:5: error: argument 1 of 'add' must be 'int', found '
 tests/err/semantics.wind:24:5: warning: variable 'z' is never used
 tests/err/semantics.wind:24:9: error: cannot initialize 'int' variable with 'void'
 tests/err/semantics.wind:25:9: error: cannot print a 'void' value
-tests/err/semantics.wind:26:4: error: condition must be 'bool', found 'int'
+tests/err/semantics.wind:26:4: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/semantics.wind:27:6: error: undefined label 'nowhere'
 tests/err/semantics.wind:28:1: warning: label 'dup' is never used
 tests/err/semantics.wind:29:1: error: label 'dup' is already defined at line 28

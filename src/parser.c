@@ -23,13 +23,12 @@
  *   const_decl = "const" type IDENT "=" expr
  *   var_decl   = type IDENT [ "=" expr ]
  *              | type IDENT "[" [ expr ] "]" [ "=" "{" [ expr { "," expr } ] "}" ]
- *   assign     = place ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|="
+ *   assign     = unary ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|="
  *                      | "^=" | "<<=" | ">>=" ) expr
- *              | place ( "++" | "--" ) | ( "++" | "--" ) place
- *   place      = IDENT [ "[" expr "]" ] { "." IDENT }
+ *              | unary ( "++" | "--" ) | ( "++" | "--" ) unary
  *   cout       = "cout" "<<" expr { "<<" expr }
  *   cin        = "cin" ">>" target { ">>" target }
- *   target     = type IDENT | place
+ *   target     = type IDENT | IDENT [ "[" expr "]" ] { "." IDENT }
  *   goto       = "goto" IDENT
  *   label      = IDENT ":"
  *   return     = "return" [ expr ]
@@ -43,7 +42,8 @@
  *   simple     = var_decl | assign | call
  *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
  *   param      = type IDENT [ "[" "]" ]
- *   type       = TYPE | a C spelling such as "unsigned long" (see parse_type)
+ *   type       = base { "*" }
+ *   base       = TYPE | a C spelling such as "unsigned long" (see parse_type)
  *              | [ "struct" | "enum" ] name | "typeof" "(" ( type | expr ) ")"
  *
  *   expr       = or [ "?" expr ":" expr ]
@@ -56,9 +56,9 @@
  *   shift      = sum { ( "<<" | ">>" ) sum }
  *   sum        = term { ( "+" | "-" ) term }
  *   term       = unary { ( "*" | "/" | "%" ) unary }
- *   unary      = ( "-" | "!" | "~" ) unary | postfix
- *   postfix    = primary { "[" expr "]" | "." IDENT }
- *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | name
+ *   unary      = ( "-" | "!" | "~" | "&" | "*" ) unary | postfix
+ *   postfix    = primary { "[" expr "]" | "." IDENT | "->" IDENT }
+ *   primary    = INT | FLOAT | CHAR | STRING | "true" | "false" | "NULL" | name
  *              | call | type "(" expr ")" | "(" type ")" unary | "(" expr ")"
  *              | "sizeof" "(" type ")" | "sizeof" unary | "cin" | init
  *   init       = "{" [ item { "," item } [ "," ] ] "}"
@@ -78,10 +78,19 @@
  * which one is decided when the names are resolved.
  *
  * A declared type's name is an ordinary identifier, so a statement that
- * starts with two names in a row ("Point p") is read as a declaration. In
- * "(Name) value" the parenthesized name is a cast when a value follows it,
- * except at the very start of a condition, where "if (ready) run()" must
- * stay a condition and its body.
+ * starts with two names in a row ("Point p"), or with a name and a "*"
+ * ("Point *p"), is read as a declaration. In "(Name) value" the
+ * parenthesized name is a cast when a value follows it, except at the very
+ * start of a condition, where "if (ready) run()" must stay a condition and
+ * its body; "(Name *)" can only be a cast.
+ *
+ * A body without braces can start with "*", as in "if (ready) *p = 1":
+ * the "*" after a parenthesized condition starts the body when an
+ * assignment follows it on the line, and multiplies otherwise.
+ *
+ * Whether the target of an assignment is something that can be assigned is
+ * decided when the program is analyzed. "*p++" is rejected, since C reads it
+ * as moving p and it reads here as changing what p points to.
  *
  * Functions, imports and "export" may only appear at the top level. A newline does not end a
  * statement directly after "=", "<<", ">>", "," or a binary operator, inside
@@ -103,6 +112,9 @@ typedef struct {
     /* Where the condition being parsed starts, so that its opening "(" is
        not taken for a cast; NO_OFFSET outside of one. */
     size_t cond_start;
+    /* Where a "*" sits that starts the body of the if or while being
+       parsed, and so is not a multiplication; NO_OFFSET if there is none. */
+    size_t body_star;
     Arena *arena;
     Diags *diags;
 } Parser;
@@ -221,8 +233,8 @@ static bool parse_named_type(Parser *p, TypeRef **ref) {
 }
 
 /*
- * Parses a type name. Besides Wind's own names this accepts C's multi-word
- * spellings and maps them onto Wind types:
+ * Parses a type without the "*"s that may follow it. Besides Wind's own
+ * names this accepts C's multi-word spellings and maps them onto Wind types:
  *
  *   short, short int                   i16     unsigned short       u16
  *   long, long int, long long          i64     unsigned long (long) u64
@@ -233,7 +245,10 @@ static bool parse_named_type(Parser *p, TypeRef **ref) {
  * A type that is not built in is returned in *ref, to be resolved when the
  * program is analyzed, with *out left invalid; otherwise *ref is NULL.
  */
-static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref) {
+static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref);
+static bool at_named_pointer_type(Parser *p);
+
+static bool parse_base_type(Parser *p, TypeKind *out, TypeRef **ref) {
     *out = TYPE_INVALID;
     *ref = NULL;
     if (at(p, TOK_KW_STRUCT) || at(p, TOK_KW_ENUM)) {
@@ -251,7 +266,7 @@ static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref) {
         next(p);
         if (!expect(p, TOK_LPAREN, NULL)) return false;
         skip_newlines(p);
-        if (at_type(p)) {
+        if (at_type(p) || at_named_pointer_type(p)) {
             if (!parse_type(p, out, ref)) return false;
         } else {
             Expr *of = parse_enclosed_expr(p);
@@ -314,6 +329,42 @@ static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref) {
     return true;
 }
 
+/* Parses a type: a base type, and a "*" for each level of pointer to it. A
+   pointer to a built-in type is returned in *out like any built-in type. */
+static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref) {
+    if (!parse_base_type(p, out, ref)) return false;
+    while (at(p, TOK_STAR)) {
+        if (*ref) {
+            (*ref)->depth++;
+        } else if (*out == TYPE_VOID) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "a pointer to 'void' is not supported; point to a type");
+            next(p);
+            return false;
+        } else {
+            *out = type_pointer_to(*out);
+        }
+        next(p);
+    }
+    return true;
+}
+
+/* True at a declared type's name, "Name" or "module.Name", that is followed
+   by at least one "*" and then ")": a pointer type in parentheses, which no
+   expression can look like. Looks ahead without consuming anything. */
+static bool at_named_pointer_type(Parser *p) {
+    if (!at(p, TOK_IDENT)) return false;
+    int ahead = 1;
+    TokenKind kind = peek_kind(p, ahead);
+    if (kind == TOK_DOT) {
+        if (peek_kind(p, ++ahead) != TOK_IDENT) return false;
+        kind = peek_kind(p, ++ahead);
+    }
+    if (kind != TOK_STAR) return false;
+    while (kind == TOK_STAR) kind = peek_kind(p, ++ahead);
+    return kind == TOK_RPAREN;
+}
+
 /* ---- Expressions ---- */
 
 static Expr *parse_expr(Parser *p);
@@ -336,7 +387,7 @@ static Expr *parse_sizeof(Parser *p) {
     next(p);
     if (accept(p, TOK_LPAREN)) {
         skip_newlines(p);
-        if (at_type(p)) {
+        if (at_type(p) || at_named_pointer_type(p)) {
             if (!parse_type(p, &expr->as.size_of.type, &expr->as.size_of.type_ref)) {
                 return NULL;
             }
@@ -425,11 +476,12 @@ static bool at_c_cast(Parser *p) {
     TokenKind kind = peek_kind(p, ahead);
     if (is_type_word(kind)) {
         while (is_type_word(kind)) kind = peek_kind(p, ++ahead);
+        while (kind == TOK_STAR) kind = peek_kind(p, ++ahead);
         return kind == TOK_RPAREN;
     }
     /* A declared type: "(Name)", "(module.Name)" or "(struct Name)". With
-       the keyword it can be nothing else; without it, the parentheses could
-       also hold a variable, so a value has to follow. */
+       the keyword or a "*" it can be nothing else; without them, the
+       parentheses could also hold a variable, so a value has to follow. */
     bool keyword = kind == TOK_KW_STRUCT || kind == TOK_KW_ENUM;
     if (keyword) kind = peek_kind(p, ++ahead);
     if (kind != TOK_IDENT) return false;
@@ -438,8 +490,10 @@ static bool at_c_cast(Parser *p) {
         if (peek_kind(p, ++ahead) != TOK_IDENT) return false;
         kind = peek_kind(p, ++ahead);
     }
+    bool pointer = kind == TOK_STAR;
+    while (kind == TOK_STAR) kind = peek_kind(p, ++ahead);
     if (kind != TOK_RPAREN) return false;
-    if (keyword) return true;
+    if (keyword || pointer) return true;
     if (p->tok.loc.offset == p->cond_start) return false;
     switch (peek_kind(p, ahead + 1)) {
     case TOK_IDENT:
@@ -449,6 +503,7 @@ static bool at_c_cast(Parser *p) {
     case TOK_STRING:
     case TOK_KW_TRUE:
     case TOK_KW_FALSE:
+    case TOK_KW_NULL:
     case TOK_KW_SIZEOF:
     case TOK_LPAREN:
     case TOK_LBRACE:
@@ -542,6 +597,9 @@ static Expr *parse_primary(Parser *p) {
         expr = new_expr(p, EXPR_BOOL_LIT, tok.loc);
         expr->as.bool_lit = tok.kind == TOK_KW_TRUE;
         return expr;
+    case TOK_KW_NULL:
+        next(p);
+        return new_expr(p, EXPR_NULL, tok.loc);
     case TOK_IDENT:
         next(p);
         if (at(p, TOK_LPAREN)) return parse_call(p, tok);
@@ -596,18 +654,20 @@ static Expr *parse_index(Parser *p, Expr *base) {
 
 static Expr *parse_postfix(Parser *p) {
     Expr *expr = parse_primary(p);
-    while (expr && (at(p, TOK_LBRACKET) || at(p, TOK_DOT))) {
+    while (expr && (at(p, TOK_LBRACKET) || at(p, TOK_DOT) || at(p, TOK_ARROW))) {
         if (at(p, TOK_LBRACKET)) {
             expr = parse_index(p, expr);
             continue;
         }
         Token name;
+        bool arrow = at(p, TOK_ARROW);
         next(p);
         if (!expect(p, TOK_IDENT, &name)) return NULL;
         Expr *field = new_expr(p, EXPR_FIELD, span(expr->loc, name.loc));
         field->as.field.base = expr;
         field->as.field.name = name.text;
         field->as.field.name_loc = name.loc;
+        field->as.field.arrow = arrow;
         field->as.field.index = -1;
         expr = field;
     }
@@ -615,15 +675,21 @@ static Expr *parse_postfix(Parser *p) {
 }
 
 static Expr *parse_unary(Parser *p) {
-    if (!at(p, TOK_MINUS) && !at(p, TOK_NOT) && !at(p, TOK_TILDE)) return parse_postfix(p);
+    Op op;
+    switch (p->tok.kind) {
+    case TOK_MINUS: op = OP_NEG;     break;
+    case TOK_NOT:   op = OP_NOT;     break;
+    case TOK_TILDE: op = OP_BIT_NOT; break;
+    case TOK_AMP:   op = OP_ADDR;    break;
+    case TOK_STAR:  op = OP_DEREF;   break;
+    default:        return parse_postfix(p);
+    }
     Token tok = p->tok;
     next(p);
     Expr *operand = parse_unary(p);
     if (!operand) return NULL;
     Expr *expr = new_expr(p, EXPR_UNARY, span(tok.loc, operand->loc));
-    expr->as.unary.op = tok.kind == TOK_MINUS ? OP_NEG
-                        : tok.kind == TOK_NOT ? OP_NOT
-                                              : OP_BIT_NOT;
+    expr->as.unary.op = op;
     expr->as.unary.operand = operand;
     return expr;
 }
@@ -648,7 +714,9 @@ static int binary_precedence(const Parser *p, Op *op) {
     case TOK_SHR:     *op = OP_SHR;     return p->no_shift ? 0 : 7;
     case TOK_PLUS:    *op = OP_ADD;     return 8;
     case TOK_MINUS:   *op = OP_SUB;     return 8;
-    case TOK_STAR:    *op = OP_MUL;     return 9;
+    case TOK_STAR:
+        *op = OP_MUL;
+        return p->tok.loc.offset == p->body_star ? 0 : 9;
     case TOK_SLASH:   *op = OP_DIV;     return 9;
     case TOK_PERCENT: *op = OP_MOD;     return 9;
     default:          return 0;
@@ -944,6 +1012,54 @@ static Stmt *parse_cin(Parser *p) {
 }
 
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
+static bool compound_assign_op(TokenKind kind, Op *op);
+
+/* Called at the start of a condition. "if (ready) *p = 1" could read as the
+   condition "(ready) * p" with a broken body. If the condition opens with a
+   parenthesis whose closing one is followed by "*", and an assignment comes
+   before the line or the header ends, that "*" starts the body: returns its
+   offset. Returns NO_OFFSET otherwise. Looks ahead without consuming
+   anything. */
+static size_t body_star(Parser *p) {
+    if (!at(p, TOK_LPAREN)) return NO_OFFSET;
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    size_t found = NO_OFFSET;
+    int depth = 1;
+    Token tok;
+    while (depth > 0) {
+        tok = lexer_next(&lexer);
+        if (tok.kind == TOK_EOF) break;
+        if (tok.kind == TOK_LPAREN) depth++;
+        if (tok.kind == TOK_RPAREN) depth--;
+    }
+    if (depth == 0) tok = lexer_next(&lexer);
+    if (depth == 0 && tok.kind == TOK_STAR) {
+        size_t star = tok.loc.offset;
+        for (;;) {
+            Op op;
+            tok = lexer_next(&lexer);
+            if (tok.kind == TOK_LPAREN || tok.kind == TOK_LBRACKET) depth++;
+            if (tok.kind == TOK_RPAREN || tok.kind == TOK_RBRACKET) depth--;
+            if (tok.kind == TOK_EOF || tok.kind == TOK_NEWLINE || tok.kind == TOK_SEMI ||
+                tok.kind == TOK_LBRACE || depth < 0) {
+                break;
+            }
+            bool assigns = tok.kind == TOK_ASSIGN || tok.kind == TOK_INC ||
+                           tok.kind == TOK_DEC || compound_assign_op(tok.kind, &op);
+            if (depth == 0 && assigns) {
+                found = star;
+                break;
+            }
+        }
+    }
+    /* Problems found while looking ahead are dropped here; they are
+       reported when the tokens are parsed. */
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    return found;
+}
 
 /* Parses the body of an if or a loop: a block, or one statement that stands
    for a block holding it. braces_optional tells whether the header ends in a
@@ -992,12 +1108,20 @@ static bool parse_body(Parser *p, Block *block, bool braces_optional) {
     return true;
 }
 
+/* Parses the condition of an if or a while. */
+static Expr *parse_condition(Parser *p) {
+    p->cond_start = p->tok.loc.offset;
+    p->body_star = body_star(p);
+    Expr *cond = parse_expr(p);
+    p->cond_start = NO_OFFSET;
+    p->body_star = NO_OFFSET;
+    return cond;
+}
+
 static Stmt *parse_if(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_IF, p->tok.loc);
     next(p);
-    p->cond_start = p->tok.loc.offset;
-    stmt->as.if_.cond = parse_expr(p);
-    p->cond_start = NO_OFFSET;
+    stmt->as.if_.cond = parse_condition(p);
     if (!stmt->as.if_.cond) return NULL;
     if (!parse_body(p, &stmt->as.if_.then_block, stmt->as.if_.cond->parenthesized)) {
         return NULL;
@@ -1078,9 +1202,7 @@ static Stmt *parse_for(Parser *p) {
 static Stmt *parse_while(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_WHILE, p->tok.loc);
     next(p);
-    p->cond_start = p->tok.loc.offset;
-    stmt->as.loop.cond = parse_expr(p);
-    p->cond_start = NO_OFFSET;
+    stmt->as.loop.cond = parse_condition(p);
     if (!stmt->as.loop.cond) return NULL;
     if (!parse_body(p, &stmt->as.loop.body, stmt->as.loop.cond->parenthesized)) {
         return NULL;
@@ -1114,23 +1236,69 @@ static bool compound_assign_op(TokenKind kind, Op *op) {
     }
 }
 
-/* "x++" and "x--" are "x += 1" and "x -= 1". step is the "++" or "--". */
-static Stmt *new_assign(Parser *p, Token name, const PlaceRest *rest) {
-    Stmt *stmt = new_stmt(p, STMT_ASSIGN, name.loc);
-    stmt->as.assign.name = name.text;
-    stmt->as.assign.index = rest->index;
-    stmt->as.assign.fields = rest->fields;
-    stmt->as.assign.field_count = rest->field_count;
+/* An assignment's location is the name it starts with, when it starts with
+   one, else its whole target. */
+static Stmt *new_assign(Parser *p, Token first, Expr *target) {
+    Stmt *stmt = new_stmt(p, STMT_ASSIGN, first.kind == TOK_IDENT ? first.loc : target->loc);
+    stmt->as.assign.target = target;
     return stmt;
 }
 
-static Stmt *new_step(Parser *p, Token name, const PlaceRest *rest, Token step) {
-    Stmt *stmt = new_assign(p, name, rest);
+/* "x++" and "x--" are "x += 1" and "x -= 1". step is the "++" or "--". */
+static Stmt *new_step(Parser *p, Token first, Expr *target, Token step) {
+    Stmt *stmt = new_assign(p, first, target);
     stmt->as.assign.compound = true;
     stmt->as.assign.op = step.kind == TOK_INC ? OP_ADD : OP_SUB;
     stmt->as.assign.value = new_expr(p, EXPR_INT_LIT, step.loc);
     stmt->as.assign.value->as.int_lit = 1;
     return stmt;
+}
+
+/* Called after the expression that starts a statement: parses the
+   assignment to it, or takes it as the statement if it is a call. first is
+   the statement's first token. */
+static Stmt *parse_assign_rest(Parser *p, Token first, Expr *target) {
+    Stmt *stmt;
+    Op op;
+    if (target->kind == EXPR_CALL) {
+        stmt = new_stmt(p, STMT_EXPR, first.loc);
+        stmt->as.expr = target;
+        return stmt;
+    }
+    if (accept(p, TOK_ASSIGN)) {
+        skip_newlines(p);
+        stmt = new_assign(p, first, target);
+        stmt->as.assign.value = parse_expr(p);
+        return stmt->as.assign.value ? stmt : NULL;
+    }
+    if (at(p, TOK_INC) || at(p, TOK_DEC)) {
+        Token step = p->tok;
+        if (target->kind == EXPR_UNARY && target->as.unary.op == OP_DEREF &&
+            !target->parenthesized) {
+            diag_add(p->diags, SEV_ERROR, step.loc,
+                     "'%s' after '*' is unclear: put the '*' in parentheses to change "
+                     "what the pointer points to, or leave the '*' out to move the "
+                     "pointer",
+                     step.kind == TOK_INC ? "++" : "--");
+            next(p);
+            return NULL;
+        }
+        next(p);
+        return new_step(p, first, target, step);
+    }
+    if (compound_assign_op(p->tok.kind, &op)) {
+        next(p);
+        skip_newlines(p);
+        stmt = new_assign(p, first, target);
+        stmt->as.assign.compound = true;
+        stmt->as.assign.op = op;
+        stmt->as.assign.value = parse_expr(p);
+        return stmt->as.assign.value ? stmt : NULL;
+    }
+    bool bare_name = target->kind == EXPR_IDENT && !target->as.ident.module.len;
+    error_expected(p, bare_name ? "an assignment, '(', '[', '.' or ':' after a name"
+                                : "an assignment after the place it names");
+    return NULL;
 }
 
 /* Parses the fields of a struct, from its "{" to its "}". */
@@ -1280,10 +1448,9 @@ static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) {
     Token tok = p->tok;
     Stmt *stmt;
-    PlaceRest rest;
+    Expr *target;
     TypeKind type;
     TypeRef *type_ref;
-    Op op;
     if (at_type_body(p)) return parse_type_decl(p, top_level, needs_terminator);
     if (at_type(p)) {
         if (!parse_type(p, &type, &type_ref)) return NULL;
@@ -1298,12 +1465,16 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         return parse_typed_decl(p, STMT_CONST, type, type_ref, top_level, needs_terminator);
     case TOK_INC:
     case TOK_DEC: {
-        Token name;
         next(p);
-        if (!expect(p, TOK_IDENT, &name)) return NULL;
-        if (!parse_place_rest(p, &rest)) return NULL;
-        return new_step(p, name, &rest, tok);
+        Token first = p->tok;
+        target = parse_unary(p);
+        return target ? new_step(p, first, target, tok) : NULL;
     }
+    case TOK_STAR:
+    case TOK_LPAREN:
+        /* An assignment through a pointer: "*p = v", "(*p).x = v". */
+        target = parse_unary(p);
+        return target ? parse_assign_rest(p, tok, target) : NULL;
     case TOK_KW_IMPORT: {
         Token path;
         next(p);
@@ -1391,58 +1562,27 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         }
         return stmt;
     case TOK_IDENT: {
-        /* Two names in a row, the first of which may be qualified by a
-           module, declare something of a declared type. */
+        /* A name followed by another name or by "*", the first of which
+           may be qualified by a module, declares something of a declared
+           type; no other statement starts that way. */
         TokenKind second = peek_kind(p, 1);
         bool qualified = second == TOK_DOT && peek_kind(p, 2) == TOK_IDENT;
-        if (second == TOK_IDENT || (qualified && peek_kind(p, 3) == TOK_IDENT)) {
+        TokenKind after = qualified ? peek_kind(p, 3) : second;
+        if (after == TOK_IDENT || after == TOK_STAR) {
             if (!parse_type(p, &type, &type_ref)) return NULL;
             return parse_typed_decl(p, STMT_VAR, type, type_ref, top_level,
                                     needs_terminator);
         }
-        next(p);
-        if (accept(p, TOK_COLON)) {
+        if (second == TOK_COLON) {
+            next(p);
+            next(p);
             *needs_terminator = false;
             stmt = new_stmt(p, STMT_LABEL, tok.loc);
             stmt->as.label.name = tok.text;
             return stmt;
         }
-        if (at(p, TOK_LPAREN)) {
-            stmt = new_stmt(p, STMT_EXPR, tok.loc);
-            stmt->as.expr = parse_call(p, tok);
-            return stmt->as.expr ? stmt : NULL;
-        }
-        if (qualified && peek_kind(p, 2) == TOK_LPAREN) {
-            /* A call to a function that a module exports. */
-            stmt = new_stmt(p, STMT_EXPR, tok.loc);
-            stmt->as.expr = parse_member(p, tok);
-            return stmt->as.expr ? stmt : NULL;
-        }
-        if (!parse_place_rest(p, &rest)) return NULL;
-        if (accept(p, TOK_ASSIGN)) {
-            skip_newlines(p);
-            stmt = new_assign(p, tok, &rest);
-            stmt->as.assign.value = parse_expr(p);
-            return stmt->as.assign.value ? stmt : NULL;
-        }
-        if (at(p, TOK_INC) || at(p, TOK_DEC)) {
-            Token step = p->tok;
-            next(p);
-            return new_step(p, tok, &rest, step);
-        }
-        if (compound_assign_op(p->tok.kind, &op)) {
-            next(p);
-            skip_newlines(p);
-            stmt = new_assign(p, tok, &rest);
-            stmt->as.assign.compound = true;
-            stmt->as.assign.op = op;
-            stmt->as.assign.value = parse_expr(p);
-            return stmt->as.assign.value ? stmt : NULL;
-        }
-        error_expected(p, rest.index || rest.field_count
-                              ? "an assignment after the place it names"
-                              : "an assignment, '(', '[', '.' or ':' after a name");
-        return NULL;
+        target = parse_unary(p);
+        return target ? parse_assign_rest(p, tok, target) : NULL;
     }
     default:
         error_expected(p, "a statement");
@@ -1518,7 +1658,8 @@ static bool parse_block(Parser *p, Block *block) {
 }
 
 Program parse_program(Str src, Arena *arena, Diags *diags) {
-    Parser p = {.arena = arena, .diags = diags, .cond_start = NO_OFFSET};
+    Parser p = {.arena = arena, .diags = diags, .cond_start = NO_OFFSET,
+                .body_star = NO_OFFSET};
     lexer_init(&p.lexer, src, arena, diags);
     next(&p);
 

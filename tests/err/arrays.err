@@ -9,14 +9,14 @@ tests/err/arrays.wind:9:5: warning: variable 'bad5' is never used
 tests/err/arrays.wind:9:19: error: an element of this array must be 'int', found 'string'
 tests/err/arrays.wind:10:6: error: 'bad6' cannot have type 'void'
 tests/err/arrays.wind:11:11: error: a constant array needs its elements: '= { ... }'
-tests/err/arrays.wind:12:9: error: array 'a' cannot be used as a value; index it, print it, or pass it to an array parameter
+tests/err/arrays.wind:12:9: error: cannot initialize 'int' variable with 'int *'
 tests/err/arrays.wind:13:1: error: cannot assign to array 'a' as a whole; assign its elements
 tests/err/arrays.wind:14:3: error: index 3 is out of range for an array of length 3
 tests/err/arrays.wind:15:3: error: index -4 is out of range for an array of length 3
 tests/err/arrays.wind:17:1: error: cannot assign to an element of constant array 'C'
 tests/err/arrays.wind:18:1: error: 's' is a string, and a string's characters cannot be changed
-tests/err/arrays.wind:19:1: error: 'n' is not an array
-tests/err/arrays.wind:20:9: error: cannot index a value of type 'int'; only arrays and strings have elements
+tests/err/arrays.wind:19:1: error: cannot index a value of type 'int'; only arrays, strings and pointers have elements
+tests/err/arrays.wind:20:9: error: cannot index a value of type 'int'; only arrays, strings and pointers have elements
 tests/err/arrays.wind:21:11: error: an index must be an integer of at most 64 bits, found 'string'
 tests/err/arrays.wind:23:11: error: an index must be an integer of at most 64 bits, found 'i128'
 tests/err/arrays.wind:25:18: error: an array parameter is written 'int v[]', without a length

@@ -24,7 +24,7 @@ tests/err/modules.wind:21:9: error: undefined name 'nowhere'
 tests/err/modules.wind:22:5: error: what a module exports can be called or read, but not changed
 tests/err/modules.wind:23:13: error: expected an assignment after the place it names, found end of line
 tests/err/modules.wind:24:5: error: cannot assign to module 'good'
-tests/err/modules.wind:25:15: error: expected an assignment after the place it names, found '['
+tests/err/modules.wind:25:5: error: cannot assign to an element of constant array 'TABLE'
 tests/err/modules.wind:26:5: error: 'nothing' takes 0 arguments, but 1 was given
 tests/err/modules.wind:28:27: error: 'get' is a function; call it with '()'
 tests/err/modules.wind:31:12: error: a variable cannot be exported; export a function that returns it

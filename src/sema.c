@@ -18,9 +18,27 @@
  *
  * Arrays:
  *
- * - An array is not a value: its name can only be indexed, measured with
- *   len() or sizeof, printed, or passed to an array parameter. A Symbol's type is
- *   then the type of the elements.
+ * - An array is not a value: its name can be indexed, measured with len()
+ *   or sizeof, printed, or passed to an array parameter, and anywhere else
+ *   it is a pointer to the first element. A Symbol's type is then the type
+ *   of the elements.
+ *
+ * Pointers:
+ *
+ * - "T *" points to a T. "&place" makes one from a variable, an element, a
+ *   field or what another pointer points to; "*p" is what p points to, and
+ *   "p->f" and "p.f" both reach a field through p. A pointer that is given
+ *   no value is NULL.
+ * - A pointer moves by whole elements: "p + n", "p - n", "p[n]", and "p - q"
+ *   for how many elements apart two pointers are. None of this is checked
+ *   against the bounds of what p points into.
+ * - An array's name used as a value is a pointer to its first element,
+ *   except for a constant array, which a pointer could change.
+ * - A pointer converts only explicitly, to another pointer type or to and
+ *   from uintptr.
+ * - Where a truth value is asked for (a condition, "!", "&&", "||"), a
+ *   pointer is one: true unless it is NULL. It is still not a bool, and
+ *   cannot be stored in one.
  *
  * Unreachable code is reported only where it is certain: after a statement
  * that never continues, and in a body guarded by a literal true or false. A
@@ -38,8 +56,9 @@
  *   enum converts to and from integers only explicitly; its names are
  *   constants of the enum's type. "typedef" gives a type another name and
  *   makes no new type.
- * - Types are declared at the top level and are known throughout the file,
- *   but a type must be declared above another type that uses it.
+ * - Types are declared at the top level and are known throughout the file.
+ *   A struct can be pointed to from anywhere, itself included, but a struct
+ *   held by value must be declared above the type that holds it.
  * - "{ ... }" is a struct value whose type comes from where it is used, as
  *   a number literal's does.
  * - typeof(expr) is the type the expression has; the expression is checked
@@ -102,6 +121,8 @@ const char *op_text(Op op) {
     case OP_SHL:     return "<<";
     case OP_SHR:     return ">>";
     case OP_BIT_NOT: return "~";
+    case OP_ADDR:    return "&";
+    case OP_DEREF:   return "*";
     }
     return "?";
 }
@@ -288,9 +309,8 @@ static void use_type_name(Checker *c, const Expr *expr, Symbol *symbol) {
     symbol->used = true;
 }
 
-/* Finds the type that a type written with a name or typeof stands for.
-   Returns TYPE_INVALID, with the problem reported, if there is none. */
-static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
+/* Finds the type that a name or typeof stands for, before any "*"s. */
+static TypeKind resolve_base_type(Checker *c, const TypeRef *ref) {
     if (ref->of) {
         Symbol *named = type_named_by(c, ref->of);
         if (named) {
@@ -325,6 +345,18 @@ static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
     return symbol->type;
 }
 
+/* Finds the type that a type written with a name or typeof stands for.
+   Returns TYPE_INVALID, with the problem reported, if there is none. */
+static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
+    TypeKind type = resolve_base_type(c, ref);
+    if (type == TYPE_VOID && ref->depth) {
+        error(c, ref->loc, "a pointer to 'void' is not supported; point to a type");
+        return TYPE_INVALID;
+    }
+    for (int i = 0; i < ref->depth && type != TYPE_INVALID; i++) type = type_pointer_to(type);
+    return type;
+}
+
 /* The type of something declared with a type that may need resolving. */
 static TypeKind declared_type(Checker *c, TypeKind type, const TypeRef *ref, SrcLoc loc,
                               Str name) {
@@ -344,7 +376,7 @@ static TypeKind check_place_fields(Checker *c, TypeKind type, PlaceField *fields
                                    size_t count) {
     for (size_t i = 0; i < count && type != TYPE_INVALID; i++) {
         const TypeInfo *info = type_info(type);
-        if (!info || info->is_enum) {
+        if (!type_is_struct(type)) {
             error(c, fields[i].loc, "type '%s' has no fields", type_name(type));
             return TYPE_INVALID;
         }
@@ -362,8 +394,19 @@ static TypeKind check_place_fields(Checker *c, TypeKind type, PlaceField *fields
 static TypeKind check_field(Checker *c, Expr *expr) {
     TypeKind base = check_expr(c, expr->as.field.base, TYPE_INVALID);
     if (base == TYPE_INVALID) return TYPE_INVALID;
+    /* A pointer to a struct gives its fields with "." as well as "->". */
+    if (type_is_struct(type_target(base))) {
+        expr->as.field.through_pointer = true;
+        base = type_target(base);
+    } else if (expr->as.field.arrow) {
+        error(c, expr->as.field.name_loc,
+              type_is_struct(base) ? "'->' needs a pointer to a struct, found '%s'; use '.'"
+                                   : "'->' needs a pointer to a struct, found '%s'",
+              type_name(base));
+        return TYPE_INVALID;
+    }
     const TypeInfo *info = type_info(base);
-    if (!info || info->is_enum) {
+    if (!type_is_struct(base)) {
         error(c, expr->as.field.name_loc, "type '%s' has no fields", type_name(base));
         return TYPE_INVALID;
     }
@@ -379,7 +422,7 @@ static TypeKind check_field(Checker *c, Expr *expr) {
 /* Checks a "{ ... }" value against the struct type its context asks for. */
 static TypeKind check_init(Checker *c, Expr *expr, TypeKind hint) {
     const TypeInfo *info = type_info(hint);
-    if (!info || info->is_enum) {
+    if (!type_is_struct(hint)) {
         if (hint == TYPE_INVALID) {
             error(c, expr->loc, "this '{ ... }' has nothing to tell it which struct it "
                                 "is; write the type first, as in '(Type){ ... }'");
@@ -489,9 +532,12 @@ static TypeKind check_index(Checker *c, Expr *expr) {
         TypeKind type = check_expr(c, base, TYPE_INVALID);
         if (type == TYPE_STRING) {
             result = TYPE_CHAR;
+        } else if (type_is_pointer(type)) {
+            /* "p[n]" is the element n places on from the one p points to. */
+            result = type_target(type);
         } else if (type != TYPE_INVALID) {
-            error(c, base->loc, "cannot index a value of type '%s'; only arrays and "
-                                "strings have elements",
+            error(c, base->loc, "cannot index a value of type '%s'; only arrays, "
+                                "strings and pointers have elements",
                   type_name(type));
         }
     }
@@ -591,6 +637,15 @@ static bool has_float_literal(const Expr *expr) {
 /* Checks the two operands of a binary operator so that an untyped side
    adopts the type of the typed one, whichever side it is on. */
 static void check_operands(Checker *c, Expr *left, Expr *right, TypeKind hint) {
+    /* NULL takes the pointer type of the other side. */
+    if (left->kind == EXPR_NULL && right->kind != EXPR_NULL) {
+        check_expr(c, left, check_expr(c, right, hint));
+        return;
+    }
+    if (right->kind == EXPR_NULL) {
+        check_expr(c, right, check_expr(c, left, hint));
+        return;
+    }
     if (is_untyped(left) && is_untyped(right)) {
         if (!type_is_numeric(hint)) {
             hint = (has_float_literal(left) || has_float_literal(right)) ? TYPE_FLOAT
@@ -617,12 +672,34 @@ static TypeKind check_int_literal(Checker *c, Expr *expr, TypeKind hint, bool ne
     return type;
 }
 
+static TypeKind check_place(Checker *c, Expr *expr, bool assigning);
+
+/* True for a type that can be tested for truth: bool, and a pointer, which
+   is true unless it is NULL. */
+static bool is_truth(TypeKind type) {
+    return type == TYPE_BOOL || type_is_pointer(type);
+}
+
 static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
     Expr *operand = expr->as.unary.operand;
+    if (expr->as.unary.op == OP_ADDR) {
+        TypeKind type = check_place(c, operand, false);
+        return type == TYPE_INVALID ? TYPE_INVALID : type_pointer_to(type);
+    }
+    if (expr->as.unary.op == OP_DEREF) {
+        TypeKind type = check_expr(c, operand, TYPE_INVALID);
+        if (type == TYPE_INVALID) return TYPE_INVALID;
+        if (!type_is_pointer(type)) {
+            error(c, operand->loc, "operator '*' needs a pointer, found '%s'",
+                  type_name(type));
+            return TYPE_INVALID;
+        }
+        return type_target(type);
+    }
     if (expr->as.unary.op == OP_NOT) {
         TypeKind type = check_expr(c, operand, TYPE_INVALID);
-        if (type != TYPE_BOOL && type != TYPE_INVALID) {
-            error(c, operand->loc, "operator '!' needs a 'bool' operand, found '%s'",
+        if (!is_truth(type) && type != TYPE_INVALID) {
+            error(c, operand->loc, "operator '!' needs a 'bool' or a pointer, found '%s'",
                   type_name(type));
         }
         return TYPE_BOOL;
@@ -663,6 +740,11 @@ static void check_shift_amount(Checker *c, Expr *amount) {
     }
 }
 
+/* True for a type that can count the elements a pointer moves by. */
+static bool is_offset(TypeKind type) {
+    return type_is_integer(type) && type != TYPE_I128 && type != TYPE_U128;
+}
+
 static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     Op op = expr->as.binary.op;
     Expr *left = expr->as.binary.left;
@@ -672,8 +754,9 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
         Expr *sides[2] = {left, right};
         for (int i = 0; i < 2; i++) {
             TypeKind type = check_expr(c, sides[i], TYPE_INVALID);
-            if (type != TYPE_BOOL && type != TYPE_INVALID) {
-                error(c, sides[i]->loc, "operator '%s' needs 'bool' operands, found '%s'",
+            if (!is_truth(type) && type != TYPE_INVALID) {
+                error(c, sides[i]->loc,
+                      "operator '%s' needs 'bool' or pointer operands, found '%s'",
                       op_text(op), type_name(type));
             }
         }
@@ -701,6 +784,25 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     if (left->type == TYPE_INVALID || right->type == TYPE_INVALID) {
         return arithmetic ? TYPE_INVALID : TYPE_BOOL;
     }
+    bool left_pointer = type_is_pointer(left->type);
+    bool right_pointer = type_is_pointer(right->type);
+    if (!arithmetic && left->kind == EXPR_IDENT && left->as.ident.decayed &&
+        right->kind == EXPR_IDENT && right->as.ident.decayed) {
+        error(c, expr->loc, "operator '%s' would compare where the two arrays are, not "
+                            "what they hold; compare their elements in a loop",
+              op_text(op));
+        return TYPE_BOOL;
+    }
+    if ((left_pointer || right_pointer) && (op == OP_ADD || op == OP_SUB)) {
+        /* A pointer moves by a count of elements, and two pointers of one
+           type are that many elements apart. */
+        if (left_pointer && is_offset(right->type)) return left->type;
+        if (right_pointer && op == OP_ADD && is_offset(left->type)) return right->type;
+        if (op == OP_SUB && left->type == right->type) return TYPE_INT;
+        error(c, expr->loc, "operator '%s' is not defined for '%s' and '%s'", op_text(op),
+              type_name(left->type), type_name(right->type));
+        return TYPE_INVALID;
+    }
     if (left->type != right->type) {
         error(c, expr->loc, "mismatched types '%s' and '%s' for operator '%s'",
               type_name(left->type), type_name(right->type), op_text(op));
@@ -715,7 +817,8 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     } else if (arithmetic) {
         defined = type_is_numeric(type);
     } else {
-        defined = type_is_numeric(type) || type == TYPE_CHAR || type_is_enum(type);
+        defined = type_is_numeric(type) || type == TYPE_CHAR || type_is_enum(type) ||
+                  type_is_pointer(type);
     }
     if (!defined) {
         error(c, expr->loc, "operator '%s' is not defined for '%s'", op_text(op),
@@ -731,8 +834,8 @@ static TypeKind check_ternary(Checker *c, Expr *expr, TypeKind hint) {
     Expr *otherwise = expr->as.ternary.otherwise;
 
     TypeKind cond_type = check_expr(c, cond, TYPE_INVALID);
-    if (cond_type != TYPE_BOOL && cond_type != TYPE_INVALID) {
-        error(c, cond->loc, "the condition of '?:' must be 'bool', found '%s'",
+    if (!is_truth(cond_type) && cond_type != TYPE_INVALID) {
+        error(c, cond->loc, "the condition of '?:' must be 'bool' or a pointer, found '%s'",
               type_name(cond_type));
     }
     check_operands(c, then, otherwise, hint);
@@ -823,7 +926,7 @@ static TypeKind check_cast(Checker *c, Expr *expr) {
     Expr *operand = expr->as.cast.operand;
     /* A struct type in front of "{ ... }" is what gives that value its
        type, as in C's "(Point){ 1, 2 }". */
-    bool hinted = type_is_numeric(to) || type_is_struct(to);
+    bool hinted = type_is_numeric(to) || type_is_struct(to) || type_is_pointer(to);
     TypeKind from = check_expr(c, operand, hinted ? to : TYPE_INVALID);
     if (from == TYPE_INVALID || to == TYPE_INVALID) return to;
 
@@ -832,7 +935,10 @@ static TypeKind check_cast(Checker *c, Expr *expr) {
                    (from == TYPE_CHAR && type_is_integer(to)) ||
                    (type_is_integer(from) && to == TYPE_CHAR) ||
                    (type_is_enum(from) && type_is_integer(to)) ||
-                   (type_is_integer(from) && type_is_enum(to));
+                   (type_is_integer(from) && type_is_enum(to)) ||
+                   (type_is_pointer(from) && type_is_pointer(to)) ||
+                   (type_is_pointer(from) && to == TYPE_UINTPTR) ||
+                   (from == TYPE_UINTPTR && type_is_pointer(to));
     if (!allowed || to == TYPE_VOID) {
         error(c, expr->loc, "cannot convert '%s' to '%s'", type_name(from),
               type_name(to));
@@ -856,6 +962,13 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         return TYPE_STRING;
     case EXPR_BOOL_LIT:
         return TYPE_BOOL;
+    case EXPR_NULL:
+        if (!type_is_pointer(hint)) {
+            error(c, expr->loc, "nothing here tells NULL which pointer type it is; use it "
+                                "with a pointer, as in 'int *p = NULL'");
+            return TYPE_INVALID;
+        }
+        return hint;
     case EXPR_IDENT: {
         if (expr->as.ident.module.len) {
             /* "a.b" is a field of the variable a unless a is a module. */
@@ -874,7 +987,9 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
                 expr->as.field.base = base;
                 expr->as.field.name = name;
                 expr->as.field.name_loc = name_loc;
+                expr->as.field.arrow = false;
                 expr->as.field.index = -1;
+                expr->as.field.through_pointer = false;
                 return check_field(c, expr);
             }
         }
@@ -902,11 +1017,21 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         }
         symbol->used = true;
         if (symbol->is_array || symbol->is_slice) {
-            error(c, expr->loc,
-                  "array '%.*s' cannot be used as a value; index it, print it, or pass "
-                  "it to an array parameter",
-                  NAME(expr->as.ident.name));
-            return TYPE_INVALID;
+            /* As a value, an array's name is a pointer to its first
+               element. */
+            if (symbol->kind == SYM_CONST || symbol->type == TYPE_INVALID) {
+                if (symbol->kind == SYM_CONST) {
+                    error(c, expr->loc,
+                          "constant array '%.*s' cannot be used as a value, since the "
+                          "pointer it would be could change it; index it, print it, or "
+                          "take its length",
+                          NAME(expr->as.ident.name));
+                }
+                return TYPE_INVALID;
+            }
+            expr->as.ident.symbol = symbol;
+            expr->as.ident.decayed = true;
+            return type_pointer_to(symbol->type);
         }
         expr->as.ident.symbol = symbol;
         return symbol->type;
@@ -956,6 +1081,11 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
             }
         }
         if (of == TYPE_VOID) error(c, expr->loc, "cannot take the size of 'void'");
+        const TypeInfo *sized = type_info(of);
+        if (sized && sized->incomplete) {
+            error(c, expr->loc, "the size of '%s' is not known above its declaration",
+                  type_name(of));
+        }
         expr->kind = EXPR_INT_LIT;
         expr->as.int_lit = type_size(of) * count;
         return check_int_literal(c, expr, hint, false);
@@ -1001,11 +1131,15 @@ static bool is_constant(const Expr *expr) {
     case EXPR_CHAR_LIT:
     case EXPR_STRING_LIT:
     case EXPR_BOOL_LIT:
+    case EXPR_NULL:
         return true;
     case EXPR_IDENT:
         return !expr->as.ident.symbol || expr->as.ident.symbol->kind == SYM_CONST ||
                expr->as.ident.symbol->kind == SYM_ENUM_VALUE;
     case EXPR_UNARY:
+        /* Where a variable is, and what a pointer points to, are only known
+           when the program runs. */
+        if (expr->as.unary.op == OP_ADDR || expr->as.unary.op == OP_DEREF) return false;
         return is_constant(expr->as.unary.operand);
     case EXPR_BINARY:
         return is_constant(expr->as.binary.left) && is_constant(expr->as.binary.right);
@@ -1283,49 +1417,141 @@ static void check_decl(Checker *c, Stmt *stmt) {
     }
 }
 
-static void check_assign(Checker *c, Stmt *stmt) {
-    Str name = stmt->as.assign.name;
-    Symbol *symbol = resolve(c, name, stmt->loc);
-    Expr *index = stmt->as.assign.index;
-    TypeKind expected = TYPE_INVALID;
-    bool is_array = symbol && (symbol->is_array || symbol->is_slice);
-    if (symbol && index) {
-        /* The target is one element. An array parameter's elements can be
-           assigned even though the parameter itself cannot. */
-        if (!is_array) {
-            error(c, stmt->loc,
-                  symbol->type == TYPE_STRING && symbol->kind != SYM_FUNC
-                      ? "'%.*s' is a string, and a string's characters cannot be changed"
-                      : "'%.*s' is not an array",
-                  NAME(name));
-        } else if (symbol->kind == SYM_CONST) {
-            error(c, stmt->loc, "cannot assign to an element of constant array '%.*s'",
-                  NAME(name));
+/* True for an array's name that stands for the array itself. */
+static bool names_array(const Expr *expr) {
+    return expr->kind == EXPR_IDENT && !expr->as.ident.decayed && expr->as.ident.symbol &&
+           (expr->as.ident.symbol->is_array || expr->as.ident.symbol->is_slice);
+}
+
+/* The variable that a place is part of, when it is reached without going
+   through a pointer: x for "x", "x[i]" and "x.f.g". NULL for any other. */
+static const Symbol *place_root(const Expr *expr) {
+    for (;;) {
+        if (expr->kind == EXPR_FIELD && !expr->as.field.through_pointer) {
+            expr = expr->as.field.base;
+        } else if (expr->kind == EXPR_INDEX && names_array(expr->as.index.base)) {
+            expr = expr->as.index.base;
         } else {
-            stmt->as.assign.symbol = symbol;
-            expected = symbol->type;
+            return expr->kind == EXPR_IDENT ? expr->as.ident.symbol : NULL;
         }
-        check_index_value(c, index, symbol->is_array, symbol->length);
-    } else if (is_array) {
-        error(c, stmt->loc, "cannot assign to array '%.*s' as a whole; assign its elements",
-              NAME(name));
-    } else if (symbol && symbol->kind == SYM_MODULE && stmt->as.assign.field_count) {
-        symbol->used = true;
-        error(c, stmt->loc, "what a module exports can be called or read, but not changed");
-    } else if (symbol && symbol->kind != SYM_VAR) {
-        error(c, stmt->loc, "cannot assign to %s '%.*s'", symbol_what(symbol), NAME(name));
-    } else if (symbol) {
-        stmt->as.assign.symbol = symbol;
-        expected = symbol->type;
-    } else if (index) {
-        check_expr(c, index, TYPE_INT);
     }
-    bool has_fields = stmt->as.assign.field_count > 0;
-    if (has_fields) {
-        expected = check_place_fields(c, expected, stmt->as.assign.fields,
-                                      stmt->as.assign.field_count);
+}
+
+/* Reports why an expression, already checked, is not something that can be
+   assigned or pointed to; returns true if it is. assigning tells which of
+   the two is being done. */
+static bool require_place(Checker *c, const Expr *expr, bool assigning) {
+    const char *what = assigning ? "assign to" : "take the address of";
+    switch (expr->kind) {
+    case EXPR_IDENT: {
+        const Symbol *symbol = expr->as.ident.symbol;
+        if (!symbol) return false; /* already reported */
+        if (expr->as.ident.module.len) {
+            error(c, expr->loc, "what a module exports can be called or read, but not "
+                                "changed");
+            return false;
+        }
+        if (symbol->kind != SYM_VAR) {
+            error(c, expr->loc, "cannot %s %s '%.*s'", what, symbol_what(symbol),
+                  NAME(symbol->name));
+            return false;
+        }
+        return true;
     }
-    stmt->as.assign.type = expected;
+    case EXPR_INDEX: {
+        const Expr *base = expr->as.index.base;
+        if (names_array(base) && base->as.ident.symbol->kind == SYM_CONST) {
+            error(c, base->loc, "cannot %s an element of constant array '%.*s'", what,
+                  NAME(base->as.ident.symbol->name));
+            return false;
+        }
+        if (names_array(base) || type_is_pointer(base->type)) return true;
+        const char *limit = assigning ? "changed" : "pointed to";
+        if (base->type == TYPE_STRING && base->kind == EXPR_IDENT) {
+            error(c, base->loc, "'%.*s' is a string, and a string's characters cannot be %s",
+                  NAME(base->as.ident.name), limit);
+        } else if (base->type == TYPE_STRING) {
+            error(c, base->loc, "a string's characters cannot be %s", limit);
+        }
+        return false;
+    }
+    case EXPR_FIELD:
+        if (expr->as.field.index < 0) return false; /* already reported */
+        return expr->as.field.through_pointer ||
+               require_place(c, expr->as.field.base, assigning);
+    case EXPR_UNARY:
+        if (expr->as.unary.op == OP_DEREF) return expr->type != TYPE_INVALID;
+        break;
+    default:
+        break;
+    }
+    error(c, expr->loc, "cannot %s this: it is not a variable, an element, a field or "
+                        "what a pointer points to",
+          what);
+    return false;
+}
+
+/* Checks an expression that names a place: the target of an assignment, or
+   the operand of "&". Returns the place's type, or TYPE_INVALID with the
+   problem reported if it is not one. Assigning to a variable does not count
+   as using it; anything else done here does. */
+static TypeKind check_place(Checker *c, Expr *expr, bool assigning) {
+    const char *what = assigning ? "assign to" : "take the address of";
+    if (expr->kind == EXPR_IDENT && !expr->as.ident.module.len) {
+        /* A bare name is looked up here, where an array's name can be told
+           what it should have been. */
+        Str name = expr->as.ident.name;
+        Symbol *symbol = resolve(c, name, expr->loc);
+        if (!symbol) return TYPE_INVALID;
+        if (!assigning) symbol->used = true;
+        if (symbol->is_array || symbol->is_slice) {
+            if (assigning) {
+                error(c, expr->loc, "cannot assign to array '%.*s' as a whole; assign its "
+                                    "elements",
+                      NAME(name));
+            } else {
+                error(c, expr->loc, "cannot take the address of array '%.*s' as a whole; "
+                                    "'&%.*s[0]' points to its first element",
+                      NAME(name), NAME(name));
+            }
+            return TYPE_INVALID;
+        }
+        if (symbol->kind != SYM_VAR) {
+            error(c, expr->loc, "cannot %s %s '%.*s'", what, symbol_what(symbol),
+                  NAME(name));
+            return TYPE_INVALID;
+        }
+        expr->as.ident.symbol = symbol;
+        expr->type = symbol->type;
+        return symbol->type;
+    }
+
+    /* The variable the place may turn out to be part of, found by name
+       before the names are resolved. */
+    const Expr *first = expr;
+    while (first->kind == EXPR_FIELD || first->kind == EXPR_INDEX) {
+        first = first->kind == EXPR_FIELD ? first->as.field.base : first->as.index.base;
+    }
+    Symbol *named = NULL;
+    if (first->kind == EXPR_IDENT) {
+        named = lookup(c, first->as.ident.module.len ? first->as.ident.module
+                                                    : first->as.ident.name);
+    }
+    bool was_used = named && named->used;
+
+    TypeKind type = check_expr(c, expr, TYPE_INVALID);
+    if (type == TYPE_INVALID) return TYPE_INVALID;
+    if (!require_place(c, expr, assigning)) {
+        expr->type = TYPE_INVALID;
+        return TYPE_INVALID;
+    }
+    if (assigning && named && named == place_root(expr)) named->used = was_used;
+    return type;
+}
+
+static void check_assign(Checker *c, Stmt *stmt) {
+    Expr *target = stmt->as.assign.target;
+    TypeKind expected = check_place(c, target, true);
     Op op = stmt->as.assign.op;
     bool compound = stmt->as.assign.compound;
     if (compound && op_is_shift(op)) {
@@ -1336,17 +1562,40 @@ static void check_assign(Checker *c, Stmt *stmt) {
         }
         return;
     }
+    /* With no place to say which pointer type it is, a NULL has nothing
+       more to report than the place's own problem. */
+    if (expected == TYPE_INVALID && stmt->as.assign.value->kind == EXPR_NULL) return;
     TypeKind found = check_expr(c, stmt->as.assign.value, expected);
     if (expected == TYPE_INVALID) return;
 
+    if (compound && type_is_pointer(expected) && (op == OP_ADD || op == OP_SUB)) {
+        /* "p += n" moves the pointer by n elements. */
+        if (found != TYPE_INVALID && !is_offset(found)) {
+            error(c, stmt->as.assign.value->loc,
+                  "a pointer moves by an integer of at most 64 bits, found '%s'",
+                  type_name(found));
+        }
+        return;
+    }
     bool needs_integer = op == OP_MOD || is_bitwise(op);
     if (compound && !(needs_integer ? type_is_integer(expected) : type_is_numeric(expected))) {
         error(c, stmt->loc, "operator '%s=' is not defined for '%s'", op_text(op),
               type_name(expected));
     } else if (found != TYPE_INVALID && found != expected) {
-        error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s' %s '%.*s'",
-              type_name(found), type_name(expected),
-              has_fields ? "field of" : index ? "element of" : "variable", NAME(name));
+        /* Says what kind of place it is when a variable's name can be given
+           with it. */
+        const Symbol *root = place_root(target);
+        if (root) {
+            error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s' %s '%.*s'",
+                  type_name(found), type_name(expected),
+                  target->kind == EXPR_FIELD   ? "field of"
+                  : target->kind == EXPR_INDEX ? "element of"
+                                               : "variable",
+                  NAME(root->name));
+        } else {
+            error(c, stmt->as.assign.value->loc, "cannot assign '%s' to '%s'",
+                  type_name(found), type_name(expected));
+        }
     }
 }
 
@@ -1367,6 +1616,18 @@ static void check_return(Checker *c, Stmt *stmt) {
         return;
     }
     TypeKind found = check_expr(c, value, expected);
+    /* A pointer into the function's own variables outlives them. */
+    const Symbol *local = NULL;
+    if (value->kind == EXPR_UNARY && value->as.unary.op == OP_ADDR) {
+        local = place_root(value->as.unary.operand);
+    } else if (value->kind == EXPR_IDENT && value->as.ident.decayed) {
+        local = value->as.ident.symbol;
+    }
+    if (local && local->kind == SYM_VAR && !local->global && !local->is_slice) {
+        diag_add(c->diags, SEV_WARNING, value->loc,
+                 "this returns a pointer to '%.*s', which is gone once '%.*s' returns",
+                 NAME(local->name), NAME(name));
+    }
     if (expected == TYPE_VOID) {
         error(c, value->loc, "'%.*s' returns 'void' and cannot return a value",
               NAME(name));
@@ -1609,8 +1870,9 @@ static void warn_after_exit(Checker *c, const Block *block) {
 
 static void check_condition(Checker *c, Expr *cond) {
     TypeKind type = check_expr(c, cond, TYPE_INVALID);
-    if (type != TYPE_BOOL && type != TYPE_INVALID) {
-        error(c, cond->loc, "condition must be 'bool', found '%s'", type_name(type));
+    if (!is_truth(type) && type != TYPE_INVALID) {
+        error(c, cond->loc, "condition must be 'bool' or a pointer, found '%s'",
+              type_name(type));
     }
 }
 
@@ -1864,6 +2126,18 @@ static Str type_qualifier(const Checker *c) {
     return default_module_name((Str){unit->path, strlen(unit->path)});
 }
 
+/* Gives a struct its name and its type, with the fields still to come, so
+   that any type in the file can point to it. */
+static void declare_struct(Checker *c, Stmt *stmt) {
+    TypeKind type = type_add(false, stmt->as.type.name, type_qualifier(c));
+    type_info(type)->incomplete = true;
+    stmt->as.type.type = type;
+    stmt->as.type.symbol = declare_type_name(c, stmt, stmt->as.type.name, stmt->loc, type);
+    if (stmt->as.type.tag.len) {
+        declare_type_name(c, stmt, stmt->as.type.tag, stmt->as.type.tag_loc, type);
+    }
+}
+
 static void check_struct_decl(Checker *c, Stmt *stmt) {
     size_t count = stmt->as.type.member_count;
     if (count == 0) error(c, stmt->loc, "a struct needs at least one field");
@@ -1873,17 +2147,29 @@ static void check_struct_decl(Checker *c, Stmt *stmt) {
         Member *member = &stmt->as.type.members[i];
         member->type = declared_type(c, member->type, member->type_ref, member->loc,
                                      member->name);
+        /* A struct held by value needs a size, which rules out the struct
+           itself and those declared below it. */
+        const TypeInfo *held = type_info(member->type);
+        if (held && held->incomplete && member->type == stmt->as.type.type) {
+            error(c, member->loc,
+                  "a struct cannot hold itself; hold a pointer to it: '%s *%.*s'",
+                  held->short_name, NAME(member->name));
+            member->type = TYPE_INVALID;
+        } else if (held && held->incomplete) {
+            error(c, member->loc,
+                  "struct '%s' is declared below, so this field can only hold a pointer "
+                  "to it: '%s *%.*s'",
+                  held->short_name, held->short_name, NAME(member->name));
+            member->type = TYPE_INVALID;
+        }
         if (member_repeats(c, stmt, i, "field")) continue;
         fields[kept++] = (Field){member->name, member->loc, member->type};
     }
-    /* The type is added after its fields are checked, so that a field
-       cannot be of the struct's own type, which would have no size. */
-    TypeKind type = type_add(false, stmt->as.type.name, type_qualifier(c));
-    TypeInfo *info = type_info(type);
+    TypeInfo *info = type_info(stmt->as.type.type);
     info->fields = fields;
     info->field_count = kept;
     type_layout(info);
-    stmt->as.type.type = type;
+    info->incomplete = false;
 }
 
 static void check_enum_decl(Checker *c, Stmt *stmt) {
@@ -1930,8 +2216,9 @@ static void check_enum_decl(Checker *c, Stmt *stmt) {
 static void check_type_decl(Checker *c, Stmt *stmt) {
     switch (stmt->as.type.kind) {
     case TYPE_DECL_STRUCT:
+        /* Its names are declared already; see declare_struct. */
         check_struct_decl(c, stmt);
-        break;
+        return;
     case TYPE_DECL_ENUM:
         check_enum_decl(c, stmt);
         break;
@@ -2095,6 +2382,12 @@ void check_program(Unit *unit) {
        other. */
     for (size_t i = 0; i < top->count; i++) {
         if (top->stmts[i]->kind == STMT_IMPORT) check_import(&c, top->stmts[i]);
+    }
+    for (size_t i = 0; i < top->count; i++) {
+        Stmt *stmt = top->stmts[i];
+        if (stmt->kind == STMT_TYPE && stmt->as.type.kind == TYPE_DECL_STRUCT) {
+            declare_struct(&c, stmt);
+        }
     }
     for (size_t i = 0; i < top->count; i++) {
         if (top->stmts[i]->kind == STMT_TYPE) check_type_decl(&c, top->stmts[i]);

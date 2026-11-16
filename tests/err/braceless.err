@@ -8,7 +8,7 @@ tests/err/braceless.wind:8:12: error: an empty body is written '{}'
 tests/err/braceless.wind:9:19: error: expected end of statement, found a name
 tests/err/braceless.wind:10:19: error: expected end of statement, found a name
 tests/err/braceless.wind:11:1: error: expected a statement, found 'else'
-tests/err/braceless.wind:12:9: error: the condition of '?:' must be 'bool', found 'int'
+tests/err/braceless.wind:12:9: error: the condition of '?:' must be 'bool' or a pointer, found 'int'
 tests/err/braceless.wind:13:9: error: the two results of '?:' have different types: 'int' and 'string'
 tests/err/braceless.wind:14:19: error: expected ':', found end of line
 tests/err/braceless.wind:15:9: error: cannot convert 'int' to 'string'

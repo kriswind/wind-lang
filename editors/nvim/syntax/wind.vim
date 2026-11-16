@@ -12,7 +12,7 @@ syn keyword windStatement goto return break continue
 syn keyword windRepeat while do for
 syn keyword windOperator sizeof
 syn keyword windBuiltin cout cin
-syn keyword windBoolean true false
+syn keyword windBoolean true false NULL
 syn keyword windType void bool string char byte
 syn keyword windType int i8 i16 i32 i64 i128
 syn keyword windType uint u8 u16 u32 u64 u128 uintptr

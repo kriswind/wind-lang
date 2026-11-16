@@ -4,8 +4,9 @@
 #include "common.h"
 
 /* A type is identified by a number. The built-in types are the values named
-   here; a struct or enum that a program declares gets the next free number
-   from TYPE_COUNT up in its TypeTable, and is described by a TypeInfo. */
+   here; a struct or enum that a program declares, and each pointer type it
+   mentions, gets the next free number from TYPE_COUNT up in its TypeTable,
+   and is described by a TypeInfo. */
 typedef enum {
     /* The type of an expression that failed to check. It is compatible with
        everything, so one mistake is reported once. */
@@ -48,7 +49,13 @@ typedef struct {
 } EnumValue;
 
 typedef struct {
-    bool is_enum; /* else a struct */
+    /* At most one is set; a struct has neither. */
+    bool is_enum;
+    bool is_pointer;
+    TypeKind target; /* pointer: the type pointed to */
+    /* A struct whose fields are not settled yet: it can be pointed to, but
+       it has no size and cannot be held by value. */
+    bool incomplete;
     /* The name as declared, and as diagnostics show it: for a type from an
        imported file, with the file's name in front, since two files may
        each declare a type of one name. */
@@ -72,7 +79,7 @@ typedef struct {
     bool array_writer_used;
 } TypeInfo;
 
-/* The types one program declares. A zeroed table with its arena set is
+/* The types one program declares or builds. A zeroed table with its arena set is
    empty and ready to use. */
 typedef struct {
     Arena *arena;
@@ -89,6 +96,9 @@ void types_use(TypeTable *table);
    name of the imported file that declares it, or empty. The caller fills in
    the fields or values, and then calls type_layout for a struct. */
 TypeKind type_add(bool is_enum, Str name, Str qualifier);
+/* The type "pointer to target", which is one type however often it is asked
+   for. target must be a type that a value can have. */
+TypeKind type_pointer_to(TypeKind target);
 /* Computes a struct's size and alignment from its fields, as C lays it out. */
 void type_layout(TypeInfo *info);
 /* How many types the table in use holds; their numbers run from TYPE_COUNT. */
@@ -97,6 +107,9 @@ size_t types_count(void);
 TypeInfo *type_info(TypeKind type);
 bool type_is_struct(TypeKind type);
 bool type_is_enum(TypeKind type);
+bool type_is_pointer(TypeKind type);
+/* What a pointer type points to; TYPE_INVALID for any other type. */
+TypeKind type_target(TypeKind type);
 /* The position of the named field in a struct, or -1. */
 int type_field_index(const TypeInfo *info, Str name);
 

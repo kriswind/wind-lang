@@ -340,6 +340,12 @@ static Doc *request_target(Server *server, const Json *params, size_t *offset) {
     return doc;
 }
 
+/* What separates a type from the name declared with it: a pointer's "*"
+   sits against the name, as in "int *p". */
+static const char *type_gap(TypeKind type) {
+    return type_is_pointer(type) ? "" : " ";
+}
+
 /* Writes the symbol's declaration the way it would be spelled in source. */
 static void describe_symbol(Buf *buf, const Symbol *symbol) {
     int len = (int)symbol->name.len;
@@ -370,8 +376,9 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         } else {
             buf_printf(buf, "struct %s { ", info->short_name);
             for (size_t i = 0; i < info->field_count; i++) {
-                buf_printf(buf, "%s%s %.*s", i ? "; " : "", type_name(info->fields[i].type),
-                           (int)info->fields[i].name.len, info->fields[i].name.data);
+                buf_printf(buf, "%s%s%s%.*s", i ? "; " : "", type_name(info->fields[i].type),
+                           type_gap(info->fields[i].type), (int)info->fields[i].name.len,
+                           info->fields[i].name.data);
             }
             buf_puts(buf, " }");
         }
@@ -379,7 +386,8 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     }
     case SYM_CONST: {
         const Expr *init = symbol->decl->as.decl.init;
-        buf_printf(buf, "const %s %.*s", type_name(symbol->type), len, name);
+        buf_printf(buf, "const %s%s%.*s", type_name(symbol->type), type_gap(symbol->type),
+                   len, name);
         if (symbol->is_array) {
             buf_printf(buf, "[%zu]", symbol->length);
             break;
@@ -390,7 +398,8 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     }
     case SYM_VAR:
     case SYM_PARAM:
-        buf_printf(buf, "%s %.*s", type_name(symbol->type), len, name);
+        buf_printf(buf, "%s%s%.*s", type_name(symbol->type), type_gap(symbol->type), len,
+                   name);
         if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
         if (symbol->is_slice) buf_puts(buf, "[]");
         break;
@@ -399,11 +408,13 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         break;
     case SYM_FUNC: {
         const Stmt *func = symbol->decl;
-        buf_printf(buf, "%s %.*s(", type_name(symbol->type), len, name);
+        buf_printf(buf, "%s%s%.*s(", type_name(symbol->type), type_gap(symbol->type), len,
+                   name);
         for (size_t i = 0; i < func->as.func.param_count; i++) {
             const Param *param = &func->as.func.params[i];
-            buf_printf(buf, "%s%s %.*s%s", i ? ", " : "", type_name(param->type),
-                       (int)param->name.len, param->name.data, param->is_slice ? "[]" : "");
+            buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(param->type),
+                       type_gap(param->type), (int)param->name.len, param->name.data,
+                       param->is_slice ? "[]" : "");
         }
         buf_puts(buf, ")");
         break;

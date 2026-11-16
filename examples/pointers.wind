@@ -1,0 +1,73 @@
+// Pointers: a linked list built from nodes in an array, walked and reversed
+// through pointers.
+
+struct Node {
+    int value
+    Node *next
+}
+
+// Links the nodes of an array into a list, in order, and returns its head.
+Node *link(Node nodes[]) {
+    for (int i = 0; i < len(nodes) - 1; i++) {
+        nodes[i].next = &nodes[i + 1]
+    }
+    nodes[-1].next = NULL
+    return &nodes[0]
+}
+
+void show(Node *head) {
+    Node *at = head
+    while (at != NULL) {
+        cout << at->value
+        if (at->next != NULL) cout << " -> "
+        at = at->next
+    }
+    cout << "\n"
+}
+
+// Turns every link around and returns the head of the reversed list.
+Node *reverse(Node *head) {
+    Node *before = NULL
+    Node *at = head
+    while (at != NULL) {
+        Node *after = at->next
+        at->next = before
+        before = at
+        at = after
+    }
+    return before
+}
+
+// Gives back two results through pointers the caller passes in.
+void range(Node *head, int *low, int *high) {
+    *low = head->value
+    *high = head->value
+    for (Node *at = head->next; at != NULL; at = at->next) {
+        if (at->value < *low) *low = at->value
+        if (at->value > *high) *high = at->value
+    }
+}
+
+int main() {
+    Node nodes[5] = { { 4, NULL }, { 8, NULL }, { 15, NULL }, { 16, NULL }, { 23, NULL } }
+    Node *list = link(nodes)
+    show(list)
+
+    list = reverse(list)
+    show(list)
+
+    int low
+    int high
+    range(list, &low, &high)
+    cout << "from " << low << " to " << high << "\n"
+
+    // A pointer moves along an array one element at a time.
+    int squares[5]
+    int *square = squares
+    for (int i = 1; i <= 5; i++) {
+        *square = i * i
+        square++
+    }
+    cout << squares << ", " << square - squares << " written\n"
+    return 0
+}

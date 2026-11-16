@@ -30,7 +30,7 @@ contexts:
       scope: keyword.control.wind
     - match: '\bsizeof\b'
       scope: keyword.operator.word.wind
-    - match: '\b(true|false)\b'
+    - match: '\b(true|false|NULL)\b'
       scope: constant.language.wind
     - match: '\b(void|bool|string|char|byte|int|i8|i16|i32|i64|i128|uint|u8|u16|u32|u64|u128|uintptr|float|f16|f32|f64|f128|unsigned|signed|long|short|double|u?int(8|16|32|64)_t|u?intptr_t|ptrdiff_t|ssize_t|size_t)\b'
       scope: storage.type.wind

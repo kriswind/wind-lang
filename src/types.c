@@ -93,6 +93,36 @@ TypeKind type_add(bool is_enum, Str name, Str qualifier) {
     return (TypeKind)(TYPE_COUNT + number);
 }
 
+static char *format_text(const char *fmt, const char *text) {
+    int len = snprintf(NULL, 0, fmt, text);
+    char *out = arena_alloc(table->arena, (size_t)len + 1);
+    snprintf(out, (size_t)len + 1, fmt, text);
+    return out;
+}
+
+TypeKind type_pointer_to(TypeKind target) {
+    for (size_t i = 0; i < table->count; i++) {
+        const TypeInfo *known = table->items[i];
+        if (known->is_pointer && known->target == target) return (TypeKind)(TYPE_COUNT + i);
+    }
+    const TypeInfo *pointee = type_info(target);
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    info->is_pointer = true;
+    info->target = target;
+    /* "int *", and "int **" for a pointer to that. */
+    info->name = format_text(pointee && pointee->is_pointer ? "%s*" : "%s *",
+                             type_name(target));
+    info->short_name = info->name;
+    info->c_stem = format_text("p_%s", pointee ? pointee->c_stem : type_name(target));
+    info->c_name = format_text("wind_%s", info->c_stem);
+    info->writer_name = "wind_write_pointer";
+    info->size = sizeof(void *);
+    info->align = sizeof(void *);
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
 void type_layout(TypeInfo *info) {
     size_t size = 0, align = 1;
     for (size_t i = 0; i < info->field_count; i++) {
@@ -107,12 +137,22 @@ void type_layout(TypeInfo *info) {
 
 bool type_is_struct(TypeKind type) {
     const TypeInfo *info = type_info(type);
-    return info && !info->is_enum;
+    return info && !info->is_enum && !info->is_pointer;
 }
 
 bool type_is_enum(TypeKind type) {
     const TypeInfo *info = type_info(type);
     return info && info->is_enum;
+}
+
+bool type_is_pointer(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_pointer;
+}
+
+TypeKind type_target(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_pointer ? info->target : TYPE_INVALID;
 }
 
 int type_field_index(const TypeInfo *info, Str name) {

@@ -77,9 +77,11 @@ typedef struct {
 /* ---- Types as written ---- */
 
 /* A type that is not spelled with a built-in name, and so is only known
-   once the program is analyzed: a declared type's name, or typeof(expr). */
+   once the program is analyzed: a declared type's name, or typeof(expr),
+   either of which may be followed by "*"s. */
 typedef struct {
     SrcLoc loc;
+    int depth; /* how many "*" follow: 2 for "Name **" */
     Str name; /* empty for typeof */
     Str module; /* set for "module.Name" */
     SrcLoc module_loc;
@@ -95,13 +97,17 @@ typedef enum {
     EXPR_CHAR_LIT,
     EXPR_STRING_LIT,
     EXPR_BOOL_LIT,
+    /* "NULL": the pointer that points at nothing, of whichever pointer type
+       its context asks for. */
+    EXPR_NULL,
     EXPR_IDENT,
     EXPR_UNARY,
     EXPR_BINARY,
     EXPR_CALL,
     EXPR_CAST,
     EXPR_TERNARY,
-    /* "base.name": a field of a struct value. */
+    /* "base.name": a field of a struct value, or of the struct that a
+       pointer points to; "base->name" is the second of these only. */
     EXPR_FIELD,
     /* "{ a, b }" or "{ .x = a, .y = b }": a struct value, whose type is the
        one its context asks for. */
@@ -137,6 +143,8 @@ typedef enum {
     OP_SHL,
     OP_SHR,
     OP_BIT_NOT,
+    OP_ADDR,  /* "&place": a pointer to it */
+    OP_DEREF, /* "*pointer": what it points to */
 } Op;
 
 struct Expr {
@@ -159,6 +167,9 @@ struct Expr {
             Str module; /* empty when the name is not qualified */
             SrcLoc module_loc;
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
+            /* An array's name standing for a pointer to its first element;
+               set by unit_analyze. */
+            bool decayed;
         } ident;
         struct {
             Op op;
@@ -187,7 +198,10 @@ struct Expr {
             Expr *base;
             Str name;
             SrcLoc name_loc;
+            bool arrow; /* written with "->" */
             int index; /* the field's position; set by unit_analyze */
+            /* base is a pointer to the struct; set by unit_analyze. */
+            bool through_pointer;
         } field;
         struct {
             struct InitItem *items;
@@ -205,7 +219,8 @@ struct Expr {
             Expr *operand;
         } size_of;
         struct {
-            /* An identifier naming an array, or any string expression. */
+            /* An identifier naming an array, or any string or pointer
+               expression. */
             Expr *base;
             Expr *index;
         } index;
@@ -263,7 +278,7 @@ typedef struct {
 } Member;
 
 /* The ".field" steps that follow the variable, or its element, in the
-   target of an assignment or a read. */
+   target of a read. */
 typedef struct {
     Str name;
     SrcLoc loc;
@@ -326,18 +341,15 @@ struct Stmt {
             Expr **elems;
             size_t elem_count;
         } decl;
-        /* STMT_ASSIGN. "x += v", "x++" and "x--" are compound: the variable
-           is combined with value using op. */
+        /* STMT_ASSIGN. "x += v", "x++" and "x--" are compound: the place is
+           combined with value using op. */
         struct {
-            Str name;
-            const Symbol *symbol;
+            /* The place assigned: a variable, an element, a field, or what
+               a pointer points to. Its type is the place's. */
+            Expr *target;
             Expr *value;
             bool compound;
             Op op;
-            Expr *index; /* set for "name[index] = value" */
-            PlaceField *fields; /* set for "name.field = value" */
-            size_t field_count;
-            TypeKind type; /* of the place assigned; set by unit_analyze */
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;

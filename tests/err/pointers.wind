@@ -1,0 +1,91 @@
+struct Point { int x; int y }
+struct Node { int value; Node *next }
+const int K = 5
+const int TABLE[2] = { 1, 2 }
+void *raw
+Missing *nowhere
+int f(int n, int values[], Point *at) {
+    int *a = &n
+    int *b = &values
+    int *c = &values[0]
+    n = 2
+    at->x = 1
+    at = NULL
+    return *c + at->y
+}
+int *gone() {
+    int here = 1
+    int list[2] = { 1, 2 }
+    if (here == 1) return &here
+    if (here == 2) return &list[1]
+    return list
+}
+int main() {
+    int x = 1
+    float y = 2.0
+    string s = "hi"
+    int nums[3] = { 1, 2, 3 }
+    Point pt = { 1, 2 }
+    int *p = &x
+    float *q = &x
+    int *r = &K
+    int *t = &TABLE[0]
+    int *u = TABLE
+    int *v = &nums
+    int *w = &(x + 1)
+    int *z = &f(1, nums, &pt)
+    char *ch = &s[0]
+    float *fl = nums
+    int n = *x
+    int m = p
+    p = x
+    p = 0
+    *p = y
+    *x = 1
+    p->x = 1
+    pt->x = 1
+    Point *pp = &pt
+    pp->z = 1
+    pp.z = 1
+    int bad = pp->x->y
+    bool truth = p
+    if (x) x = 2
+    while (!x) x = 3
+    truth = p && x
+    truth = p == true
+    bool same = p == q
+    bool none = NULL == NULL
+    cout << NULL
+    p = p + y
+    p = p + p
+    p = p * 2
+    int d = p - q
+    int e = 1 - p
+    p += 1.5
+    p *= 2
+    p <<= 1
+    i128 big = 1
+    p = p + big
+    q = (float *)x
+    x = int(p)
+    x = (int)p
+    pt = *pp + 1
+    *p++
+    *p++ = 1
+    cin >> p
+    cin >> int *fresh
+    const int *cp = &x
+    Node node = { 1, &pt }
+    int size = sizeof(void *)
+    x[0] = 1
+    nums->x = 1
+    &x = p
+    f(1, nums, pt)
+    f(1, p, &pt)
+    y = *q
+    int other[3] = { 1, 2, 3 }
+    if (nums == other) x = 1
+    if (x) *p = 1
+    while (x > 0) *p++
+    return *p + len(p)
+}

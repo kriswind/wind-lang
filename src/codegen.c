@@ -24,6 +24,9 @@
  *   pointer and a length, defined once per element type. Every index goes
  *   through wind_index, which counts a negative index back from the end and
  *   stops the program if the index is out of range.
+ * - A pointer is a C pointer, under a typedef per pointer type. Reaching
+ *   through one goes through wind_deref, which stops the program if the
+ *   pointer is NULL; moving one is plain C pointer arithmetic.
  * - A for loop becomes a C while loop with its last clause at the end of the
  *   body, behind a label that "continue" jumps to. The clauses are whole
  *   statements here, which C's own for header could not hold.
@@ -49,6 +52,7 @@ typedef enum {
     HELPER_SHR_U128,
     HELPER_SHR_I128,
     HELPER_INDEX,
+    HELPER_DEREF,
     HELPER_STRING_AT,
     HELPER_ARGS,
     HELPER_CIN_STATE,
@@ -76,6 +80,7 @@ typedef enum {
     HELPER_WRITE_F32,
     HELPER_WRITE_F64,
     HELPER_WRITE_F128,
+    HELPER_WRITE_POINTER,
     HELPER_WRITE_ESCAPED,
     HELPER_WRITE_QUOTED_STRING,
     HELPER_WRITE_QUOTED_CHAR,
@@ -102,7 +107,8 @@ static struct {
 
 /* The C name of a type, noted as needing its definition. */
 static const char *c_type(TypeKind type) {
-    /* A declared type is always defined; see emit_declared_types. */
+    /* A declared type or a pointer type is always defined; see
+       emit_declared_types. */
     if (type < TYPE_COUNT) used.types[type] = true;
     return type_c_name(type);
 }
@@ -207,6 +213,18 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return (size_t)position;\n"
         "}\n",
         HEADER_STDDEF | HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
+    [HELPER_DEREF] = {
+        "/* Returns the pointer it is given, or stops the program if that is\n"
+        "   NULL. */\n"
+        "static void *wind_deref(void *p, int line) {\n"
+        "    if (!p) {\n"
+        "        fflush(stdout);\n"
+        "        fprintf(stderr, \"wind: line %d: a NULL pointer was used\\n\", line);\n"
+        "        exit(1);\n"
+        "    }\n"
+        "    return p;\n"
+        "}\n",
+        HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -455,6 +473,15 @@ static const HelperInfo helpers[HELPER_COUNT] = {
                           {HELPER_FLOAT_WRITER}, {TYPE_F64}},
     [HELPER_WRITE_F128] = {"WIND_WRITE_FLOAT(wind_write_f128, wind_f128, 21, strtold)\n", 0,
                            {HELPER_FLOAT_WRITER}, {TYPE_F128}},
+    [HELPER_WRITE_POINTER] = {
+        "static void wind_write_pointer(void *p) {\n"
+        "    if (p) {\n"
+        "        printf(\"%p\", p);\n"
+        "    } else {\n"
+        "        fputs(\"NULL\", stdout);\n"
+        "    }\n"
+        "}\n",
+        HEADER_STDIO, {0}, {0}},
     [HELPER_WRITE_ESCAPED] = {
         "/* Writes one byte as it is spelled inside a literal that uses the\n"
         "   given quote character. */\n"
@@ -559,13 +586,23 @@ static void emit_field_name(Str name, FILE *out) {
     fprintf(out, "f_%.*s", (int)name.len, name.data);
 }
 
-/* Emits the place that an assignment or a read stores into. */
+/* Emits the place that a read stores into. */
 static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField *fields,
                        size_t field_count, FILE *out);
 
+/* True for an array's name that stands for the array itself, and not for a
+   pointer to its first element. */
 static bool is_array_name(const Expr *expr) {
-    return expr->kind == EXPR_IDENT && expr->as.ident.symbol &&
+    return expr->kind == EXPR_IDENT && expr->as.ident.symbol && !expr->as.ident.decayed &&
            (expr->as.ident.symbol->is_array || expr->as.ident.symbol->is_slice);
+}
+
+/* Emits a pointer, checked for NULL, as a pointer of its own type again. */
+static void emit_checked_pointer(const Expr *pointer, FILE *out) {
+    used.helpers[HELPER_DEREF] = true;
+    fprintf(out, "((%s)wind_deref(", c_type(pointer->type));
+    emit_expr(pointer, out);
+    fprintf(out, ", %d))", pointer->loc.line);
 }
 
 /* Emits one element of an array as something that can be read or assigned. */
@@ -669,6 +706,13 @@ static void emit_expr(const Expr *expr, FILE *out) {
             emit_element(base->as.ident.symbol, expr->as.index.index, out);
             break;
         }
+        if (type_is_pointer(base->type)) {
+            emit_checked_pointer(base, out);
+            fputs("[", out);
+            emit_expr(expr->as.index.index, out);
+            fputs("]", out);
+            break;
+        }
         used.helpers[HELPER_STRING_AT] = true;
         fputs("wind_string_at(", out);
         emit_expr(base, out);
@@ -715,10 +759,18 @@ static void emit_expr(const Expr *expr, FILE *out) {
     case EXPR_BOOL_LIT:
         fprintf(out, "((%s)%d)", c_type(TYPE_BOOL), expr->as.bool_lit ? 1 : 0);
         break;
+    case EXPR_NULL:
+        fprintf(out, "((%s)0)", c_type(expr->type));
+        break;
     case EXPR_FIELD:
-        fputs("(", out);
-        emit_expr(expr->as.field.base, out);
-        fputs(").", out);
+        if (expr->as.field.through_pointer) {
+            emit_checked_pointer(expr->as.field.base, out);
+            fputs("->", out);
+        } else {
+            fputs("(", out);
+            emit_expr(expr->as.field.base, out);
+            fputs(").", out);
+        }
         emit_field_name(expr->as.field.name, out);
         break;
     case EXPR_INIT: {
@@ -745,12 +797,27 @@ static void emit_expr(const Expr *expr, FILE *out) {
             fprintf(out, "((%s)", c_type(symbol->type));
             emit_expr(symbol->decl->as.decl.init, out);
             fputs(")", out);
+        } else if (expr->as.ident.decayed && symbol->is_slice) {
+            emit_symbol(symbol, out);
+            fputs(".data", out);
         } else {
             emit_symbol(symbol, out);
         }
         break;
     }
     case EXPR_UNARY:
+        if (expr->as.unary.op == OP_ADDR) {
+            fputs("(&", out);
+            emit_expr(expr->as.unary.operand, out);
+            fputs(")", out);
+            break;
+        }
+        if (expr->as.unary.op == OP_DEREF) {
+            fputs("(*", out);
+            emit_checked_pointer(expr->as.unary.operand, out);
+            fputs(")", out);
+            break;
+        }
         fprintf(out, "((%s)(%s", c_type(expr->type), op_text(expr->as.unary.op));
         emit_expr(expr->as.unary.operand, out);
         fputs("))", out);
@@ -823,12 +890,18 @@ static const char *value_writer(TypeKind type, bool in_array, const char **cast)
         [HELPER_WRITE_F32] = "wind_write_f32",
         [HELPER_WRITE_F64] = "wind_write_f64",
         [HELPER_WRITE_F128] = "wind_write_f128",
+        [HELPER_WRITE_POINTER] = "wind_write_pointer",
         [HELPER_WRITE_QUOTED_STRING] = "wind_write_quoted_string",
         [HELPER_WRITE_QUOTED_CHAR] = "wind_write_quoted_char",
     };
     Helper helper;
     *cast = "";
     TypeInfo *info = type_info(type);
+    if (info && info->is_pointer) {
+        used.helpers[HELPER_WRITE_POINTER] = true;
+        *cast = "(void *)";
+        return names[HELPER_WRITE_POINTER];
+    }
     if (info) {
         info->writer_used = true;
         return info->writer_name;
@@ -945,6 +1018,15 @@ static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField
     }
 }
 
+/* True for an assignment target that is a variable or a field of one, which
+   costs nothing to write out twice. */
+static bool is_plain_place(const Expr *expr) {
+    while (expr->kind == EXPR_FIELD && !expr->as.field.through_pointer) {
+        expr = expr->as.field.base;
+    }
+    return expr->kind == EXPR_IDENT;
+}
+
 static void indent(int depth, FILE *out) {
     for (int i = 0; i < depth; i++) fputs("    ", out);
 }
@@ -992,48 +1074,44 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         fputs(";\n", out);
         break;
     case STMT_ASSIGN: {
-        const Symbol *symbol = stmt->as.assign.symbol;
-        const Expr *index = stmt->as.assign.index;
-        const PlaceField *fields = stmt->as.assign.fields;
-        size_t field_count = stmt->as.assign.field_count;
-        TypeKind type = stmt->as.assign.type;
+        const Expr *target = stmt->as.assign.target;
+        const Expr *value = stmt->as.assign.value;
+        TypeKind type = target->type;
         Op op = stmt->as.assign.op;
+        bool compound = stmt->as.assign.compound;
+        /* A target with an index or a pointer in it is written out once, so
+           that what it computes is computed once. */
+        bool once = !is_plain_place(target);
         indent(depth, out);
-        if (index && stmt->as.assign.compound && op_is_shift(op)) {
-            /* The place is reached through a pointer so that its index is
-               evaluated once. */
+        if (compound && op_is_shift(op) && once) {
             fprintf(out, "{ %s *place = &", c_type(type));
-            emit_place(symbol, index, fields, field_count, out);
+            emit_expr(target, out);
             fputs("; *place = ", out);
             emit_shift_start(op, type, out);
             fputs("*place", out);
-            emit_shift_end(stmt->as.assign.value, out);
+            emit_shift_end(value, out);
             fputs("; }\n", out);
             break;
         }
-        if (index) {
-            /* C's own compound operator is used so that the index is
-               evaluated once; it wraps at the place's width as well. */
-            emit_place(symbol, index, fields, field_count, out);
-            fprintf(out, " %s= ", stmt->as.assign.compound ? op_text(op) : "");
-            emit_expr(stmt->as.assign.value, out);
-            fputs(";\n", out);
-            break;
-        }
-        emit_place(symbol, NULL, fields, field_count, out);
-        fputs(" = ", out);
-        if (stmt->as.assign.compound && op_is_shift(op)) {
+        emit_expr(target, out);
+        if (compound && op_is_shift(op)) {
+            fputs(" = ", out);
             emit_shift_start(op, type, out);
-            emit_place(symbol, NULL, fields, field_count, out);
-            emit_shift_end(stmt->as.assign.value, out);
-        } else if (stmt->as.assign.compound) {
-            fprintf(out, "((%s)(", c_type(type));
-            emit_place(symbol, NULL, fields, field_count, out);
+            emit_expr(target, out);
+            emit_shift_end(value, out);
+        } else if (compound && once) {
+            /* C's own compound operator wraps at the place's width as well. */
+            fprintf(out, " %s= ", op_text(op));
+            emit_expr(value, out);
+        } else if (compound) {
+            fprintf(out, " = ((%s)(", c_type(type));
+            emit_expr(target, out);
             fprintf(out, " %s ", op_text(op));
-            emit_expr(stmt->as.assign.value, out);
+            emit_expr(value, out);
             fputs("))", out);
         } else {
-            emit_expr(stmt->as.assign.value, out);
+            fputs(" = ", out);
+            emit_expr(value, out);
         }
         fputs(";\n", out);
         break;
@@ -1394,20 +1472,35 @@ static void emit_program(const Unit *unit, FILE *out) {
    settles what is used, and before the runtime is, which this adds to. */
 static void emit_declared_types(FILE *out) {
     size_t count = types_count();
+    /* Every struct is named before any is defined, so that a pointer can
+       point to a struct defined further down, or to its own. */
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
         if (info->is_enum) {
             used.headers |= HEADER_STDINT;
             fprintf(out, "typedef int32_t %s;\n", info->c_name);
-            continue;
+        } else if (!info->is_pointer) {
+            fprintf(out, "typedef struct %s %s;\n", info->c_name, info->c_name);
         }
-        fputs("typedef struct {\n", out);
+    }
+    /* A pointer type is built after the type it points to, so this order
+       defines each of them after its target. */
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (info->is_pointer) {
+            fprintf(out, "typedef %s *%s;\n", c_type(info->target), info->c_name);
+        }
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (info->is_enum || info->is_pointer) continue;
+        fprintf(out, "struct %s {\n", info->c_name);
         for (size_t j = 0; j < info->field_count; j++) {
             fprintf(out, "    %s ", c_type(info->fields[j].type));
             emit_field_name(info->fields[j].name, out);
             fputs(";\n", out);
         }
-        fprintf(out, "} %s;\n", info->c_name);
+        fputs("};\n", out);
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
@@ -1430,6 +1523,7 @@ static void emit_declared_types(FILE *out) {
             changed = true;
             used.headers |= HEADER_STDIO;
             if (info->is_enum) used.helpers[HELPER_WRITE_INT] = true;
+            if (info->is_pointer) used.helpers[HELPER_WRITE_POINTER] = true;
             for (size_t j = 0; j < info->field_count; j++) {
                 const char *cast;
                 value_writer(info->fields[j].type, true, &cast);
@@ -1438,12 +1532,12 @@ static void emit_declared_types(FILE *out) {
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
-        if (!info->writer_used) continue;
+        if (!info->writer_used || info->is_pointer) continue;
         fprintf(out, "static void %s(%s value);\n", info->writer_name, info->c_name);
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
-        if (!info->writer_used) continue;
+        if (!info->writer_used || info->is_pointer) continue;
         fprintf(out, "static void %s(%s value) {\n", info->writer_name, info->c_name);
         if (info->is_enum) {
             /* A value prints as its name; when several names share a value,
@@ -1485,11 +1579,12 @@ static void emit_declared_types(FILE *out) {
                 "    fputc('[', stdout);\n"
                 "    for (size_t i = 0; i < len; i++) {\n"
                 "        if (i) fputs(\", \", stdout);\n"
-                "        %s(data[i]);\n"
+                "        %s(%sdata[i]);\n"
                 "    }\n"
                 "    fputc(']', stdout);\n"
                 "}\n\n",
-                info->c_stem, info->c_name, info->writer_name);
+                info->c_stem, info->c_name, info->writer_name,
+                info->is_pointer ? "(void *)" : "");
     }
 }
 

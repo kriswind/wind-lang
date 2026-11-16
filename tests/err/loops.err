@@ -1,12 +1,12 @@
 tests/err/loops.wind:2:1: error: 'break' outside of a loop
 tests/err/loops.wind:3:1: error: 'continue' outside of a loop
-tests/err/loops.wind:4:7: error: condition must be 'bool', found 'int'
+tests/err/loops.wind:4:7: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/loops.wind:6:1: error: expected '{', found a name; a body without braces needs its condition in parentheses
 tests/err/loops.wind:7:12: error: expected 'while', found a name
 tests/err/loops.wind:9:1: error: expected 'while', found 'for'
 tests/err/loops.wind:9:6: error: a for loop starts with a declaration, an assignment or a call
 tests/err/loops.wind:10:24: error: a for loop's last clause must be an assignment or a call
-tests/err/loops.wind:11:17: error: condition must be 'bool', found 'int'
+tests/err/loops.wind:11:17: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/loops.wind:12:22: error: expected ';', found ')'
 tests/err/loops.wind:14:9: error: undefined name 'k'
 tests/err/loops.wind:15:6: warning: function 'f' is never used
