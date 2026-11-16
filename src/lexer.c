@@ -104,6 +104,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_FLOAT:     return "float literal";
     case TOK_CHAR:      return "character literal";
     case TOK_TYPE:      return "type name";
+    case TOK_DIRECTIVE: return "a directive";
     case TOK_KW_CONST:  return "'const'";
     case TOK_KW_COUT:   return "'cout'";
     case TOK_KW_CIN:    return "'cin'";
@@ -450,6 +451,14 @@ Token lexer_next(Lexer *lexer) {
 
         if (c == '\n') {
             tok.kind = TOK_NEWLINE;
+            return tok;
+        }
+
+        if (c == '#' && is_ident_start(peek(lexer))) {
+            while (is_ident_char(peek(lexer))) advance(lexer);
+            tok.kind = TOK_DIRECTIVE;
+            tok.loc.len = lexer->pos - tok.loc.offset;
+            tok.text = (Str){lexer->src.data + tok.loc.offset + 1, tok.loc.len - 1};
             return tok;
         }
 

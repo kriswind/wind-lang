@@ -1,0 +1,15 @@
+#fast
+int a[2] = { 1, 2 }
+#no_bounds_check struct P { int x }
+#bounds_check
+const int K = 1
+#no_bounds_check
+#no_bounds_check import "nowhere.wind"
+{
+    a[0] = 1
+}
+#no_bounds_check {
+    a[0] = K
+#
+a[1] = 2 #bounds_check
+#bounds_check

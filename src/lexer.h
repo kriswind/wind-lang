@@ -14,6 +14,7 @@ typedef enum {
     TOK_FLOAT,
     TOK_CHAR,
     TOK_TYPE,
+    TOK_DIRECTIVE, /* "#name"; the text is the name */
     TOK_KW_CONST,
     TOK_KW_COUT,
     TOK_KW_CIN,

@@ -1702,7 +1702,9 @@ static void check_block(Checker *c, Block *block) {
 static void collect_labels(Checker *c, Block *block) {
     for (size_t i = 0; i < block->count; i++) {
         Stmt *stmt = block->stmts[i];
-        if (stmt->kind == STMT_IF) {
+        if (stmt->kind == STMT_BLOCK) {
+            collect_labels(c, &stmt->as.block);
+        } else if (stmt->kind == STMT_IF) {
             collect_labels(c, &stmt->as.if_.then_block);
             if (stmt->as.if_.has_else) collect_labels(c, &stmt->as.if_.else_block);
         } else if (stmt->kind == STMT_WHILE || stmt->kind == STMT_DO_WHILE ||
@@ -1729,6 +1731,7 @@ static bool breaks_out(const Block *block) {
     for (size_t i = 0; i < block->count; i++) {
         const Stmt *stmt = block->stmts[i];
         if (stmt->kind == STMT_BREAK) return true;
+        if (stmt->kind == STMT_BLOCK && breaks_out(&stmt->as.block)) return true;
         if (stmt->kind == STMT_IF &&
             (breaks_out(&stmt->as.if_.then_block) ||
              (stmt->as.if_.has_else && breaks_out(&stmt->as.if_.else_block)))) {
@@ -1761,6 +1764,9 @@ static bool block_terminates(const Block *block) {
         case STMT_RETURN:
         case STMT_GOTO:
             exits = true;
+            break;
+        case STMT_BLOCK:
+            if (block_terminates(&stmt->as.block)) exits = true;
             break;
         case STMT_IF:
             if (stmt->as.if_.has_else && block_terminates(&stmt->as.if_.then_block) &&
@@ -1830,6 +1836,8 @@ static bool stmt_has_label(const Stmt *stmt) {
     switch (stmt->kind) {
     case STMT_LABEL:
         return true;
+    case STMT_BLOCK:
+        return block_has_label(&stmt->as.block);
     case STMT_IF:
         return block_has_label(&stmt->as.if_.then_block) ||
                (stmt->as.if_.has_else && block_has_label(&stmt->as.if_.else_block));
@@ -1876,6 +1884,9 @@ static const char *never_continues(const Stmt *stmt) {
     case STMT_BREAK:    return stmt->as.target ? "it follows a 'break'" : NULL;
     case STMT_CONTINUE: return stmt->as.target ? "it follows a 'continue'" : NULL;
     case STMT_GOTO:     return "it follows a 'goto'";
+    case STMT_BLOCK:
+        return block_terminates(&stmt->as.block) ? "the block before it never reaches its end"
+                                                 : NULL;
     case STMT_WHILE:
     case STMT_DO_WHILE:
     case STMT_FOR:
@@ -2082,6 +2093,9 @@ static void check_stmt(Checker *c, Stmt *stmt) {
         break;
     case STMT_FUNC:
         check_func(c, stmt);
+        break;
+    case STMT_BLOCK:
+        check_block(c, &stmt->as.block);
         break;
     case STMT_IMPORT:
     case STMT_TYPE:

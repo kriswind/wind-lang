@@ -23,7 +23,10 @@
  * - A fixed array is a C array. An array parameter is a slice: a struct of a
  *   pointer and a length, defined once per element type. Every index goes
  *   through wind_index, which counts a negative index back from the end and
- *   stops the program if the index is out of range.
+ *   stops the program if the index is out of range (a literal index into a
+ *   fixed array is settled here and is written as the position), or through
+ *   wind_index_unchecked, which leaves that test out, where the build or a
+ *   directive asks for it.
  * - A pointer is a C pointer, under a typedef per pointer type. Reaching
  *   through one goes through wind_deref, which stops the program if the
  *   pointer is NULL; moving one is plain C pointer arithmetic.
@@ -52,9 +55,12 @@ typedef enum {
     HELPER_SHL_128,
     HELPER_SHR_U128,
     HELPER_SHR_I128,
+    HELPER_HINTS,
     HELPER_INDEX,
+    HELPER_INDEX_UNCHECKED,
     HELPER_DEREF,
     HELPER_STRING_AT,
+    HELPER_STRING_AT_UNCHECKED,
     HELPER_ARGS,
     HELPER_CIN_STATE,
     HELPER_IS_SPACE,
@@ -100,6 +106,10 @@ typedef enum {
     HEADER_STDLIB = 1 << 4,
     HEADER_STRING = 1 << 5,
 } Header;
+
+/* Whether the code being emitted tests its indexes: what the build asks
+   for, unless a directive around the code says otherwise. */
+static bool bounds_checked;
 
 /* What the program generated so far needs from the runtime. */
 static struct {
@@ -200,13 +210,30 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return v >> n;\n"
         "}\n",
         0, {0}, {TYPE_I128}},
+    [HELPER_HINTS] = {
+        "/* Marks a condition that is rarely true and a function that is rarely\n"
+        "   called, so that the usual path through the code around them is the\n"
+        "   short one. */\n"
+        "#if defined(__GNUC__)\n"
+        "#define WIND_UNLIKELY(x) __builtin_expect(!!(x), 0)\n"
+        "#define WIND_RARE __attribute__((noinline, cold))\n"
+        "#else\n"
+        "#define WIND_UNLIKELY(x) (x)\n"
+        "#define WIND_RARE\n"
+        "#endif\n",
+        0, {0}, {0}},
+    /* An index from 0 up to the length is the usual case and costs one
+       comparison. Everything else is handed to a function kept out of line:
+       a negative index, which counts back from the end, and an index that
+       is out of range. */
     [HELPER_INDEX] = {
-        "/* Turns an index into a position among len elements. A negative index\n"
-        "   counts back from the end, so -1 is the last element. An index that is\n"
-        "   out of range is reported and stops the program. is_signed tells\n"
-        "   whether the index had a signed type: an unsigned one arrives here as\n"
-        "   negative only when it is too large to be valid. */\n"
-        "static size_t wind_index(long long i, int is_signed, size_t len, int line) {\n"
+        "/* What wind_index does with an index that is not a position as it\n"
+        "   stands. A negative index counts back from the end, so -1 is the\n"
+        "   last element. An index that is out of range is reported and stops\n"
+        "   the program. is_signed tells whether the index had a signed type:\n"
+        "   an unsigned one arrives here as negative only when it is too large\n"
+        "   to be valid. */\n"
+        "WIND_RARE static size_t wind_index_rare(long long i, int is_signed, size_t len, int line) {\n"
         "    long long position = (is_signed && i < 0) ? i + (long long)len : i;\n"
         "    if (position < 0 || (unsigned long long)position >= len) {\n"
         "        fflush(stdout);\n"
@@ -216,8 +243,29 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "        exit(1);\n"
         "    }\n"
         "    return (size_t)position;\n"
+        "}\n"
+        "\n"
+        "/* Turns an index into a position among len elements. */\n"
+        "static inline size_t wind_index(long long i, int is_signed, size_t len, int line) {\n"
+        "    if (WIND_UNLIKELY((unsigned long long)i >= len)) {\n"
+        "        return wind_index_rare(i, is_signed, len, line);\n"
+        "    }\n"
+        "    return (size_t)i;\n"
         "}\n",
-        HEADER_STDDEF | HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
+        HEADER_STDDEF | HEADER_STDIO | HEADER_STDLIB, {HELPER_HINTS}, {0}},
+    [HELPER_INDEX_UNCHECKED] = {
+        "WIND_RARE static size_t wind_index_from_end(long long i, size_t len) {\n"
+        "    return (size_t)(i + (long long)len);\n"
+        "}\n"
+        "\n"
+        "/* Turns an index into a position among len elements, counting a\n"
+        "   negative index back from the end, without testing the position\n"
+        "   against len. */\n"
+        "static inline size_t wind_index_unchecked(long long i, int is_signed, size_t len) {\n"
+        "    if (WIND_UNLIKELY(is_signed && i < 0)) return wind_index_from_end(i, len);\n"
+        "    return (size_t)i;\n"
+        "}\n",
+        HEADER_STDDEF, {HELPER_HINTS}, {0}},
     [HELPER_DEREF] = {
         "/* Returns the pointer it is given, or stops the program if that is\n"
         "   NULL. */\n"
@@ -235,6 +283,11 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
         "}\n",
         0, {HELPER_INDEX}, {TYPE_STRING, TYPE_CHAR}},
+    [HELPER_STRING_AT_UNCHECKED] = {
+        "static wind_char wind_string_at_unchecked(wind_string s, long long i, int is_signed) {\n"
+        "    return (wind_char)s.data[wind_index_unchecked(i, is_signed, s.len)];\n"
+        "}\n",
+        0, {HELPER_INDEX_UNCHECKED}, {TYPE_STRING, TYPE_CHAR}},
     [HELPER_ARGS] = {
         "/* Wraps the program's C argument vector as an array of strings. */\n"
         "static wind_slice_string wind_args(int argc, char **argv) {\n"
@@ -646,11 +699,37 @@ static void emit_checked_pointer(const Expr *pointer, FILE *out) {
     fprintf(out, ", %d))", pointer->loc.line);
 }
 
+/* If the index is a literal, possibly negated, that is within a fixed
+   array's length, sets *position to the element it names and returns true.
+   Such an index needs nothing worked out when the program runs. */
+static bool literal_position(const Symbol *array, const Expr *index, size_t *position) {
+    if (array->is_slice) return false;
+    bool negated = index->kind == EXPR_UNARY && index->as.unary.op == OP_NEG;
+    const Expr *literal = negated ? index->as.unary.operand : index;
+    if (literal->kind != EXPR_INT_LIT) return false;
+    U128 value = literal->as.int_lit;
+    if (negated && value != 0) {
+        if (value > array->length) return false;
+        *position = array->length - (size_t)value;
+        return true;
+    }
+    if (value >= array->length) return false;
+    *position = (size_t)value;
+    return true;
+}
+
 /* Emits one element of an array as something that can be read or assigned. */
 static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
-    used.helpers[HELPER_INDEX] = true;
+    size_t position;
+    if (literal_position(array, index, &position)) {
+        emit_symbol(array, out);
+        fprintf(out, "[%zu]", position);
+        return;
+    }
+    used.helpers[bounds_checked ? HELPER_INDEX : HELPER_INDEX_UNCHECKED] = true;
     emit_symbol(array, out);
-    fputs(array->is_slice ? ".data[wind_index((long long)(" : "[wind_index((long long)(", out);
+    fprintf(out, "%s[%s((long long)(", array->is_slice ? ".data" : "",
+            bounds_checked ? "wind_index" : "wind_index_unchecked");
     emit_expr(index, out);
     fprintf(out, "), %d, ", type_is_signed(index->type));
     if (array->is_slice) {
@@ -659,7 +738,8 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
     } else {
         fprintf(out, "%zu", array->length);
     }
-    fprintf(out, ", %d)]", index->loc.line);
+    if (bounds_checked) fprintf(out, ", %d", index->loc.line);
+    fputs(")]", out);
 }
 
 static void emit_int_literal(const Expr *expr, FILE *out) {
@@ -754,12 +834,14 @@ static void emit_expr(const Expr *expr, FILE *out) {
             fputs("]", out);
             break;
         }
-        used.helpers[HELPER_STRING_AT] = true;
-        fputs("wind_string_at(", out);
+        used.helpers[bounds_checked ? HELPER_STRING_AT : HELPER_STRING_AT_UNCHECKED] = true;
+        fputs(bounds_checked ? "wind_string_at(" : "wind_string_at_unchecked(", out);
         emit_expr(base, out);
         fputs(", (long long)(", out);
         emit_expr(expr->as.index.index, out);
-        fprintf(out, "), %d, %d)", type_is_signed(expr->as.index.index->type), expr->loc.line);
+        fprintf(out, "), %d", type_is_signed(expr->as.index.index->type));
+        if (bounds_checked) fprintf(out, ", %d", expr->loc.line);
+        fputs(")", out);
         break;
     }
     case EXPR_LEN: {
@@ -1099,8 +1181,35 @@ static void indent(int depth, FILE *out) {
 
 static void emit_block(const Block *block, int depth, FILE *out);
 
+/* True if a file's top-level code can run a statement more than once: it
+   has a label there, which a goto can jump back to. */
+static bool top_level_repeats(const Unit *unit) {
+    for (size_t i = 0; i < unit->symbols.count; i++) {
+        const Symbol *symbol = unit->symbols.items[i];
+        if (symbol->kind == SYM_LABEL && !symbol->func) return true;
+    }
+    return false;
+}
+
+static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out);
+
+/* Emits a statement under the bounds checking its directive asks for. */
 static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
+    bool outer = bounds_checked;
+    if (stmt->bounds != BOUNDS_INHERIT) bounds_checked = stmt->bounds == BOUNDS_CHECKED;
+    emit_stmt_kind(stmt, depth, out);
+    bounds_checked = outer;
+}
+
+static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     switch (stmt->kind) {
+    case STMT_BLOCK:
+        indent(depth, out);
+        fputs("{\n", out);
+        emit_block(&stmt->as.block, depth + 1, out);
+        indent(depth, out);
+        fputs("}\n", out);
+        break;
     case STMT_CONST:
     case STMT_FUNC:
     case STMT_IMPORT:
@@ -1111,6 +1220,12 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
         if (stmt->as.decl.is_array) {
             /* Elements the initializer leaves out are zero, as in C. */
             const Symbol *array = stmt->as.decl.symbol;
+            if (stmt->as.decl.elem_count == 0 && array->global && !top_level_repeats(array->unit)) {
+                /* Its storage starts out zero and this runs once, so there
+                   is nothing to clear. */
+                fputs(";\n", out);
+                break;
+            }
             used.headers |= HEADER_STRING;
             if (stmt->as.decl.elem_count == 0) {
                 fputs("memset(", out);
@@ -1483,7 +1598,10 @@ static void emit_functions(const Unit *unit, FILE *out) {
         emit_signature(func, out);
         fputs(" {\n", out);
         emit_variables(&func->as.func.locals, "    ", out);
+        bool outer = bounds_checked;
+        if (func->bounds != BOUNDS_INHERIT) bounds_checked = func->bounds == BOUNDS_CHECKED;
         emit_block(&func->as.func.body, 1, out);
+        bounds_checked = outer;
         fputs("}\n\n", out);
     }
 }
@@ -1673,7 +1791,8 @@ static void emit_types_of(const Unit *unit, FILE *out) {
     emit_declared_types(out);
 }
 
-void emit_c(const Unit *unit, FILE *out) {
+void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
+    bounds_checked = !options.no_bounds_check;
     memset(&used, 0, sizeof used);
     types_use((TypeTable *)&unit->types);
     for (size_t i = 0; i < types_count(); i++) {

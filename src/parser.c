@@ -8,10 +8,12 @@
  *
  *   program    = { statement } EOF
  *   block      = "{" { statement } "}"
- *   statement  = ( const_decl | var_decl | assign | call | cout | cin | goto
+ *   statement  = directive ( statement | block )
+ *              | ( const_decl | var_decl | assign | call | cout | cin | goto
  *                | return | do_while | "break" | "continue" | import
  *                | "export" const_decl | [ "export" ] type_decl ) terminator
  *              | if | while | for | [ "export" ] func | label
+ *   directive  = "#no_bounds_check" | "#bounds_check"
  *   import     = "import" STRING [ "as" IDENT ]
  *   type_decl  = "struct" IDENT "{" { type IDENT separator } "}"
  *              | "enum" IDENT "{" { IDENT [ "=" expr ] separator } "}"
@@ -91,6 +93,9 @@
  * Whether the target of an assignment is something that can be assigned is
  * decided when the program is analyzed. "*p++" is rejected, since C reads it
  * as moving p and it reads here as changing what p points to.
+ *
+ * A directive covers the statement, block or function after it, which may
+ * start on the next line. A block can only stand on its own after one.
  *
  * Functions, imports and "export" may only appear at the top level. A newline does not end a
  * statement directly after "=", "<<", ">>", "," or a binary operator, inside
@@ -787,6 +792,7 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_RETURN:
     case TOK_KW_IMPORT:
     case TOK_KW_EXPORT:
+    case TOK_DIRECTIVE:
         return true;
     default:
         return false;
@@ -1012,6 +1018,7 @@ static Stmt *parse_cin(Parser *p) {
 }
 
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
+static bool parse_block(Parser *p, Block *block);
 static bool compound_assign_op(TokenKind kind, Op *op);
 
 /* Called at the start of a condition. "if (ready) *p = 1" could read as the
@@ -1443,6 +1450,44 @@ static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
     return parse_decl_rest(p, kind, type, type_ref, name);
 }
 
+/* Called at a directive: parses it and the statement, block or function it
+   covers. */
+static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) {
+    Token directive = p->tok;
+    BoundsMode bounds = BOUNDS_INHERIT;
+    if (str_eq_cstr(directive.text, "no_bounds_check")) bounds = BOUNDS_UNCHECKED;
+    if (str_eq_cstr(directive.text, "bounds_check")) bounds = BOUNDS_CHECKED;
+    next(p);
+    if (bounds == BOUNDS_INHERIT) {
+        diag_add(p->diags, SEV_ERROR, directive.loc,
+                 "unknown directive '#%.*s'; there are '#no_bounds_check' and "
+                 "'#bounds_check'",
+                 (int)directive.text.len, directive.text.data);
+        return NULL;
+    }
+    skip_newlines(p);
+    Stmt *stmt;
+    if (at(p, TOK_LBRACE)) {
+        stmt = new_stmt(p, STMT_BLOCK, directive.loc);
+        if (!parse_block(p, &stmt->as.block)) return NULL;
+        *needs_terminator = false;
+    } else {
+        stmt = parse_statement(p, top_level, needs_terminator);
+        if (!stmt) return NULL;
+    }
+    bool is_code = stmt->kind != STMT_TYPE && stmt->kind != STMT_IMPORT &&
+                   stmt->kind != STMT_LABEL && stmt->kind != STMT_CONST;
+    if (!is_code) {
+        diag_add(p->diags, SEV_ERROR, directive.loc,
+                 "'#%.*s' goes in front of code: a statement, a block or a function",
+                 (int)directive.text.len, directive.text.data);
+        return stmt;
+    }
+    /* Of two directives on one statement, the one nearer to it holds. */
+    if (stmt->bounds == BOUNDS_INHERIT) stmt->bounds = bounds;
+    return stmt;
+}
+
 /* *needs_terminator is cleared for statements that end themselves: a label,
    and anything closed by a "}". */
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) {
@@ -1451,6 +1496,7 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     Expr *target;
     TypeKind type;
     TypeRef *type_ref;
+    if (at(p, TOK_DIRECTIVE)) return parse_directive(p, top_level, needs_terminator);
     if (at_type_body(p)) return parse_type_decl(p, top_level, needs_terminator);
     if (at_type(p)) {
         if (!parse_type(p, &type, &type_ref)) return NULL;

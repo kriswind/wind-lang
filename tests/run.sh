@@ -3,6 +3,8 @@
 #
 # tests/ok/*.wind  must run successfully and print exactly the matching .out file.
 #                  A matching .in file, if present, is fed to the program's stdin.
+#                  Each is run a second time built with --no-bounds-check, which
+#                  must not change what a correct program prints.
 # tests/err/*.wind must fail `wind check` with exactly the matching .err output.
 
 WIND=build/wind
@@ -18,6 +20,14 @@ for src in tests/ok/*.wind; do
     if [ "$actual" != "$expected" ]; then
         failed=$((failed + 1))
         printf 'FAIL %s\n--- expected\n%s\n--- actual\n%s\n' \
+            "$src" "$expected" "$actual"
+    fi
+
+    total=$((total + 1))
+    actual=$("$WIND" run --no-bounds-check "$src" 2>&1 <"$input"; echo "[exit $?]")
+    if [ "$actual" != "$expected" ]; then
+        failed=$((failed + 1))
+        printf 'FAIL %s (--no-bounds-check)\n--- expected\n%s\n--- actual\n%s\n' \
             "$src" "$expected" "$actual"
     fi
 done

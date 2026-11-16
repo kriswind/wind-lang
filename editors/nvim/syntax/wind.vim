@@ -23,6 +23,7 @@ syn keyword windType intptr_t uintptr_t ptrdiff_t ssize_t size_t
 
 syn match windOperator "<<=\|>>=\|<<\|>>\|&&\|||\|++\|--\|[-+*/%=!<>&|^]=\|[-+*/%=<>!&|^~]"
 syn match windLabel "^\s*\zs\h\w*\ze:"
+syn match windDirective "#\h\w*"
 syn match windFunction "\h\w*\ze\s*("
 
 syn match windNumber "\<\d[0-9_]*[uUlL]*\>"
@@ -53,6 +54,7 @@ hi def link windBoolean Boolean
 hi def link windType Type
 hi def link windOperator Operator
 hi def link windLabel Label
+hi def link windDirective PreProc
 hi def link windNumber Number
 hi def link windFloat Float
 hi def link windComment Comment

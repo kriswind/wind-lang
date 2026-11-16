@@ -28,6 +28,7 @@ make test
 build/wind examples/hello.wind              # compile and run
 build/wind run examples/hello.wind          # the same, spelled out
 build/wind build examples/hello.wind -o hi  # compile to an executable
+build/wind build --no-bounds-check examples/hello.wind   # without index checks
 build/wind check examples/hello.wind        # report errors and warnings only
 build/wind emit-c examples/hello.wind       # print the generated C
 build/wind lsp                              # language server on stdio
@@ -217,6 +218,10 @@ cout << len(scores) << "\n"   // 5
 - Every index is checked: one that is out of range, in either direction,
   stops the program with a message naming the line, the index and the
   length. A literal index that is out of range is a compile-time error.
+  Building with `--no-bounds-check` leaves the run-time test out; an index
+  that is out of range is then undefined, as in C.
+- `#no_bounds_check` and `#bounds_check` set this for one piece of code,
+  whatever the build says; see below.
 - `len(x)` gives the number of elements of an array, or of bytes in a
   string, as an `int`. `sizeof(array)` gives its size in bytes, so C's
   `sizeof(a) / sizeof(a[0])` works too.
@@ -242,6 +247,34 @@ void clear(int values[]) {
     }
 }
 ```
+
+**Bounds checks in one place**
+
+```wind
+#no_bounds_check
+int sum(int values[]) {           // the whole function
+    int total = 0
+    for (int i = 0; i < len(values); i++) total += values[i]
+    return total
+}
+
+#no_bounds_check {                // a block
+    for (int i = 0; i < 5; i++) squares[i] = i * i
+    #bounds_check squares[n] = 0  // one statement, checked again
+}
+
+#no_bounds_check for (int i = 0; i < 5; i++) total += squares[i]
+```
+
+- `#no_bounds_check` leaves out the run-time test for every index in the
+  statement, block or function that follows it; `#bounds_check` puts it
+  back, also in a program built with `--no-bounds-check`.
+- The directive can sit on the line above what it covers. The innermost
+  one wins. It covers the code written there, not the functions that code
+  calls.
+- A negative index counts back from the end either way, and a literal index
+  that is out of range is still a compile-time error.
+- `NULL` checks on pointers are not affected.
 
 An array is not a value in itself. Its name can be indexed, measured,
 printed, and passed to an array parameter, but one array cannot be assigned
@@ -641,6 +674,152 @@ cout << name << " is " << age << "\n"
 - A `string` read with `cin`, and a `char *` made by `cstring`, keep their
   memory until the program exits.
 - `i128`, `u128`, `f16` and `f128` rely on GCC or Clang on a 64-bit target.
+
+## Benchmark
+
+`bench/` holds one program written in fourteen languages, the same way
+wherever the language allows. It has
+twelve kernels, each of which leans on one thing:
+
+| Kernel | What it leans on |
+| --- | --- |
+| `fib` | function calls: the naive recursive Fibonacci |
+| `sieve` | array writes: primes up to twenty million |
+| `collatz` | integer arithmetic and branches |
+| `gcd` | division inside a called function |
+| `mandelbrot` | float arithmetic |
+| `matmul` | nested loops over flat arrays |
+| `particles` | structs of floats, updated in place |
+| `sort` | recursion with swaps: quicksort of two million numbers |
+| `queens` | recursion with backtracking |
+| `hash` | scattered reads and writes: a hash table with open addressing |
+| `bytes` | bytes: counting, hashing and searching four million letters |
+| `list` | pointer chasing: a shuffled linked list of a million nodes |
+
+```sh
+python3 bench/run.py                       # everything (a few minutes)
+python3 bench/run.py --skip python --skip lua
+python3 bench/run.py --only wind --only c sort hash
+python3 bench/run.py --seconds             # times in place of ratios
+python3 bench/run.py --markdown            # the tables below
+```
+
+The script builds each program, runs every kernel as its own process, keeps
+the best of five runs, and checks that every language prints the same result
+for a kernel. A language whose toolchain is missing is left out.
+
+### Results
+
+Time relative to C, as the geometric mean over the twelve kernels. Lower is
+better, and one block is one times C.
+
+```
+C                        1.00x  █
+Wind, no bounds checks   1.01x  █
+Wind                     1.07x  █▏
+Zig                      1.08x  █▏
+Odin                     1.10x  █▏
+Rust                     1.13x  █▏
+C++                      1.13x  █▏
+Go                       1.36x  █▍
+Swift                    1.69x  █▊
+Haskell                  1.69x  █▊
+Java                     2.38x  ██▍
+Lua (LuaJIT)             3.24x  ███▎
+JavaScript (Bun)         3.44x  ███▌
+JavaScript (Node.js)     3.61x  ███▋
+Elixir                   12.9x  ████████████▉
+Lua                      15.1x  ███████████████▏
+Python                   41.9x  █████████████████████████████████████████▉
+```
+
+| | Built with | Relative to C | All twelve kernels |
+| --- | --- | ---: | ---: |
+| C | `cc -O2` | 1.00x | 0.82 s |
+| Wind, no bounds checks | `wind build --no-bounds-check` | 1.01x | 0.82 s |
+| **Wind** | `wind build` | **1.07x** | 0.85 s |
+| Zig | `zig build-exe -O ReleaseFast` | 1.08x | 0.90 s |
+| Odin | `odin build -o:speed` | 1.10x | 0.86 s |
+| Rust | `rustc -C opt-level=3` | 1.13x | 0.93 s |
+| C++ | `c++ -O2` | 1.13x | 0.89 s |
+| Go | `go build` | 1.36x | 1.06 s |
+| Swift | `swiftc -O` | 1.69x | 3.02 s |
+| Haskell | `ghc -O2` | 1.69x | 1.30 s |
+| Java | `javac`, run on the JVM | 2.38x | 2.14 s |
+| Lua (LuaJIT) | `luajit` | 3.24x | 4.11 s |
+| JavaScript (Bun) | `bun` | 3.44x | 3.55 s |
+| JavaScript (Node.js) | `node` | 3.61x | 3.62 s |
+| Elixir | `elixirc`, run on the BEAM | 12.9x | 10.89 s |
+| Lua | `lua` | 15.1x | 12.10 s |
+| Python | `python3` | 41.9x | 31.11 s |
+
+Each kernel, as a multiple of C's time:
+
+| | fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| C | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Wind, no bounds checks | 1.04 | 1.02 | 1.04 | 1.00 | 1.01 | 1.03 | 1.01 | 1.05 | 1.01 | 0.97 | 0.99 | 0.97 |
+| **Wind** | 1.05 | 1.11 | 1.03 | 1.03 | 1.02 | 1.03 | 1.19 | 1.05 | 1.07 | 1.28 | 1.00 | 1.01 |
+| Zig | 2.12 | 1.02 | 0.84 | 1.02 | 1.00 | 1.96 | 1.02 | 0.97 | 0.78 | 0.99 | 0.84 | 1.08 |
+| Odin | 1.98 | 1.03 | 0.86 | 0.97 | 1.01 | 1.94 | 1.03 | 1.00 | 1.02 | 1.13 | 0.89 | 0.92 |
+| Rust | 1.99 | 1.11 | 0.85 | 0.97 | 1.02 | 2.01 | 1.01 | 1.00 | 1.04 | 1.06 | 0.92 | 1.14 |
+| C++ | 1.02 | 1.10 | 1.18 | 1.03 | 1.03 | 2.05 | 1.22 | 1.00 | 1.02 | 1.16 | 1.03 | 1.06 |
+| Go | 4.08 | 1.14 | 1.54 | 1.07 | 1.06 | 2.08 | 1.70 | 1.05 | 1.07 | 1.22 | 0.97 | 1.05 |
+| Swift | 4.00 | 1.26 | 1.44 | 1.04 | 1.05 | 2.41 | 1.21 | 1.26 | 1.78 | 1.39 | 1.02 | 7.21 |
+| Haskell | 5.13 | 1.35 | 1.64 | 1.29 | 1.54 | 2.24 | 1.96 | 1.54 | 1.41 | 1.65 | 1.28 | 1.18 |
+| Java | 2.89 | 1.58 | 2.56 | 2.10 | 2.55 | 3.72 | 2.94 | 1.44 | 2.11 | 2.69 | 1.73 | 3.47 |
+| Lua (LuaJIT) | 6.90 | 5.27 | 4.59 | 1.98 | 1.07 | 4.58 | 3.19 | 2.65 | 2.47 | 2.61 | 2.00 | 7.61 |
+| JavaScript (Bun) | 5.47 | 1.62 | 14.5 | 1.32 | 1.33 | 3.10 | 3.08 | 2.00 | 1.62 | 8.15 | 9.53 | 5.14 |
+| JavaScript (Node.js) | 8.40 | 1.71 | 11.2 | 1.94 | 1.56 | 4.45 | 3.77 | 1.92 | 2.17 | 3.82 | 6.73 | 5.71 |
+| Elixir | 9.84 | 19.9 | 6.57 | 8.23 | 17.1 | 47.6 | 35.7 | 18.6 | 6.28 | 12.7 | 6.29 | 7.57 |
+| Lua | 51.6 | 11.9 | 27.0 | 4.39 | 15.5 | 62.1 | 58.6 | 7.05 | 9.45 | 8.05 | 7.62 | 8.29 |
+| Python | 98.1 | 24.7 | 65.0 | 11.6 | 55.6 | 284 | 112 | 28.6 | 18.6 | 36.2 | 41.7 | 11.3 |
+
+C's own times for the kernels, in seconds, to give the ratios a scale:
+
+| fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.044 | 0.085 | 0.033 | 0.026 | 0.048 | 0.024 | 0.022 | 0.133 | 0.031 | 0.027 | 0.034 | 0.309 |
+
+Measured on one x86-64 Linux machine with GCC 16.2, Zig 0.17, Rust 1.91,
+Go 1.27, Odin dev-2026-10, Swift 6.3, GHC 9.6, OpenJDK 17, Node.js 25.8,
+Bun 1.3, Elixir 1.20 on Erlang/OTP 29, LuaJIT 2.1, Lua 5.5 and Python 3.14. Other machines and versions will give other
+numbers; the script is there to run it again.
+
+### Reading the numbers
+
+- **Wind is C with checks.** It compiles to C, so it gets whatever the C
+  compiler can do. What it adds is a range check on every array index and a
+  `NULL` check on every use of a pointer. That shows where indexes are
+  scattered or packed into tight loops (`hash`, `particles`, `sieve`) and
+  nowhere else. With `--no-bounds-check` the difference from C is within
+  the noise of the measurement.
+- **The compiler behind the language matters as much as the language.** C,
+  C++ and Wind were built with GCC here; Zig, Rust, Odin and Swift use
+  LLVM. GCC does better on `fib` and `matmul`, which is why those four take
+  about twice as long there while matching C elsewhere. Building the C program with Clang
+  gives the same doubling on `matmul`.
+- **A time includes starting the program.** That is nothing for the
+  compiled languages, tens of milliseconds for Java and JavaScript, whose
+  kernels also start out interpreted, and about a tenth of a second for
+  Elixir's virtual machine. On kernels this short it is a real part of
+  their ratios.
+- **Same algorithm everywhere.** No program uses threads, vector
+  instructions written by hand, or a library sort. Rust, Go, Swift, Java
+  and Odin check array bounds, as Wind does; Zig is built with
+  `ReleaseFast` and Haskell uses unchecked reads and writes, so those two
+  run without them, like C.
+- Some programs depart from the others where the language asks for it.
+  Rust threads its list through a vector by position, where the others hold
+  pointers. JavaScript uses typed arrays for its numbers. Swift's nodes are
+  reference-counted objects, which is what `list` then measures.
+- **Haskell and Elixir are written for speed, not in their usual style.**
+  Neither changes data in place in ordinary code. The Haskell program uses
+  unboxed mutable arrays and strict loops throughout. The Elixir program
+  uses Erlang's `:atomics` for the arrays it writes to, tuples for those it
+  only reads, a binary for the bytes, and whole numbers as sets of bits for
+  `queens`. Both keep their list as two arrays of numbers. Idiomatic code
+  in either language would look different and, on these kernels, be slower.
 
 ## Compiler layout
 

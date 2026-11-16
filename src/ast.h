@@ -259,7 +259,16 @@ typedef enum {
     STMT_FUNC,
     STMT_IMPORT,
     STMT_TYPE,
+    /* "{ ... }" standing on its own, which a directive can be put on. */
+    STMT_BLOCK,
 } StmtKind;
+
+/* Whether indexes are tested against the length when the program runs. */
+typedef enum {
+    BOUNDS_INHERIT, /* as the code around it, and at the top as the build says */
+    BOUNDS_CHECKED,   /* "#bounds_check" */
+    BOUNDS_UNCHECKED, /* "#no_bounds_check" */
+} BoundsMode;
 
 typedef enum {
     TYPE_DECL_STRUCT,
@@ -327,6 +336,8 @@ struct Stmt {
     SrcLoc end;
     /* STMT_CONST, STMT_FUNC, STMT_TYPE: declared with "export". */
     bool exported;
+    /* Set by a directive in front of the statement; covers all of it. */
+    BoundsMode bounds;
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
@@ -353,6 +364,8 @@ struct Stmt {
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;
+        /* STMT_BLOCK */
+        Block block;
         /* STMT_COUT */
         struct {
             Expr **args;

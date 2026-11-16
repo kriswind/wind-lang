@@ -24,6 +24,9 @@ static void usage(FILE *out) {
           "  wind version | -v | --version          print the version\n"
           "  wind help | -h | --help                show this help\n"
           "\n"
+          "build, run and emit-c take --no-bounds-check before the file, which\n"
+          "leaves out the test that stops a program when an index is out of range.\n"
+          "\n"
           "The C compiler is taken from $CC (default: cc).\n",
           out);
 }
@@ -48,11 +51,11 @@ static void analyze_file(Unit *unit, const char *src_path) {
 }
 
 /* Exits with status 1 if the file has errors; warnings do not stop it. */
-static void compile_to_c(const char *src_path, FILE *out) {
+static void compile_to_c(const char *src_path, FILE *out, EmitOptions options) {
     Unit unit;
     analyze_file(&unit, src_path);
     if (unit.diags.error_count > 0) exit(1);
-    emit_c(&unit, out);
+    emit_c(&unit, out, options);
     free((char *)unit.src.data);
     unit_release(&unit);
 }
@@ -82,7 +85,7 @@ static int spawn_and_wait(const char *path, char *const argv[]) {
     return 128 + WTERMSIG(status);
 }
 
-static void build(const char *src_path, const char *out_path) {
+static void build(const char *src_path, const char *out_path, EmitOptions options) {
     char c_path[4096];
     snprintf(c_path, sizeof c_path, "%s/wind-XXXXXX.c", temp_dir());
     int fd = mkstemps(c_path, 2);
@@ -90,7 +93,7 @@ static void build(const char *src_path, const char *out_path) {
     FILE *c_file = fdopen(fd, "w");
     if (!c_file) fatal("cannot open '%s': %s", c_path, strerror(errno));
 
-    compile_to_c(src_path, c_file);
+    compile_to_c(src_path, c_file, options);
     if (fclose(c_file) != 0) {
         fatal("cannot write '%s': %s", c_path, strerror(errno));
     }
@@ -126,11 +129,26 @@ static char *default_output(const char *src_path) {
     return out;
 }
 
+/* Consumes the options that come before the source file, moving *argc and
+   *argv past them. */
+static EmitOptions leading_options(int *argc, char ***argv) {
+    EmitOptions options = {0};
+    while (*argc > 0 && strcmp((*argv)[0], "--no-bounds-check") == 0) {
+        options.no_bounds_check = true;
+        (*argc)--;
+        (*argv)++;
+    }
+    return options;
+}
+
 static int cmd_build(int argc, char **argv) {
     const char *src_path = NULL;
     const char *out_path = NULL;
+    EmitOptions options = {0};
     for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-o") == 0) {
+        if (strcmp(argv[i], "--no-bounds-check") == 0) {
+            options.no_bounds_check = true;
+        } else if (strcmp(argv[i], "-o") == 0) {
             if (++i == argc) fatal("'-o' requires an argument");
             out_path = argv[i];
         } else if (!src_path) {
@@ -140,11 +158,12 @@ static int cmd_build(int argc, char **argv) {
         }
     }
     if (!src_path) fatal("no input file");
-    build(src_path, out_path ? out_path : default_output(src_path));
+    build(src_path, out_path ? out_path : default_output(src_path), options);
     return 0;
 }
 
 static int cmd_run(int argc, char **argv) {
+    EmitOptions options = leading_options(&argc, &argv);
     if (argc < 1) fatal("no input file");
 
     char exe_path[4096];
@@ -153,7 +172,7 @@ static int cmd_run(int argc, char **argv) {
     if (fd < 0) fatal("cannot create '%s': %s", exe_path, strerror(errno));
     close(fd);
 
-    build(argv[0], exe_path);
+    build(argv[0], exe_path, options);
     chmod(exe_path, 0700);
 
     /* The program's argv[0] is the source file it was built from, followed
@@ -178,8 +197,9 @@ static int cmd_check(int argc, char **argv) {
 }
 
 static int cmd_emit_c(int argc, char **argv) {
+    EmitOptions options = leading_options(&argc, &argv);
     if (argc != 1) fatal("emit-c takes exactly one input file");
-    compile_to_c(argv[0], stdout);
+    compile_to_c(argv[0], stdout, options);
     return 0;
 }
 

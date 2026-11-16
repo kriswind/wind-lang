@@ -1,0 +1,45 @@
+// #no_bounds_check and #bounds_check on a function, a block and a statement.
+
+int values[5] = { 1, 2, 3, 4, 5 }
+
+#no_bounds_check
+int sum(int list[]) {
+    int total = 0
+    for (int i = 0; i < len(list); i++) total += list[i]
+    // Checked again inside an unchecked function.
+    #bounds_check {
+        total += list[-1]
+    }
+    return total
+}
+
+#bounds_check int first(int list[]) { return list[0] }
+
+int last(string word) {
+    #no_bounds_check
+    return int(word[-1])
+}
+
+int main() {
+    int total = 0
+    #no_bounds_check {
+        int scale = 2
+        for (int i = 0; i < 5; i++) values[i] *= scale
+        #bounds_check values[0] += 1
+    }
+    #no_bounds_check for (int i = 0; i < 5; i++) total += values[i]
+    #no_bounds_check
+    while (total < 40) total += values[-1]
+    #no_bounds_check if (values[4] == 10) total++ else total--
+    #no_bounds_check
+    values[1] = values[2] + values[-2]
+    cout << values << " " << total << " " << sum(values) << " " << first(values) << " "
+    cout << last("wind") << "\n"
+    #no_bounds_check {
+        if (total > 0) {
+            cout << "in a block\n"
+            return 0
+        }
+        return 1
+    }
+}

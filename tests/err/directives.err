@@ -1,0 +1,14 @@
+tests/err/directives.wind:1:1: error: unknown directive '#fast'; there are '#no_bounds_check' and '#bounds_check'
+tests/err/directives.wind:2:5: warning: variable 'a' is never used
+tests/err/directives.wind:3:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
+tests/err/directives.wind:4:1: error: '#bounds_check' goes in front of code: a statement, a block or a function
+tests/err/directives.wind:5:11: warning: constant 'K' is never used
+tests/err/directives.wind:6:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
+tests/err/directives.wind:7:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
+tests/err/directives.wind:7:25: error: cannot open 'tests/err/nowhere.wind': No such file or directory
+tests/err/directives.wind:8:1: error: expected a statement, found '{'
+tests/err/directives.wind:10:1: error: expected a statement, found '}'
+tests/err/directives.wind:11:18: error: this '{' is never closed
+tests/err/directives.wind:13:1: error: unexpected character '#'
+tests/err/directives.wind:14:10: error: expected end of statement, found a directive
+tests/err/directives.wind:16:1: error: expected a statement, found end of file
