@@ -491,10 +491,43 @@ cout << *n << " " << n[1] << " " << n - &nums[0] << "\n"   // 3 4 2
   still not a `bool`: `bool ok = p` is an error; write `p != NULL`.
 - A pointer converts only explicitly: to another pointer type, `(u8 *)p`,
   and to and from `uintptr`.
-- `cout` prints a pointer as its address, or `NULL`.
+- `cout` prints a pointer as its address, or `NULL`; a `char *` prints as
+  text, as described below.
 - `*p++` is an error, because C reads it as moving `p`. Write `(*p)++` to
   change what `p` points to, or `p++` to move it.
 - A body without braces can start with `*`: `if (ready) *p = 1`.
+
+**`char *` and `string`**
+
+```wind
+char *s = "hello"             // a literal, ending in '\0'
+int n = 0
+while (s[n] != '\0') n++      // 5
+cout << s << "\n"             // hello
+
+string view = string(s)       // the same characters, with a length
+char *copy = cstring(view)    // a fresh copy, ending in '\0'
+copy[0] = 'J'
+cout << copy << "\n"          // Jello
+```
+
+- A `char *` is C's kind of string: a pointer to characters that end at a
+  `'\0'`. A `string` carries its length instead. They are different types,
+  and nothing converts between them silently.
+- A string literal is a `char *` where one is expected: a declaration, an
+  assignment, an argument, a `return`, a field. Its characters cannot be
+  changed; writing through the pointer is undefined, as in C.
+- `cout` prints a `char *` as the text up to the `'\0'`, so it must point at
+  characters that end in one. Inside an array or a struct it is quoted, as a
+  `string` is.
+- `string(p)` is the characters `p` points to, up to the `'\0'`, as a
+  `string`. It is a view, not a copy: it is only good while those characters
+  are. `string(NULL)` is empty.
+- `cstring(s)` copies a `string` into new memory with a `'\0'` after it and
+  gives a `char *` to it. The copy is yours to change, and keeps its memory
+  until the program exits.
+- A `string`'s own characters cannot be pointed to, since a `string` has no
+  `'\0'` and cannot be changed.
 
 ### Modules
 
@@ -605,7 +638,8 @@ cout << name << " is " << age << "\n"
   are not checked.
 - `f128` values are printed and read with the precision of the C
   `long double`.
-- A `string` read with `cin` keeps its memory until the program exits.
+- A `string` read with `cin`, and a `char *` made by `cstring`, keep their
+  memory until the program exits.
 - `i128`, `u128`, `f16` and `f128` rely on GCC or Clang on a 64-bit target.
 
 ## Compiler layout

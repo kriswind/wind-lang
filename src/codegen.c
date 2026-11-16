@@ -27,6 +27,7 @@
  * - A pointer is a C pointer, under a typedef per pointer type. Reaching
  *   through one goes through wind_deref, which stops the program if the
  *   pointer is NULL; moving one is plain C pointer arithmetic.
+ * - A "char *" literal is a C string literal, which C ends with a '\0'.
  * - A for loop becomes a C while loop with its last clause at the end of the
  *   body, behind a label that "continue" jumps to. The clauses are whole
  *   statements here, which C's own for header could not hold.
@@ -81,7 +82,11 @@ typedef enum {
     HELPER_WRITE_F64,
     HELPER_WRITE_F128,
     HELPER_WRITE_POINTER,
+    HELPER_WRITE_CSTRING,
+    HELPER_STRING_FROM,
+    HELPER_CSTRING,
     HELPER_WRITE_ESCAPED,
+    HELPER_WRITE_QUOTED_CSTRING,
     HELPER_WRITE_QUOTED_STRING,
     HELPER_WRITE_QUOTED_CHAR,
     HELPER_COUNT,
@@ -482,6 +487,31 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    }\n"
         "}\n",
         HEADER_STDIO, {0}, {0}},
+    [HELPER_WRITE_CSTRING] = {
+        "/* Writes the characters up to the '\\0' that ends them. */\n"
+        "static void wind_write_cstring(const wind_char *s) {\n"
+        "    fputs(s ? (const char *)s : \"NULL\", stdout);\n"
+        "}\n",
+        HEADER_STDIO, {0}, {TYPE_CHAR}},
+    [HELPER_STRING_FROM] = {
+        "/* The characters up to the '\\0' that ends them, as a string that\n"
+        "   views them where they are. */\n"
+        "static wind_string wind_string_from(const wind_char *s) {\n"
+        "    wind_string view = { (const char *)s, s ? strlen((const char *)s) : 0 };\n"
+        "    return view;\n"
+        "}\n",
+        HEADER_STRING, {0}, {TYPE_STRING, TYPE_CHAR}},
+    [HELPER_CSTRING] = {
+        "/* A copy of the string with a '\\0' after it, in memory that is never\n"
+        "   freed. */\n"
+        "static wind_char *wind_cstring(wind_string s) {\n"
+        "    wind_char *copy = malloc(s.len + 1);\n"
+        "    if (!copy) abort();\n"
+        "    if (s.len) memcpy(copy, s.data, s.len);\n"
+        "    copy[s.len] = 0;\n"
+        "    return copy;\n"
+        "}\n",
+        HEADER_STDLIB | HEADER_STRING, {0}, {TYPE_STRING, TYPE_CHAR}},
     [HELPER_WRITE_ESCAPED] = {
         "/* Writes one byte as it is spelled inside a literal that uses the\n"
         "   given quote character. */\n"
@@ -505,6 +535,17 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    fputc('\"', stdout);\n"
         "}\n",
         HEADER_STDDEF | HEADER_STDIO, {HELPER_WRITE_ESCAPED}, {TYPE_STRING}},
+    [HELPER_WRITE_QUOTED_CSTRING] = {
+        "static void wind_write_quoted_cstring(const wind_char *s) {\n"
+        "    if (!s) {\n"
+        "        fputs(\"NULL\", stdout);\n"
+        "        return;\n"
+        "    }\n"
+        "    fputc('\"', stdout);\n"
+        "    for (; *s; s++) wind_write_escaped(*s, '\"');\n"
+        "    fputc('\"', stdout);\n"
+        "}\n",
+        HEADER_STDIO, {HELPER_WRITE_ESCAPED}, {TYPE_CHAR}},
     [HELPER_WRITE_QUOTED_CHAR] = {
         "static void wind_write_quoted_char(wind_char c) {\n"
         "    fputc('\\'', stdout);\n"
@@ -752,6 +793,12 @@ static void emit_expr(const Expr *expr, FILE *out) {
         fprintf(out, "((%s)%d)", c_type(TYPE_CHAR), (unsigned char)expr->as.char_lit);
         break;
     case EXPR_STRING_LIT:
+        if (expr->type != TYPE_STRING) {
+            fprintf(out, "((%s)", c_type(expr->type));
+            emit_c_string(expr->as.string_lit, out);
+            fputs(")", out);
+            break;
+        }
         fprintf(out, "(%s){ ", c_type(TYPE_STRING));
         emit_c_string(expr->as.string_lit, out);
         fprintf(out, ", %zu }", expr->as.string_lit.len);
@@ -852,6 +899,17 @@ static void emit_expr(const Expr *expr, FILE *out) {
             emit_expr(expr->as.cast.operand, out);
             break;
         }
+        if (expr->type != expr->as.cast.operand->type &&
+            (expr->type == TYPE_STRING || expr->as.cast.operand->type == TYPE_STRING)) {
+            /* Between a string and a "char *", in one direction or the
+               other. */
+            bool to_string = expr->type == TYPE_STRING;
+            used.helpers[to_string ? HELPER_STRING_FROM : HELPER_CSTRING] = true;
+            fputs(to_string ? "wind_string_from(" : "wind_cstring(", out);
+            emit_expr(expr->as.cast.operand, out);
+            fputs(")", out);
+            break;
+        }
         fprintf(out, "((%s)", c_type(expr->type));
         emit_expr(expr->as.cast.operand, out);
         fputs(")", out);
@@ -891,12 +949,20 @@ static const char *value_writer(TypeKind type, bool in_array, const char **cast)
         [HELPER_WRITE_F64] = "wind_write_f64",
         [HELPER_WRITE_F128] = "wind_write_f128",
         [HELPER_WRITE_POINTER] = "wind_write_pointer",
+        [HELPER_WRITE_CSTRING] = "wind_write_cstring",
+        [HELPER_WRITE_QUOTED_CSTRING] = "wind_write_quoted_cstring",
         [HELPER_WRITE_QUOTED_STRING] = "wind_write_quoted_string",
         [HELPER_WRITE_QUOTED_CHAR] = "wind_write_quoted_char",
     };
     Helper helper;
     *cast = "";
     TypeInfo *info = type_info(type);
+    if (info && info->is_pointer && info->target == TYPE_CHAR) {
+        /* A "char *" prints as the text it points to. */
+        helper = in_array ? HELPER_WRITE_QUOTED_CSTRING : HELPER_WRITE_CSTRING;
+        used.helpers[helper] = true;
+        return names[helper];
+    }
     if (info && info->is_pointer) {
         used.helpers[HELPER_WRITE_POINTER] = true;
         *cast = "(void *)";
@@ -1347,7 +1413,7 @@ static void emit_static_value(const Expr *expr, FILE *out) {
     }
     if (expr->kind == EXPR_CAST && type_is_struct(expr->type)) {
         emit_static_value(expr->as.cast.operand, out);
-    } else if (expr->kind == EXPR_STRING_LIT) {
+    } else if (expr->kind == EXPR_STRING_LIT && expr->type == TYPE_STRING) {
         fputs("{ ", out);
         emit_c_string(expr->as.string_lit, out);
         fprintf(out, ", %zu }", expr->as.string_lit.len);
@@ -1523,7 +1589,10 @@ static void emit_declared_types(FILE *out) {
             changed = true;
             used.headers |= HEADER_STDIO;
             if (info->is_enum) used.helpers[HELPER_WRITE_INT] = true;
-            if (info->is_pointer) used.helpers[HELPER_WRITE_POINTER] = true;
+            if (info->is_pointer) {
+                const char *cast;
+                value_writer((TypeKind)(TYPE_COUNT + i), true, &cast);
+            }
             for (size_t j = 0; j < info->field_count; j++) {
                 const char *cast;
                 value_writer(info->fields[j].type, true, &cast);
@@ -1573,6 +1642,8 @@ static void emit_declared_types(FILE *out) {
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
         if (!info->array_writer_used) continue;
+        const char *cast;
+        const char *writer = value_writer((TypeKind)(TYPE_COUNT + i), true, &cast);
         used.headers |= HEADER_STDDEF;
         fprintf(out,
                 "static void wind_write_array_%s(const %s *data, size_t len) {\n"
@@ -1583,8 +1654,7 @@ static void emit_declared_types(FILE *out) {
                 "    }\n"
                 "    fputc(']', stdout);\n"
                 "}\n\n",
-                info->c_stem, info->c_name, info->writer_name,
-                info->is_pointer ? "(void *)" : "");
+                info->c_stem, info->c_name, writer, cast);
     }
 }
 

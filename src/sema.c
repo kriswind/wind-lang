@@ -40,6 +40,12 @@
  *   pointer is one: true unless it is NULL. It is still not a bool, and
  *   cannot be stored in one.
  *
+ * - "char *" is C's string: a pointer to characters that end at a '\0'. A
+ *   string literal is one where a "char *" is asked for. It is a different
+ *   type from string, which carries its length: string(p) views the
+ *   characters p points to as a string, and cstring(s) copies a string
+ *   into memory that ends with a '\0'.
+ *
  * Unreachable code is reported only where it is certain: after a statement
  * that never continues, and in a body guarded by a literal true or false. A
  * region that holds a label is left alone, since a goto may enter it.
@@ -546,12 +552,42 @@ static TypeKind check_index(Checker *c, Expr *expr) {
     return result;
 }
 
-/* The built-in len(x): the number of elements of an array or bytes of a
-   string. Used unless the program declares its own "len". */
-static bool is_builtin_len(const Checker *c, const Expr *expr) {
-    return !expr->as.call.module.len && str_eq_cstr(expr->as.call.name, "len") &&
+/* True for a call to a built-in function of the given name, which is used
+   unless the program declares the name itself. */
+static bool is_builtin(const Checker *c, const Expr *expr, const char *name) {
+    return !expr->as.call.module.len && str_eq_cstr(expr->as.call.name, name) &&
            !lookup(c, expr->as.call.name);
 }
+
+static bool is_char_pointer(TypeKind type) {
+    return type_target(type) == TYPE_CHAR;
+}
+
+/* The built-in cstring(s): a copy of a string's bytes with a '\0' after
+   them, as a "char *". It becomes a conversion of the string. */
+static TypeKind check_cstring(Checker *c, Expr *expr) {
+    size_t count = expr->as.call.count;
+    Expr *operand = count ? expr->as.call.args[0] : NULL;
+    for (size_t i = 0; i < count; i++) {
+        TypeKind type = check_expr(c, expr->as.call.args[i], TYPE_INVALID);
+        if (count == 1 && type != TYPE_STRING && type != TYPE_INVALID) {
+            error(c, operand->loc, "'cstring' needs a string, found '%s'", type_name(type));
+        }
+    }
+    TypeKind to = type_pointer_to(TYPE_CHAR);
+    if (count != 1) {
+        error(c, expr->loc, "'cstring' takes 1 argument, but %zu were given", count);
+        return to;
+    }
+    expr->kind = EXPR_CAST;
+    expr->as.cast.to = to;
+    expr->as.cast.to_ref = NULL;
+    expr->as.cast.operand = operand;
+    return to;
+}
+
+/* The built-in len(x): the number of elements of an array or bytes of a
+   string. */
 
 static TypeKind check_len(Checker *c, Expr *expr) {
     if (expr->as.call.count != 1) {
@@ -936,12 +972,15 @@ static TypeKind check_cast(Checker *c, Expr *expr) {
                    (type_is_integer(from) && to == TYPE_CHAR) ||
                    (type_is_enum(from) && type_is_integer(to)) ||
                    (type_is_integer(from) && type_is_enum(to)) ||
+                   (is_char_pointer(from) && to == TYPE_STRING) ||
                    (type_is_pointer(from) && type_is_pointer(to)) ||
                    (type_is_pointer(from) && to == TYPE_UINTPTR) ||
                    (from == TYPE_UINTPTR && type_is_pointer(to));
     if (!allowed || to == TYPE_VOID) {
-        error(c, expr->loc, "cannot convert '%s' to '%s'", type_name(from),
-              type_name(to));
+        error(c, expr->loc, "cannot convert '%s' to '%s'%s", type_name(from), type_name(to),
+              from == TYPE_STRING && is_char_pointer(to)
+                  ? "; cstring() makes a copy that ends with a '\\0'"
+                  : "");
     }
     return to;
 }
@@ -959,7 +998,8 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     case EXPR_CHAR_LIT:
         return TYPE_CHAR;
     case EXPR_STRING_LIT:
-        return TYPE_STRING;
+        /* Where C's kind of string is asked for, a literal is one. */
+        return is_char_pointer(hint) ? hint : TYPE_STRING;
     case EXPR_BOOL_LIT:
         return TYPE_BOOL;
     case EXPR_NULL:
@@ -1049,7 +1089,9 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     case EXPR_BINARY:
         return check_binary(c, expr, hint);
     case EXPR_CALL:
-        return is_builtin_len(c, expr) ? check_len(c, expr) : check_call(c, expr);
+        if (is_builtin(c, expr, "len")) return check_len(c, expr);
+        if (is_builtin(c, expr, "cstring")) return check_cstring(c, expr);
+        return check_call(c, expr);
     case EXPR_CAST:
         return check_cast(c, expr);
     case EXPR_TERNARY:
@@ -1144,6 +1186,12 @@ static bool is_constant(const Expr *expr) {
     case EXPR_BINARY:
         return is_constant(expr->as.binary.left) && is_constant(expr->as.binary.right);
     case EXPR_CAST:
+        /* Converting between the two kinds of string is work done when the
+           program runs. */
+        if (expr->type != expr->as.cast.operand->type &&
+            (expr->type == TYPE_STRING || expr->as.cast.operand->type == TYPE_STRING)) {
+            return false;
+        }
         return is_constant(expr->as.cast.operand);
     case EXPR_TERNARY:
         /* A string or struct constant is stored, not computed where it is

@@ -84,7 +84,21 @@ tests/err/pointers.wind:81:11: error: '->' needs a pointer to a struct, found 'i
 tests/err/pointers.wind:82:5: error: expected a statement, found '&'
 tests/err/pointers.wind:83:16: error: argument 3 of 'f' must be 'Point *', found 'Point'
 tests/err/pointers.wind:84:10: error: argument 2 of 'f' must be an array of 'int'
-tests/err/pointers.wind:87:8: error: operator '==' would compare where the two arrays are, not what they hold; compare their elements in a loop
-tests/err/pointers.wind:88:8: error: condition must be 'bool' or a pointer, found 'int'
-tests/err/pointers.wind:89:21: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
-tests/err/pointers.wind:90:21: error: 'len' needs an array or a string, found 'int *'
+tests/err/pointers.wind:87:20: error: cannot initialize 'string' variable with 'char *'
+tests/err/pointers.wind:88:12: error: cannot assign 'string' to 'char *' variable 'text'
+tests/err/pointers.wind:89:9: warning: variable 'raw' is never used
+tests/err/pointers.wind:89:15: error: cannot initialize 'u8 *' variable with 'string'
+tests/err/pointers.wind:90:10: warning: variable 'eq' is never used
+tests/err/pointers.wind:90:15: error: mismatched types 'char *' and 'string' for operator '=='
+tests/err/pointers.wind:91:20: error: 'cstring' needs a string, found 'int'
+tests/err/pointers.wind:92:12: error: 'cstring' takes 1 argument, but 0 were given
+tests/err/pointers.wind:93:13: error: cannot convert 'int *' to 'string'
+tests/err/pointers.wind:94:12: error: cannot convert 'string' to 'char *'; cstring() makes a copy that ends with a '\0'
+tests/err/pointers.wind:95:17: warning: constant 'made' is never used
+tests/err/pointers.wind:95:24: error: a constant's value must be known at compile time; use a variable for this
+tests/err/pointers.wind:96:18: warning: constant 'seen' is never used
+tests/err/pointers.wind:96:25: error: a constant's value must be known at compile time; use a variable for this
+tests/err/pointers.wind:98:8: error: operator '==' would compare where the two arrays are, not what they hold; compare their elements in a loop
+tests/err/pointers.wind:99:8: error: condition must be 'bool' or a pointer, found 'int'
+tests/err/pointers.wind:100:21: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
+tests/err/pointers.wind:101:21: error: 'len' needs an array or a string, found 'int *'

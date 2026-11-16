@@ -1,0 +1,31 @@
+// "char *": C strings, and converting between them and string.
+
+struct Named { char *name; int n }
+const Named FIXED = { "fixed", 1 }
+const char *GREETING = "hi"
+int length(char *s) {
+    int n = 0
+    char *p = s
+    while (*p != '\0') { p++; n++ }
+    return n
+}
+char *pick(bool first) { return first ? "one" : "two" }
+int main() {
+    char *s = "hello"
+    cout << s << " " << length(s) << " " << s[1] << " " << *(s + 4) << "\n"
+    char *names[3] = { "a", "b\n", NULL }
+    Named who = { "sam", 2 }
+    cout << names << " " << who << " " << FIXED << " " << GREETING << pick(false) << "\n"
+    string view = string(s + 1)
+    cout << view << " " << len(view) << " " << (view == "ello") << "\n"
+    string built = "wind"
+    char *c = cstring(built)
+    c[0] = 'W'
+    cout << c << " " << built << " " << length(cstring("")) << " " << string(c) << "\n"
+    char *none
+    cout << none << " " << len(string(none)) << " " << (string)s << "\n"
+    char buf[4] = { 'o', 'k', '\0', 'x' }
+    char *b = buf
+    cout << b << "|" << buf << "\n"
+    return 0
+}
