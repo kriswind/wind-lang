@@ -10,7 +10,7 @@ import "modules/2d.wind" as for
 import "modules.wind" as self
 import "modules/good.wind" as unused
 import ""
-import good
+import modules/good as
 int main() {
     import "modules/good.wind" as inner
     int x = good.secret()

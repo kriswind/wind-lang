@@ -1,4 +1,5 @@
 #define _DEFAULT_SOURCE
+#define _POSIX_C_SOURCE 200809L /* open_memstream */
 
 #include <errno.h>
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #include "codegen.h"
 #include "common.h"
 #include "lsp.h"
+#include "targets/target.h"
 
 static void usage(FILE *out) {
     fputs("usage:\n"
@@ -21,11 +23,17 @@ static void usage(FILE *out) {
           "  wind check <file.wind>...              report errors and warnings\n"
           "  wind lsp                               run the language server on stdio\n"
           "  wind emit-c <file.wind>                print the generated C\n"
+          "  wind emit-arduino <file.wind> [-o <folder>]\n"
+          "                                         write an Arduino sketch folder\n"
           "  wind version | -v | --version          print the version\n"
           "  wind help | -h | --help                show this help\n"
           "\n"
-          "build, run and emit-c take --no-bounds-check before the file, which\n"
-          "leaves out the test that stops a program when an index is out of range.\n"
+          "build, run, emit-c and emit-arduino take --no-bounds-check before the\n"
+          "file, which leaves out the test that stops a program when an index is\n"
+          "out of range.\n"
+          "\n"
+          "An import that starts with \"::\" is found in the libraries directory:\n"
+          "$WIND_LIBS if it is set, else the one installed with wind.\n"
           "\n"
           "The C compiler is taken from $CC (default: cc).\n",
           out);
@@ -196,6 +204,93 @@ static int cmd_check(int argc, char **argv) {
     return failed ? 1 : 0;
 }
 
+/* The name a sketch folder has: its last part. */
+static const char *base_name(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash && slash[1] ? slash + 1 : path;
+}
+
+/* Creates a directory and any of its parents that are missing. */
+static void make_directories(const char *path) {
+    char *partial = xmalloc(strlen(path) + 1);
+    strcpy(partial, path);
+    for (char *at = partial + 1;; at++) {
+        bool end = *at == '\0';
+        if (*at != '/' && !end) continue;
+        *at = '\0';
+        if (mkdir(partial, 0777) != 0 && errno != EEXIST) {
+            fatal("cannot create '%s': %s", partial, strerror(errno));
+        }
+        if (end) break;
+        *at = '/';
+    }
+    free(partial);
+}
+
+static void write_file(const char *path, const char *text, size_t len) {
+    FILE *file = fopen(path, "w");
+    if (!file) fatal("cannot create '%s': %s", path, strerror(errno));
+    if (fwrite(text, 1, len, file) != len || fclose(file) != 0) {
+        fatal("cannot write '%s': %s", path, strerror(errno));
+    }
+}
+
+/* Writes an Arduino sketch: a folder holding the program as wind_program.c
+   and the sketch file that starts it, named after the folder as Arduino
+   requires. The folder is the source file's name, in the current directory,
+   unless -o gives another. */
+static int cmd_emit_arduino(int argc, char **argv) {
+    EmitOptions options = leading_options(&argc, &argv);
+    const char *src_path = NULL;
+    const char *folder = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0) {
+            if (++i == argc) fatal("'-o' requires an argument");
+            folder = argv[i];
+        } else if (strcmp(argv[i], "--no-bounds-check") == 0) {
+            options.no_bounds_check = true;
+        } else if (!src_path) {
+            src_path = argv[i];
+        } else {
+            fatal("unexpected argument '%s'", argv[i]);
+        }
+    }
+    if (!src_path) fatal("no input file");
+    char *named = NULL;
+    if (!folder) {
+        named = default_output(src_path);
+        size_t len = strlen(named);
+        if (len > 4 && strcmp(named + len - 4, ".out") == 0) named[len - 4] = '\0';
+        folder = named;
+    }
+
+    /* The program is generated before anything is written, so that a
+       program with errors leaves no files behind. */
+    options.target = &target_arduino;
+    types_use_platform(&target_arduino.platform);
+    char *program = NULL;
+    size_t program_len = 0;
+    FILE *buffer = open_memstream(&program, &program_len);
+    if (!buffer) fatal("out of memory");
+    compile_to_c(src_path, buffer, options);
+    if (fclose(buffer) != 0) fatal("out of memory");
+
+    make_directories(folder);
+    const char *name = base_name(folder);
+    char *sketch_path = xmalloc(strlen(folder) + strlen(name) + 6);
+    char *program_path = xmalloc(strlen(folder) + sizeof "/wind_program.c");
+    sprintf(sketch_path, "%s/%s.ino", folder, name);
+    sprintf(program_path, "%s/wind_program.c", folder);
+    write_file(sketch_path, arduino_sketch, strlen(arduino_sketch));
+    write_file(program_path, program, program_len);
+    printf("wrote %s and %s\n", sketch_path, program_path);
+    free(sketch_path);
+    free(program_path);
+    free(program);
+    free(named);
+    return 0;
+}
+
 static int cmd_emit_c(int argc, char **argv) {
     EmitOptions options = leading_options(&argc, &argv);
     if (argc != 1) fatal("emit-c takes exactly one input file");
@@ -222,12 +317,14 @@ int main(int argc, char **argv) {
         usage(stderr);
         return 2;
     }
+    libs_locate(argv[0]);
     const char *cmd = argv[1];
     if (strcmp(cmd, "build") == 0) return cmd_build(argc - 2, argv + 2);
     if (strcmp(cmd, "run") == 0) return cmd_run(argc - 2, argv + 2);
     if (strcmp(cmd, "check") == 0) return cmd_check(argc - 2, argv + 2);
     if (strcmp(cmd, "lsp") == 0) return lsp_run();
     if (strcmp(cmd, "emit-c") == 0) return cmd_emit_c(argc - 2, argv + 2);
+    if (strcmp(cmd, "emit-arduino") == 0) return cmd_emit_arduino(argc - 2, argv + 2);
     if (is_one_of(cmd, version_spellings)) {
         puts("wind " WIND_VERSION);
         return 0;

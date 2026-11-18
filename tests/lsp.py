@@ -12,7 +12,9 @@ URI = "file:///test.wind"
 # use of Name, so byte columns and LSP columns differ.
 TEXT = 'const string Name = "v\\n"\ncout << "\U0001F600é" << Name << Nope\n'
 
-proc = subprocess.Popen(["build/wind", "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+# "::" imports are looked up in tests/libs.
+proc = subprocess.Popen(["build/wind", "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        env=dict(os.environ, WIND_LIBS="tests/libs"))
 next_id = 0
 failures = 0
 
@@ -66,7 +68,7 @@ def at(line, character):
 
 caps = request("initialize", {"capabilities": {}})["result"]["capabilities"]
 check("sync", caps["textDocumentSync"], {"openClose": True, "change": 1, "save": True})
-check("completion triggers", caps["completionProvider"], {"triggerCharacters": [".", '"', "/"]})
+check("completion triggers", caps["completionProvider"], {"triggerCharacters": [".", '"', "/", ":"]})
 notify("initialized", {})
 
 notify("textDocument/didOpen", {"textDocument": {"uri": URI, "languageId": "wind", "version": 1, "text": TEXT}})
@@ -216,6 +218,32 @@ check("import completion replaces the whole path",
       [item["textEdit"]["range"] for item in items if item["label"] == "../modules/util.wind"], [rng(1, 8, 14)])
 other = [item["label"] for item in request("textDocument/completion", at_main(2, 16))["result"]]
 check("no path completion in other strings", "util.wind" in other, False)
+
+notify("textDocument/didChange", {"textDocument": {"uri": MAIN_URI, "version": 3},
+                                  "contentChanges": [{"text": "import sh\nimport ::num\nimport ::numbers/r\n"
+                                                              "import :\nint x = true ? 1 :\n"
+                                                              "import util as u\nextern \"stdio.h\" const i32 EOF\n"
+                                                              "cout << u.SCALE << EOF\n"}]})
+read()
+items = request("textDocument/completion", at_main(0, 9))["result"]
+check("import completion without quotes leaves off .wind",
+      sorted(item["label"] for item in items), ["my-counter", "shapes", "util"])
+check("import completion without quotes replaces what was typed",
+      [item["textEdit"] for item in items if item["label"] == "shapes"],
+      [{"range": rng(0, 7, 9), "newText": "shapes"}])
+items = request("textDocument/completion", at_main(1, 12))["result"]
+check("import completion in the libraries directory",
+      sorted(item["label"] for item in items), ["::numbers/rounding", "::numbers/stats"])
+items = request("textDocument/completion", at_main(2, 18))["result"]
+check("import completion inside a library folder",
+      [(item["label"], item["textEdit"]["range"]) for item in items if item["label"] == "::numbers/rounding"],
+      [("::numbers/rounding", rng(2, 7, 18))])
+check("nothing after one colon of an import", request("textDocument/completion", at_main(3, 8))["result"], [])
+check("nothing after the colon of a conditional", request("textDocument/completion", at_main(4, 18))["result"], [])
+hover = request("textDocument/hover", at_main(7, 9))["result"]
+check("hover module imported without quotes", hover["contents"]["value"], "```wind\nimport util as u\n```")
+hover = request("textDocument/hover", at_main(7, 19))["result"]
+check("hover external constant", hover["contents"]["value"], '```wind\nextern "stdio.h" const i32 EOF\n```')
 notify("textDocument/didClose", {"textDocument": {"uri": MAIN_URI}})
 check("diagnostics after closing the importer", read()["params"]["diagnostics"], [])
 

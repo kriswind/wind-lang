@@ -16,7 +16,7 @@ contexts:
       push: string
     - match: "'(\\\\[ntr0\\\\\"']|[^\\\\'])'"
       scope: constant.character.wind
-    - match: '\b(const|export)\b'
+    - match: '\b(const|export|extern)\b'
       scope: storage.modifier.wind
     - match: '\b(struct|enum|typedef)\b'
       scope: keyword.declaration.wind

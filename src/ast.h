@@ -261,6 +261,10 @@ typedef enum {
     STMT_TYPE,
     /* "{ ... }" standing on its own, which a directive can be put on. */
     STMT_BLOCK,
+    /* 'extern "header" { ... }': external declarations that share their
+       header. Only the parser sees one; the program holds its declarations
+       in its place. */
+    STMT_EXTERN_GROUP,
 } StmtKind;
 
 /* Whether indexes are tested against the length when the program runs. */
@@ -336,6 +340,12 @@ struct Stmt {
     SrcLoc end;
     /* STMT_CONST, STMT_FUNC, STMT_TYPE: declared with "export". */
     bool exported;
+    /* STMT_CONST, STMT_FUNC: declared with "extern", so that it is defined
+       in C, under its own name. A constant has no value here and a function
+       no body. header is the C header that declares it, or empty, in which
+       case the generated C declares a function itself. */
+    bool external;
+    Str header;
     /* Set by a directive in front of the statement; covers all of it. */
     BoundsMode bounds;
     union {
@@ -364,7 +374,7 @@ struct Stmt {
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;
-        /* STMT_BLOCK */
+        /* STMT_BLOCK; STMT_EXTERN_GROUP, holding the declarations */
         Block block;
         /* STMT_COUT */
         struct {
@@ -429,9 +439,11 @@ struct Stmt {
             TypeRef *type_ref;
             Symbol *symbol;
         } type;
-        /* STMT_IMPORT: import "path" [as alias] */
+        /* STMT_IMPORT: import path [as alias], the path written in quotes
+           or without them */
         struct {
-            Str path; /* as written */
+            Str path; /* as written, without the quotes */
+            bool quoted;
             Str alias; /* empty without "as" */
             SrcLoc alias_loc;
             Symbol *symbol; /* set by unit_analyze; NULL if the name is unusable */

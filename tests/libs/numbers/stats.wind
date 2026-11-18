@@ -1,0 +1,12 @@
+// A library for the tests, which run with WIND_LIBS set to tests/libs, so
+// that a program reaches this file as ::numbers/stats. It imports another
+// library file beside it.
+import rounding
+
+export int total(int values[]) {
+    int sum = 0
+    for (int i = 0; i < len(values); i++) sum += values[i]
+    return sum
+}
+
+export int mean(int values[]) { return rounding.divide(total(values), len(values)) }

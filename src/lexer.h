@@ -37,6 +37,7 @@ typedef enum {
     TOK_KW_TYPEDEF,
     TOK_KW_TYPEOF,
     TOK_KW_EXPORT,
+    TOK_KW_EXTERN,
     TOK_KW_UNSIGNED,
     TOK_KW_SIGNED,
     TOK_KW_LONG,

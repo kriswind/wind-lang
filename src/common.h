@@ -96,6 +96,21 @@ bool file_read(const char *path, Str *out);
    current directory. The result comes from malloc. */
 char *path_beside(const char *from, Str written);
 
+/* The directory of the libraries that an import reaches with "::", found
+   from program, the path the compiler was started as. It is $WIND_LIBS if
+   that is set; otherwise "libs" beside the directory the compiler is in,
+   which is where it is in a build of the source, or "share/wind/libs" there,
+   which is where "make install" puts it. */
+void libs_locate(const char *program);
+/* The directory libs_locate found, or NULL if there is none. */
+const char *libs_dir(void);
+
+/* The file an import names, from malloc: "::path" in the libraries
+   directory, any other path beside the file at "from" as path_beside finds
+   it, and ".wind" added unless the path ends with it. Returns NULL if the
+   path starts with "::" and there is no libraries directory. */
+char *path_of_import(const char *from, Str written);
+
 /* The absolute path of an existing file with every link resolved, from
    malloc, so that two spellings of one file compare equal. Returns NULL,
    with errno set, if there is no such file. */

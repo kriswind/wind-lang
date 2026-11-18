@@ -31,15 +31,29 @@ build/wind build examples/hello.wind -o hi  # compile to an executable
 build/wind build --no-bounds-check examples/hello.wind   # without index checks
 build/wind check examples/hello.wind        # report errors and warnings only
 build/wind emit-c examples/hello.wind       # print the generated C
+build/wind emit-arduino examples/arduino/blink.wind      # an Arduino sketch
 build/wind lsp                              # language server on stdio
 
-make install    # installs to ~/.local/bin/wind (override with PREFIX=)
+make install    # installs wind to ~/.local/bin and its libraries to
+                # ~/.local/share/wind/libs (override with PREFIX=)
 ```
 
 Requires GCC or Clang on a POSIX system. `$CC` selects the C compiler used
 both for building `wind` and by `wind` itself (default `cc`).
 
 `make test` also needs `python3`, which drives the language server test.
+
+## Libraries
+
+`libs/` holds the libraries that come with Wind. An import whose path starts
+with `::` is found there, so `import ::vendor/arduino` is
+`libs/vendor/arduino.wind`. The compiler looks for the directory beside
+itself: `libs` in a build of the source, `share/wind/libs` once installed.
+`WIND_LIBS` names another one.
+
+| Library | What it holds |
+| --- | --- |
+| `::vendor/arduino` | The Arduino core: pins, time and the board's constants; see [Arduino](#arduino) |
 
 ## Tooling
 
@@ -577,13 +591,17 @@ int clamp(int n) { return n > 1000 ? 1000 : n }   // private to this file
 
 ```wind
 // main.wind
-import "shapes.wind"
-import "lib/my-text.wind" as text
+import shapes
+import lib/my-text as text
+import ::vendor/arduino
 
 cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
 ```
 
-- A path is relative to the file that contains the import.
+- A path is relative to the file that contains the import. One that starts
+  with `::` is in the [libraries](#libraries) directory instead.
+- `.wind` can be left off. A path is written as it is, up to the first
+  space, or in quotes: `import "lib/my text.wind"`.
 - The module's name is the file's name without `.wind`; `as name` gives it
   another. A file whose name is not a valid name, such as `my-text.wind`,
   needs `as`.
@@ -601,6 +619,106 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
   also be run on its own.
 - The program is compiled as a whole: `wind build main.wind` follows the
   imports and produces one executable.
+
+### External functions and constants
+
+`extern` declares a function or a constant that C defines, so that Wind can
+use the C library and the libraries of a platform:
+
+```wind
+extern "stdlib.h" i32 abs(i32 n)
+extern "limits.h" const i32 INT_MAX
+
+extern "string.h" {
+    uint strlen(char *text)
+    char *strchr(char *text, i32 c)
+    i32 strcmp(char *a, char *b)
+}
+
+extern i32 putchar(i32 c)
+
+cout << abs(-5) << " " << strlen("wind") << " " << INT_MAX << "\n"
+putchar(i32('!'))
+```
+
+- The string after `extern` is the C header that declares the function or
+  constant; the generated C includes it. Without one, the generated C
+  declares the function itself from the Wind signature, which must then
+  agree with any declaration C already has.
+- `extern "header" { ... }` declares several at once: everything in the
+  block shares its header. The declarations are written one to a line, or
+  separated by `;`.
+- An external function has no body and an external constant no value: both
+  are C's. They keep their own names in the generated C. An external
+  constant can be used wherever a value can, but not where Wind needs a
+  number at compile time, such as an array's length.
+- Only types that C has a matching form for can cross: numbers, `bool`,
+  `char`, enums and pointers. A `string` cannot; C's strings are `char *`
+  (see `cstring()`). An array cannot either; pass a pointer to its elements.
+- The Wind type must match C's: `int` is pointer-sized, so C's `int` is
+  `i32` on a 64-bit machine. Pointers are passed as they are, whatever they
+  point to, so `char *` can be given to a C function that takes `const
+  char *`.
+- `export extern` makes the declaration part of what a module offers, and
+  `export extern "header" { ... }` exports the whole block, which is how
+  `::vendor/arduino` is written. `export` goes only before the block, not
+  on the lines inside it.
+
+### Arduino
+
+`wind emit-arduino` writes a program as an Arduino sketch, which the Arduino
+IDE or `arduino-cli` builds and uploads:
+
+```wind
+// blink.wind
+import ::vendor/arduino
+
+int blinks = 0
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+
+void loop() {
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.HIGH)
+    arduino.delay(500)
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
+    arduino.delay(500)
+    blinks++
+    cout << "blinks: " << blinks << "\n"
+}
+```
+
+```sh
+wind emit-arduino blink.wind           # writes blink/blink.ino and blink/wind_program.c
+wind emit-arduino blink.wind -o sketches/blinker
+arduino-cli compile --fqbn arduino:avr:uno blink
+arduino-cli upload --fqbn arduino:avr:uno -p /dev/ttyACM0 blink
+```
+
+- **Start and repeat.** The top level, or `main` in a file laid out as a C
+  program, runs once when the board starts, as Arduino's `setup()`. A
+  function `void loop()` is then called over and over. Without one, the
+  board idles once the start has run.
+- **Serial port.** `cout`, `cin` and error messages all use the board's
+  serial port at 9600 baud. `cin` waits for input to arrive.
+- **Errors.** An index out of range, or a `NULL` pointer that is used,
+  prints its message and stops the program; the board keeps running so the
+  message is sent, and starts again when it is reset.
+- **The library.** `import ::vendor/arduino` brings in the pin, analog,
+  time, pulse and shift functions and the board's constants (`HIGH`,
+  `OUTPUT`, `LED_BUILTIN`, `A0` to `A5` and so on), all taken from the
+  board's own Arduino library.
+- **Sizes.** Checking assumes an AVR board (the Uno, Nano or Mega): `int`,
+  `uint` and pointers are 16 bits, so `int x = 40000` is an error; use
+  `i32`. A `double`, and so `float` and `f64`, is 32 bits there. `i128` and
+  `u128` are not available. The sketch itself builds for any board; on a
+  32-bit board `int` is 32 bits, but `sizeof` still gives the AVR sizes.
+- **Not yet.** Arduino's C++-only libraries (`Wire`, `Servo`, `SPI`) and
+  interrupt handlers have no declarations yet, and string literals take up
+  RAM on AVR boards rather than staying in flash.
+
+The sketch has two files: `wind_program.c`, the program as C, and a small
+fixed `.ino` file that starts it from `setup()` and `loop()` and lends it the
+serial port. A sketch folder must have the name of its `.ino` file, so the
+folder's name is the sketch's.
 
 ### Output
 
@@ -836,11 +954,12 @@ numbers; the script is there to run it again.
 | `src/parser.c` | Tokens to AST (grammar is documented at the top of the file) |
 | `src/sema.c` | Name resolution, type checking and lint warnings |
 | `src/codegen.c` | Checked AST to C |
+| `src/targets/` | What differs between targets: `host.c` for the machine the compiler runs on, `arduino.c` for Arduino boards |
 | `src/lsp.c` | Language server |
 | `src/json.c` | JSON reading and writing for the language server |
 | `src/main.c` | Command-line driver |
 | `src/ast.h` | AST and symbol definitions shared by the passes |
-| `src/types.c` | The table of built-in types |
+| `src/types.c` | The table of built-in types, and the platform that sizes them |
 | `src/common.c` | Arena allocator and diagnostics |
 
 The passes never abort on bad input: they record diagnostics and recover, so
@@ -852,4 +971,7 @@ in `ast.h`, a rule in the parser, a check in `sema.c`, and a case in
 `codegen.c`.
 
 Tests live in `tests/ok` (expected stdout in `.out`), `tests/err` (expected
-`wind check` output in `.err`) and `tests/lsp.py` (a scripted LSP session).
+`wind check` output in `.err`), `tests/arduino` (sketches run against a
+stand-in board on the machine running the tests) and `tests/lsp.py` (a
+scripted LSP session). `tests/libs` is the libraries directory the tests
+import from.

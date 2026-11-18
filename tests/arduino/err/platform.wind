@@ -1,0 +1,5 @@
+i128 big = 1
+u128 wide
+int small = 40000
+int main(int argc, string argv[]) { return argc }
+int loop(int times) { return times }

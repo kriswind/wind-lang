@@ -11,10 +11,15 @@
  *   statement  = directive ( statement | block )
  *              | ( const_decl | var_decl | assign | call | cout | cin | goto
  *                | return | do_while | "break" | "continue" | import
- *                | "export" const_decl | [ "export" ] type_decl ) terminator
+ *                | "export" const_decl | [ "export" ] type_decl
+ *                | [ "export" ] extern ) terminator
  *              | if | while | for | [ "export" ] func | label
  *   directive  = "#no_bounds_check" | "#bounds_check"
- *   import     = "import" STRING [ "as" IDENT ]
+ *   import     = "import" ( STRING | path ) [ "as" IDENT ]
+ *   path       = the characters up to the next space, as in a/b or ::x/y
+ *   extern     = "extern" [ STRING ] ( external
+ *                                    | "{" { external separator } "}" )
+ *   external   = "const" type IDENT | type IDENT "(" [ params ] ")"
  *   type_decl  = "struct" IDENT "{" { type IDENT separator } "}"
  *              | "enum" IDENT "{" { IDENT [ "=" expr ] separator } "}"
  *              | "typedef" type IDENT
@@ -42,7 +47,8 @@
  *   body       = block | statement
  *   clauses    = [ simple ] ";" [ expr ] ";" [ simple ]
  *   simple     = var_decl | assign | call
- *   func       = type IDENT "(" [ "void" | param { "," param } ] ")" block
+ *   func       = type IDENT "(" [ params ] ")" block
+ *   params     = "void" | param { "," param }
  *   param      = type IDENT [ "[" "]" ]
  *   type       = base { "*" }
  *   base       = TYPE | a C spelling such as "unsigned long" (see parse_type)
@@ -75,7 +81,9 @@
  * or a label. It is only allowed where the header before it ends visibly: at
  * a ")" that closes the whole condition, or after "else" or "do".
  *
- * "as" is only special after an import's path, and is otherwise a name.
+ * "as" is only special after an import's path, and is otherwise a name. A
+ * path written without quotes is whatever the tokens up to the first space
+ * spell, so it may hold "/", "." and "::".
  * "IDENT.IDENT" names something that an imported file exports, or a field;
  * which one is decided when the names are resolved.
  *
@@ -93,6 +101,10 @@
  * Whether the target of an assignment is something that can be assigned is
  * decided when the program is analyzed. "*p++" is rejected, since C reads it
  * as moving p and it reads here as changing what p points to.
+ *
+ * The declarations in an extern block share its header, and the "export"
+ * written before the block; the block itself leaves no trace in the program,
+ * which holds its declarations in its place.
  *
  * A directive covers the statement, block or function after it, which may
  * start on the next line. A block can only stand on its own after one.
@@ -306,6 +318,12 @@ static bool parse_base_type(Parser *p, TypeKind *out, TypeRef **ref) {
         type = p->tok;
         next(p);
         *out = type.type;
+        if (!type_available(*out)) {
+            diag_add(p->diags, SEV_ERROR, type.loc,
+                     "type '%s' is not available when building for %s", type_name(*out),
+                     types_platform()->name);
+            return false;
+        }
         return true;
     }
 
@@ -792,6 +810,7 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_RETURN:
     case TOK_KW_IMPORT:
     case TOK_KW_EXPORT:
+    case TOK_KW_EXTERN:
     case TOK_DIRECTIVE:
         return true;
     default:
@@ -867,15 +886,9 @@ static Stmt *parse_decl_rest(Parser *p, StmtKind kind, TypeKind type, TypeRef *t
     return stmt;
 }
 
-/* Called at the "(" that follows the function's return type and name. */
-static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
-                        bool top_level) {
-    Stmt *stmt = new_stmt(p, STMT_FUNC, name.loc);
-    stmt->as.func.ret = ret;
-    stmt->as.func.ret_ref = ret_ref;
-    stmt->as.func.name = name.text;
+/* Called at the "(" of a function's parameters; parses them up to the ")". */
+static bool parse_params(Parser *p, Stmt *stmt) {
     size_t cap = 0;
-
     next(p);
     skip_newlines(p);
     if (!at(p, TOK_RPAREN)) {
@@ -883,13 +896,13 @@ static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
             TypeKind type;
             TypeRef *type_ref;
             Token param_name;
-            if (!parse_type(p, &type, &type_ref)) return NULL;
+            if (!parse_type(p, &type, &type_ref)) return false;
             /* C's "(void)" for a function without parameters. */
             if (type == TYPE_VOID && stmt->as.func.param_count == 0 &&
                 at(p, TOK_RPAREN)) {
                 break;
             }
-            if (!expect(p, TOK_IDENT, &param_name)) return NULL;
+            if (!expect(p, TOK_IDENT, &param_name)) return false;
             if (type == TYPE_VOID) {
                 diag_add(p->diags, SEV_ERROR, param_name.loc,
                          "'%.*s' cannot have type 'void'", (int)param_name.text.len,
@@ -905,7 +918,7 @@ static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
                              "length",
                              type_name(type), (int)param_name.text.len,
                              param_name.text.data);
-                    return NULL;
+                    return false;
                 }
                 next(p);
                 param.is_slice = true;
@@ -917,7 +930,17 @@ static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
             skip_newlines(p);
         }
     }
-    if (!expect(p, TOK_RPAREN, NULL)) return NULL;
+    return expect(p, TOK_RPAREN, NULL);
+}
+
+/* Called at the "(" that follows the function's return type and name. */
+static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
+                        bool top_level) {
+    Stmt *stmt = new_stmt(p, STMT_FUNC, name.loc);
+    stmt->as.func.ret = ret;
+    stmt->as.func.ret_ref = ret_ref;
+    stmt->as.func.name = name.text;
+    if (!parse_params(p, stmt)) return NULL;
     if (!parse_block(p, &stmt->as.func.body)) return NULL;
 
     if (!top_level) {
@@ -1476,7 +1499,8 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
         if (!stmt) return NULL;
     }
     bool is_code = stmt->kind != STMT_TYPE && stmt->kind != STMT_IMPORT &&
-                   stmt->kind != STMT_LABEL && stmt->kind != STMT_CONST;
+                   stmt->kind != STMT_LABEL && stmt->kind != STMT_CONST &&
+                   stmt->kind != STMT_EXTERN_GROUP && !stmt->external;
     if (!is_code) {
         diag_add(p->diags, SEV_ERROR, directive.loc,
                  "'#%.*s' goes in front of code: a statement, a block or a function",
@@ -1486,6 +1510,168 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
     /* Of two directives on one statement, the one nearer to it holds. */
     if (stmt->bounds == BOUNDS_INHERIT) stmt->bounds = bounds;
     return stmt;
+}
+
+/* Parses one external declaration, after its "extern" and header: a
+   constant or a function. */
+static Stmt *parse_external(Parser *p, Str header) {
+    if (at(p, TOK_KW_EXPORT) || at(p, TOK_KW_EXTERN)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "'%s' goes before the block's 'extern', where it covers every "
+                 "declaration in it",
+                 at(p, TOK_KW_EXPORT) ? "export" : "extern");
+        next(p);
+        return NULL;
+    }
+    bool is_const = accept(p, TOK_KW_CONST);
+    TypeKind type;
+    TypeRef *type_ref;
+    Token name;
+    if (!parse_type(p, &type, &type_ref)) return NULL;
+    if (!expect(p, TOK_IDENT, &name)) return NULL;
+    Stmt *stmt;
+    if (is_const) {
+        stmt = new_stmt(p, STMT_CONST, name.loc);
+        stmt->as.decl.type = type;
+        stmt->as.decl.type_ref = type_ref;
+        stmt->as.decl.name = name.text;
+        if (at(p, TOK_ASSIGN) || at(p, TOK_LBRACKET)) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "an external constant takes its value from C; write only its type and "
+                     "name");
+            return NULL;
+        }
+    } else {
+        if (!at(p, TOK_LPAREN)) {
+            error_expected(p, "'(' after the name of an external function, or 'const' "
+                              "before the type of an external constant");
+            return NULL;
+        }
+        stmt = new_stmt(p, STMT_FUNC, name.loc);
+        stmt->as.func.ret = type;
+        stmt->as.func.ret_ref = type_ref;
+        stmt->as.func.name = name.text;
+        if (!parse_params(p, stmt)) return NULL;
+        if (at(p, TOK_LBRACE)) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "an external function is defined in C and has no body here");
+            return NULL;
+        }
+    }
+    if (type == TYPE_VOID && is_const) {
+        diag_add(p->diags, SEV_ERROR, name.loc, "'%.*s' cannot have type 'void'",
+                 (int)name.text.len, name.text.data);
+        return NULL;
+    }
+    stmt->external = true;
+    stmt->header = header;
+    return stmt;
+}
+
+/* Parses the declarations of an extern block, from its "{" to its "}". A
+   declaration that fails is reported and skipped, and the rest are still
+   read. */
+static Stmt *parse_extern_group(Parser *p, SrcLoc keyword, Str header) {
+    Stmt *group = new_stmt(p, STMT_EXTERN_GROUP, keyword);
+    Block *block = &group->as.block;
+    size_t cap = 0;
+    block->open = p->tok.loc;
+    next(p);
+    for (;;) {
+        while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
+        if (at(p, TOK_RBRACE) || at(p, TOK_EOF)) break;
+        SrcLoc start = p->tok.loc;
+        Stmt *stmt = parse_external(p, header);
+        if (stmt && !at_terminator(p)) {
+            error_expected(p, "the end of the declaration");
+            stmt = NULL;
+        }
+        if (!stmt) {
+            /* Skipped up to the end of the line, over any braces on the way,
+               so that the "}" of a mistaken body does not end the block. */
+            int depth = 0;
+            while (!at(p, TOK_EOF) &&
+                   (depth > 0 || (!at(p, TOK_NEWLINE) && !at(p, TOK_SEMI) && !at(p, TOK_RBRACE)))) {
+                if (at(p, TOK_LBRACE)) depth++;
+                if (at(p, TOK_RBRACE)) depth--;
+                next(p);
+            }
+            continue;
+        }
+        stmt->start = start;
+        stmt->end = p->prev;
+        ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt);
+    }
+    block->close = p->tok.loc;
+    if (!at(p, TOK_RBRACE)) {
+        diag_add(p->diags, SEV_ERROR, block->open, "this '{' is never closed");
+        return NULL;
+    }
+    next(p);
+    return group;
+}
+
+/* Called at "extern": parses the external function or constant it
+   declares, or the block of them. */
+static Stmt *parse_extern(Parser *p, bool top_level, bool *needs_terminator) {
+    Token keyword = p->tok;
+    Str header = {0};
+    next(p);
+    if (at(p, TOK_STRING)) {
+        header = p->tok.text;
+        /* The name goes into an #include line, which ends at a quote or
+           a line break. */
+        bool usable = header.len > 0;
+        for (size_t i = 0; i < header.len; i++) {
+            unsigned char c = (unsigned char)header.data[i];
+            if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') usable = false;
+        }
+        if (!usable) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "a header's name cannot be empty or hold quotes, backslashes or "
+                     "control characters");
+            return NULL;
+        }
+        next(p);
+    }
+    Stmt *stmt;
+    if (at(p, TOK_LBRACE)) {
+        *needs_terminator = false;
+        stmt = parse_extern_group(p, keyword.loc, header);
+    } else {
+        stmt = parse_external(p, header);
+    }
+    if (stmt && !top_level) {
+        diag_add(p->diags, SEV_ERROR, keyword.loc,
+                 "'extern' can only be used at the top level of a file");
+        return NULL;
+    }
+    return stmt;
+}
+
+/* Called after "import": parses the path, written in quotes or as the
+   tokens up to the next space. */
+static bool parse_import_path(Parser *p, Stmt *stmt) {
+    if (at(p, TOK_STRING)) {
+        stmt->loc = p->tok.loc;
+        stmt->as.import.path = p->tok.text;
+        stmt->as.import.quoted = true;
+        next(p);
+        return true;
+    }
+    if (at_terminator(p) || at(p, TOK_KW_ELSE)) {
+        error_expected(p, "the path of a file to import");
+        return false;
+    }
+    SrcLoc first = p->tok.loc;
+    size_t end = first.offset;
+    while (!at_terminator(p) && !at(p, TOK_STRING) && p->tok.loc.offset == end) {
+        end = p->tok.loc.offset + p->tok.loc.len;
+        next(p);
+    }
+    stmt->as.import.path = (Str){p->lexer.src.data + first.offset, end - first.offset};
+    stmt->loc = span(first, p->prev);
+    return true;
 }
 
 /* *needs_terminator is cleared for statements that end themselves: a label,
@@ -1521,12 +1707,12 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         /* An assignment through a pointer: "*p = v", "(*p).x = v". */
         target = parse_unary(p);
         return target ? parse_assign_rest(p, tok, target) : NULL;
+    case TOK_KW_EXTERN:
+        return parse_extern(p, top_level, needs_terminator);
     case TOK_KW_IMPORT: {
-        Token path;
         next(p);
-        if (!expect(p, TOK_STRING, &path)) return NULL;
-        stmt = new_stmt(p, STMT_IMPORT, path.loc);
-        stmt->as.import.path = path.text;
+        stmt = new_stmt(p, STMT_IMPORT, tok.loc);
+        if (!parse_import_path(p, stmt)) return NULL;
         if (at(p, TOK_IDENT) && str_eq_cstr(p->tok.text, "as")) {
             Token alias;
             next(p);
@@ -1552,7 +1738,7 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     case TOK_KW_EXPORT:
         next(p);
         if (!at_type(p) && !at(p, TOK_KW_CONST) && !at(p, TOK_KW_TYPEDEF) &&
-            !at(p, TOK_IDENT)) {
+            !at(p, TOK_KW_EXTERN) && !at(p, TOK_IDENT)) {
             error_expected(p, "a function, a constant or a type after 'export'");
             return NULL;
         }
@@ -1562,12 +1748,16 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
             diag_add(p->diags, SEV_ERROR, stmt->loc,
                      "a variable cannot be exported; export a function that returns it");
         } else if (stmt->kind != STMT_CONST && stmt->kind != STMT_FUNC &&
-                   stmt->kind != STMT_TYPE) {
+                   stmt->kind != STMT_TYPE && stmt->kind != STMT_EXTERN_GROUP) {
             diag_add(p->diags, SEV_ERROR, tok.loc,
                      "only a function, a constant or a type can be exported");
         } else if (!top_level) {
             diag_add(p->diags, SEV_ERROR, tok.loc,
                      "'export' can only be used at the top level of a file");
+        } else if (stmt->kind == STMT_EXTERN_GROUP) {
+            for (size_t i = 0; i < stmt->as.block.count; i++) {
+                stmt->as.block.stmts[i]->exported = true;
+            }
         } else {
             stmt->exported = true;
         }
@@ -1683,6 +1873,12 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         if (needs_terminator && !at_terminator(p)) {
             error_expected(p, "end of statement");
             synchronize(p);
+        }
+        if (stmt->kind == STMT_EXTERN_GROUP) {
+            for (size_t i = 0; i < stmt->as.block.count; i++) {
+                ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt->as.block.stmts[i]);
+            }
+            continue;
         }
         ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt);
     }

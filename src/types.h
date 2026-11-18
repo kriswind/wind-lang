@@ -79,6 +79,34 @@ typedef struct {
     bool array_writer_used;
 } TypeInfo;
 
+/* What a program is compiled for, as far as checking it is concerned. */
+typedef struct {
+    const char *name;
+    /* Bytes in a pointer, which is also the width of int, uint and uintptr;
+       in the C double, which holds float and f64; and in the type that holds
+       f128. */
+    size_t pointer_size;
+    size_t double_size;
+    size_t long_double_size;
+    /* i128 and u128 exist. */
+    bool wide_integers;
+    /* main may take the program's command-line arguments. */
+    bool has_arguments;
+    /* The name of a function that, when a program defines it, is called
+       over and over once the program has started; NULL if there is none. */
+    const char *repeat_function;
+} Platform;
+
+/* The platform of the machine the compiler runs on. */
+extern const Platform platform_host;
+
+/* Selects the platform that sizes and the types that exist are taken from;
+   until this is called it is platform_host. */
+void types_use_platform(const Platform *platform);
+const Platform *types_platform(void);
+/* False for a built-in type that the platform in use cannot hold. */
+bool type_available(TypeKind type);
+
 /* The types one program declares or builds. A zeroed table with its arena set is
    empty and ready to use. */
 typedef struct {

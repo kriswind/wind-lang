@@ -352,10 +352,17 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     const char *name = symbol->name.data;
     Str src = symbol->unit->src;
     if (symbol->exported) buf_puts(buf, "export ");
+    if (symbol->decl && symbol->decl->external) {
+        Str header = symbol->decl->header;
+        buf_puts(buf, "extern ");
+        if (header.len) buf_printf(buf, "\"%.*s\" ", (int)header.len, header.data);
+    }
     switch (symbol->kind) {
     case SYM_MODULE: {
         Str path = symbol->decl->as.import.path;
-        buf_printf(buf, "import \"%.*s\" as %.*s", (int)path.len, path.data, len, name);
+        const char *quote = symbol->decl->as.import.quoted ? "\"" : "";
+        buf_printf(buf, "import %s%.*s%s as %.*s", quote, (int)path.len, path.data, quote, len,
+                   name);
         break;
     }
     case SYM_ENUM_VALUE:
@@ -388,6 +395,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         const Expr *init = symbol->decl->as.decl.init;
         buf_printf(buf, "const %s%s%.*s", type_name(symbol->type), type_gap(symbol->type),
                    len, name);
+        if (symbol->decl->external) break;
         if (symbol->is_array) {
             buf_printf(buf, "[%zu]", symbol->length);
             break;
@@ -548,9 +556,10 @@ static const Symbol *module_before(const Unit *unit, size_t offset) {
     return NULL;
 }
 
-/* If offset is inside the path of an import, as in 'import "lib/sh|', sets
-   *typed to the path up to the cursor and returns true. */
-static bool import_path_before(Str src, size_t offset, Str *typed) {
+/* If offset is inside the path of an import, as in 'import "lib/sh|' or
+   'import lib/sh|', sets *typed to the path up to the cursor and *quoted to
+   whether it is in quotes, and returns true. */
+static bool import_path_before(Str src, size_t offset, Str *typed, bool *quoted) {
     size_t start = offset;
     while (start > 0 && src.data[start - 1] != '\n') start--;
     size_t i = start;
@@ -559,9 +568,16 @@ static bool import_path_before(Str src, size_t offset, Str *typed) {
     i += 6;
     if (i == offset || (src.data[i] != ' ' && src.data[i] != '\t')) return false;
     while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
-    if (i == offset || src.data[i] != '"') return false;
-    i++;
-    if (memchr(src.data + i, '"', offset - i)) return false;
+    *quoted = i < offset && src.data[i] == '"';
+    if (*quoted) {
+        i++;
+        if (memchr(src.data + i, '"', offset - i)) return false;
+    } else {
+        /* Without quotes the path ends at the first space. */
+        for (size_t j = i; j < offset; j++) {
+            if (src.data[j] == ' ' || src.data[j] == '\t' || src.data[j] == '"') return false;
+        }
+    }
     *typed = (Str){src.data + i, offset - i};
     return true;
 }
@@ -578,6 +594,7 @@ typedef struct {
     const Doc *doc;
     SrcLoc typed; /* the path written so far, which every item replaces */
     size_t count;
+    bool bare; /* written without quotes, where ".wind" is left off */
 } ImportSearch;
 
 /* Adds the Wind files in the directory at dir_path, and in the directories
@@ -611,7 +628,7 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
             const char *own = search->doc->unit.real_path;
             if (!real_path || !own || strcmp(real_path, own) != 0) {
                 Buf *buf = search->buf;
-                Str text = {spelled, strlen(spelled)};
+                Str text = {spelled, strlen(spelled) - (search->bare ? 5 : 0)};
                 if (search->count++) buf_puts(buf, ",");
                 buf_puts(buf, "{\"label\":");
                 buf_json_string(buf, text);
@@ -634,12 +651,14 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
 /* Completes the path of an import with every Wind file at or below the
    directory the path so far points into, each as the whole path to write.
    An item replaces all of what was typed, so that the client need not agree
-   with the server on what a word is inside a string. */
-static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str typed) {
+   with the server on what a word is inside a path. A path that starts with
+   "::" is looked for in the libraries directory. */
+static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str typed,
+                                 bool quoted) {
     size_t dir_len = typed.len;
     while (dir_len > 0 && typed.data[dir_len - 1] != '/') dir_len--;
 
-    ImportSearch search = {.buf = buf, .doc = doc};
+    ImportSearch search = {.buf = buf, .doc = doc, .bare = !quoted};
     search.typed = (SrcLoc){.offset = offset - typed.len, .len = typed.len, .line = 1, .col = 1};
     for (size_t i = 0; i < search.typed.offset; i++) {
         search.typed.col++;
@@ -649,10 +668,23 @@ static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str ty
         }
     }
 
-    char *shown = xmalloc(dir_len + 1);
-    memcpy(shown, typed.data, dir_len);
-    shown[dir_len] = '\0';
-    char *dir_path = path_beside(doc->path, (Str){typed.data, dir_len});
+    bool in_libs = typed.len >= 2 && typed.data[0] == ':' && typed.data[1] == ':';
+    if (typed.len >= 1 && typed.data[0] == ':' && !in_libs) return;
+    if (in_libs && !libs_dir()) return;
+
+    /* The directory as the import spells it, and where it is. */
+    size_t shown_len = in_libs && dir_len < 2 ? 2 : dir_len;
+    char *shown = xmalloc(shown_len + 1);
+    memcpy(shown, in_libs && dir_len < 2 ? "::" : typed.data, shown_len);
+    shown[shown_len] = '\0';
+    char *dir_path;
+    if (in_libs) {
+        Str inside = {shown + 2, shown_len - 2};
+        dir_path = xmalloc(strlen(libs_dir()) + inside.len + 2);
+        sprintf(dir_path, "%s/%.*s", libs_dir(), (int)inside.len, inside.data);
+    } else {
+        dir_path = path_beside(doc->path, (Str){typed.data, dir_len});
+    }
     list_importable(&search, dir_path, shown, 0);
     free(dir_path);
     free(shown);
@@ -666,8 +698,17 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "[");
     Str typed;
-    if (doc && import_path_before(doc->unit.src, offset, &typed)) {
-        complete_import_path(&buf, doc, offset, typed);
+    bool quoted;
+    if (doc && import_path_before(doc->unit.src, offset, &typed, &quoted)) {
+        complete_import_path(&buf, doc, offset, typed, quoted);
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
+    /* ":" asks for completion only to start the "::" of a library path;
+       after a label or the ":" of a conditional there is nothing to offer. */
+    if (doc && offset > 0 && offset <= doc->unit.src.len &&
+        doc->unit.src.data[offset - 1] == ':') {
         buf_puts(&buf, "]");
         send_result(&buf);
         return;
@@ -710,7 +751,7 @@ static void handle_initialize(Arena *arena, const Json *id) {
              "\"textDocumentSync\":{\"openClose\":true,\"change\":1,\"save\":true},"
              "\"hoverProvider\":true,"
              "\"definitionProvider\":true,"
-             "\"completionProvider\":{\"triggerCharacters\":[\".\",\"\\\"\",\"/\"]}},"
+             "\"completionProvider\":{\"triggerCharacters\":[\".\",\"\\\"\",\"/\",\":\"]}},"
              "\"serverInfo\":{\"name\":\"wind\",\"version\":\"" WIND_VERSION "\"}}");
     send_result(&buf);
 }

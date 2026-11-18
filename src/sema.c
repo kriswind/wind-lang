@@ -80,6 +80,19 @@
  * - An imported file is not run as a script: without a main it may only hold
  *   declarations, and a main it has is left uncalled. Its top-level
  *   variables are initialized before the program starts.
+ * - A path that starts with "::" is in the libraries directory; any other
+ *   is beside the importing file. ".wind" may be left off.
+ *
+ * External declarations:
+ *
+ * - "extern" declares a function or a constant that C defines. It has no
+ *   body or value here, and keeps its own name in the generated C. Only
+ *   types that C has a matching form for can cross: numbers, bool, char,
+ *   enums and pointers.
+ *
+ * The platform (see types.h) decides the sizes of types and which exist,
+ * whether main can take the program's arguments, and which function, if
+ * any, is called over and over after the program has started.
  */
 
 typedef struct Scope Scope;
@@ -1156,7 +1169,9 @@ static bool const_len(const Expr *operand, size_t *length) {
             *length = symbol->length;
             return true;
         }
-        if (symbol->kind != SYM_CONST || symbol->is_slice) return false;
+        if (symbol->kind != SYM_CONST || symbol->is_slice || symbol->decl->external) {
+            return false;
+        }
         operand = symbol->decl->as.decl.init;
     }
     if (operand->kind != EXPR_STRING_LIT) return false;
@@ -1234,7 +1249,10 @@ static bool eval_const_bool(const Expr *expr, bool *out) {
         return true;
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
-        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array) return false;
+        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array ||
+            symbol->decl->external) {
+            return false;
+        }
         return eval_const_bool(symbol->decl->as.decl.init, out);
     }
     case EXPR_UNARY:
@@ -1301,7 +1319,10 @@ static bool eval_const_int(const Expr *expr, long long *out) {
             *out = symbol->value;
             return true;
         }
-        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array) return false;
+        if (!symbol || symbol->kind != SYM_CONST || symbol->is_array ||
+            symbol->decl->external) {
+            return false;
+        }
         return eval_const_int(symbol->decl->as.decl.init, out);
     }
     case EXPR_CAST:
@@ -1426,6 +1447,17 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
     }
 }
 
+/* Reports a type that cannot pass between Wind and C as it is: one whose
+   C form is Wind's own. */
+static void check_crossing(Checker *c, TypeKind type, SrcLoc loc, const char *what) {
+    if (type == TYPE_INVALID || type == TYPE_VOID || type_is_numeric(type) ||
+        type == TYPE_BOOL || type == TYPE_CHAR || type_is_enum(type) || type_is_pointer(type)) {
+        return;
+    }
+    error(c, loc, "%s cannot have type '%s'; C has no matching type%s", what, type_name(type),
+          type == TYPE_STRING ? "; C's strings are 'char *'" : "");
+}
+
 static void check_decl(Checker *c, Stmt *stmt) {
     if (stmt->as.decl.is_array) {
         check_array_decl(c, stmt);
@@ -1436,6 +1468,7 @@ static void check_decl(Checker *c, Stmt *stmt) {
     TypeKind type = stmt->as.decl.type;
     Expr *init = stmt->as.decl.init;
     bool is_const = stmt->kind == STMT_CONST;
+    if (stmt->external) check_crossing(c, type, stmt->loc, "an external constant");
 
     /* The initializer is checked before the name is declared, so a
        declaration cannot refer to itself. */
@@ -1787,6 +1820,7 @@ static bool block_terminates(const Block *block) {
 }
 
 static void check_func(Checker *c, Stmt *stmt) {
+    if (stmt->external) return; /* its signature was checked with the others */
     Stmt *outer_func = c->func;
     SymbolList *outer_locals = c->locals;
     SymbolList outer_labels = c->labels;
@@ -2100,6 +2134,8 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_IMPORT:
     case STMT_TYPE:
         break; /* handled before anything else is checked */
+    case STMT_EXTERN_GROUP:
+        break; /* the parser leaves its declarations in its place */
     }
 }
 
@@ -2114,6 +2150,12 @@ static void warn_unused(Checker *c) {
            for the files that import it. */
         if (symbol->decl && symbol->decl == c->unit->program.main) continue;
         if (symbol->exported) continue;
+        /* A function named loop is called by a platform that repeats it,
+           and is left alone on the others so that a program for such a
+           platform checks cleanly anywhere. */
+        if (symbol->kind == SYM_FUNC && symbol->global && str_eq_cstr(symbol->name, "loop")) {
+            continue;
+        }
         if (!symbol->used) {
             diag_add(c->diags, SEV_WARNING, symbol->loc, "%s '%.*s' is never used",
                      symbol_what(symbol), NAME(symbol->name));
@@ -2139,7 +2181,11 @@ static void check_main(Checker *c, const Stmt *main) {
         error(c, main->loc,
               "'main' takes no parameters, or the program's arguments as "
               "'(int argc, string argv[])'");
+    } else if (takes_args && !types_platform()->has_arguments) {
+        error(c, main->loc, "a program for %s has no arguments; 'main' takes no parameters",
+              types_platform()->name);
     }
+    if (main->external) error(c, main->loc, "'main' cannot be external");
     if (main->as.func.ret != TYPE_INT && main->as.func.ret != TYPE_VOID) {
         error(c, main->loc, "'main' must return 'int' or 'void', not '%s'",
               type_name(main->as.func.ret));
@@ -2339,7 +2385,12 @@ static const char *arena_cstr(Arena *arena, const char *text) {
 static const Unit *load_module(Checker *c, const Stmt *stmt) {
     Unit *root = c->unit->root;
     Str written = stmt->as.import.path;
-    char *path = path_beside(c->unit->path, written);
+    char *path = path_of_import(c->unit->path, written);
+    if (!path) {
+        error(c, stmt->loc, "'::' is the libraries directory, which was not found; set "
+                            "WIND_LIBS to it");
+        return NULL;
+    }
     char *real_path = path_canonical(path);
     Str src;
     if (!real_path) {
@@ -2464,6 +2515,17 @@ void check_program(Unit *unit) {
             Param *param = &stmt->as.func.params[j];
             param->type = declared_type(&c, param->type, param->type_ref, param->loc,
                                         param->name);
+            if (!stmt->external) continue;
+            if (param->is_slice) {
+                error(&c, param->loc, "an external function cannot take an array; take a "
+                                      "pointer to its elements");
+            } else {
+                check_crossing(&c, param->type, param->loc,
+                               "a parameter of an external function");
+            }
+        }
+        if (stmt->external) {
+            check_crossing(&c, stmt->as.func.ret, stmt->loc, "an external function");
         }
         Symbol *symbol = new_symbol(&c, SYM_FUNC, stmt->as.func.name, stmt->loc,
                                     stmt->as.func.ret);
@@ -2472,6 +2534,20 @@ void check_program(Unit *unit) {
         symbol->visible_from = 0;
         stmt->as.func.symbol = symbol;
         declare(&c, symbol);
+    }
+
+    /* The function a platform calls over and over, in the program itself. */
+    const char *repeat = types_platform()->repeat_function;
+    const Symbol *repeated = repeat && unit->root == unit
+                                 ? find_in(&global.symbols, (Str){repeat, strlen(repeat)})
+                                 : NULL;
+    if (repeated && repeated->kind == SYM_FUNC) {
+        const Stmt *func = repeated->decl;
+        if (func->as.func.param_count != 0 || func->as.func.ret != TYPE_VOID || func->external) {
+            error(&c, func->loc, "'%s' is called over and over by %s, so it must be written "
+                                 "'void %s()'",
+                  repeat, types_platform()->name, repeat);
+        }
     }
 
     const Symbol *main_symbol = find_in(&global.symbols, (Str){"main", 4});

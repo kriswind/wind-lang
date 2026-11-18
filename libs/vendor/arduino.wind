@@ -1,0 +1,55 @@
+// The Arduino core library: pins, time and the board's own constants, for
+// programs built with "wind emit-arduino". Import it as
+//
+//     import ::vendor/arduino
+//
+// and reach what it holds as arduino.pinMode, arduino.HIGH and so on.
+//
+// Everything here is the Arduino library's own, declared through "extern",
+// so the constants have the values of the board being built for.
+
+export extern "Arduino.h" {
+    // Pin levels and modes.
+    const u8 HIGH
+    const u8 LOW
+    const u8 INPUT
+    const u8 OUTPUT
+    const u8 INPUT_PULLUP
+
+    // The pin of the LED on the board, and the analog input pins.
+    const u8 LED_BUILTIN
+    const u8 A0
+    const u8 A1
+    const u8 A2
+    const u8 A3
+    const u8 A4
+    const u8 A5
+
+    // Bit orders for shiftIn and shiftOut.
+    const u8 LSBFIRST
+    const u8 MSBFIRST
+
+    // Digital pins.
+    void pinMode(u8 pin, u8 mode)
+    void digitalWrite(u8 pin, u8 value)
+    int digitalRead(u8 pin)
+
+    // Analog pins: a reading from 0 to 1023, and a duty cycle from 0 to 255.
+    int analogRead(u8 pin)
+    void analogWrite(u8 pin, int value)
+
+    // Time, in milliseconds and microseconds since the board started.
+    u32 millis()
+    u32 micros()
+    void delay(u32 ms)
+    void delayMicroseconds(uint us)
+
+    // Pulses and bits sent one at a time.
+    u32 pulseIn(u8 pin, u8 state, u32 timeout)
+    void shiftOut(u8 data_pin, u8 clock_pin, u8 bit_order, u8 value)
+    u8 shiftIn(u8 data_pin, u8 clock_pin, u8 bit_order)
+
+    // Interrupts, switched on and off around code that must not be interrupted.
+    void interrupts()
+    void noInterrupts()
+}

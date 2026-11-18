@@ -45,6 +45,30 @@ static const struct {
 
 static TypeTable *table;
 
+const Platform platform_host = {
+    .name = "host",
+    .pointer_size = sizeof(void *),
+    .double_size = 8,
+    .long_double_size = 16,
+    .wide_integers = true,
+    .has_arguments = true,
+    .repeat_function = NULL,
+};
+
+static const Platform *platform = &platform_host;
+
+void types_use_platform(const Platform *in_use) {
+    platform = in_use;
+}
+
+const Platform *types_platform(void) {
+    return platform;
+}
+
+bool type_available(TypeKind type) {
+    return platform->wide_integers || (type != TYPE_I128 && type != TYPE_U128);
+}
+
 void types_use(TypeTable *in_use) {
     table = in_use;
 }
@@ -117,8 +141,8 @@ TypeKind type_pointer_to(TypeKind target) {
     info->c_stem = format_text("p_%s", pointee ? pointee->c_stem : type_name(target));
     info->c_name = format_text("wind_%s", info->c_stem);
     info->writer_name = "wind_write_pointer";
-    info->size = sizeof(void *);
-    info->align = sizeof(void *);
+    info->size = platform->pointer_size;
+    info->align = platform->pointer_size;
     ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
     return (TypeKind)(TYPE_COUNT + table->count - 1);
 }
@@ -194,10 +218,9 @@ bool type_is_numeric(TypeKind type) {
     return type_is_integer(type) || type_is_float(type);
 }
 
-/* Programs are compiled for the machine the compiler runs on, so its pointer
-   size is the target's. */
+/* The pointer-sized integers take their width from the platform. */
 static int int_bits(TypeKind type) {
-    return types[type].bits ? types[type].bits : (int)(sizeof(void *) * 8);
+    return types[type].bits ? types[type].bits : (int)(platform->pointer_size * 8);
 }
 
 size_t type_size(TypeKind type) {
@@ -212,7 +235,12 @@ size_t type_size(TypeKind type) {
     case TYPE_CHAR:
         return 1;
     case TYPE_STRING:
-        return 2 * sizeof(void *); /* a pointer and a length */
+        return 2 * platform->pointer_size; /* a pointer and a length */
+    case TYPE_FLOAT:
+    case TYPE_F64:
+        return platform->double_size;
+    case TYPE_F128:
+        return platform->long_double_size;
     default:
         return (size_t)int_bits(type) / 8;
     }
@@ -223,7 +251,7 @@ size_t type_align(TypeKind type) {
     if (info) return info->align;
     /* A string is aligned as the pointer it starts with; every other
        built-in type is aligned to its own size. */
-    if (type == TYPE_STRING) return sizeof(void *);
+    if (type == TYPE_STRING) return platform->pointer_size;
     size_t size = type_size(type);
     return size ? size : 1;
 }

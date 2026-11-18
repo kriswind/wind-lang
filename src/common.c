@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 bool str_eq(Str a, Str b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
@@ -165,4 +167,60 @@ char *path_beside(const char *from, Str written) {
 
 char *path_canonical(const char *path) {
     return realpath(path, NULL);
+}
+
+static char *libs;
+
+static bool is_directory(const char *path) {
+    struct stat info;
+    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+void libs_locate(const char *program) {
+    free(libs);
+    libs = NULL;
+    const char *set = getenv("WIND_LIBS");
+    if (set && *set) {
+        libs = xmalloc(strlen(set) + 1);
+        strcpy(libs, set);
+        return;
+    }
+    /* The compiler's own file, through /proc where there is one, so that
+       a compiler found through PATH or a link is located as well. */
+    char *self = path_canonical("/proc/self/exe");
+    if (!self && program && strchr(program, '/')) self = path_canonical(program);
+    if (!self) return;
+    char *slash = strrchr(self, '/');
+    if (slash) *slash = '\0';
+    static const char *const beside[] = {"/../libs", "/../share/wind/libs"};
+    for (size_t i = 0; i < sizeof beside / sizeof beside[0] && !libs; i++) {
+        char *candidate = xmalloc(strlen(self) + strlen(beside[i]) + 1);
+        sprintf(candidate, "%s%s", self, beside[i]);
+        if (is_directory(candidate)) libs = path_canonical(candidate);
+        free(candidate);
+    }
+    free(self);
+}
+
+const char *libs_dir(void) {
+    return libs;
+}
+
+char *path_of_import(const char *from, Str written) {
+    bool has_extension = written.len >= 5 &&
+                         memcmp(written.data + written.len - 5, ".wind", 5) == 0;
+    const char *extension = has_extension ? "" : ".wind";
+    char *found;
+    if (written.len >= 2 && written.data[0] == ':' && written.data[1] == ':') {
+        if (!libs) return NULL;
+        Str rest = {written.data + 2, written.len - 2};
+        found = xmalloc(strlen(libs) + rest.len + 7);
+        sprintf(found, "%s/%.*s", libs, (int)rest.len, rest.data);
+    } else {
+        found = path_beside(from, written);
+    }
+    char *path = xmalloc(strlen(found) + 6);
+    sprintf(path, "%s%s", found, extension);
+    free(found);
+    return path;
 }

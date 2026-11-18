@@ -2,7 +2,7 @@ if exists("b:current_syntax")
   finish
 endif
 
-syn keyword windStorage const export typedef
+syn keyword windStorage const export typedef extern
 syn keyword windStructure struct enum
 syn keyword windOperator typeof
 syn keyword windInclude import

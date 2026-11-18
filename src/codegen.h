@@ -5,7 +5,12 @@
 
 #include "ast.h"
 
+struct Target;
+
 typedef struct {
+    /* What the program is compiled for; see targets/target.h. NULL is the
+       machine the compiler runs on. */
+    const struct Target *target;
     /* Leave out the test that stops the program when an index is out of
        range, except in code marked "#bounds_check". A negative index still
        counts back from the end. */
@@ -13,7 +18,8 @@ typedef struct {
 } EmitOptions;
 
 /* Writes a self-contained C translation unit for a unit that analyzed
-   without errors. */
+   without errors. The unit must have been analyzed for the platform of
+   the target. */
 void emit_c(const Unit *unit, FILE *out, EmitOptions options);
 
 #endif

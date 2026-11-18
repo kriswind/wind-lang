@@ -1,0 +1,23 @@
+// Blinks the board's LED and counts the blinks over the serial port.
+//
+//     wind emit-arduino examples/arduino/blink.wind
+//     arduino-cli compile --fqbn arduino:avr:uno blink
+//
+// The top level runs once when the board starts; loop runs over and over
+// after it.
+
+import ::vendor/arduino
+
+int blinks = 0
+
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+cout << "blinking\n"
+
+void loop() {
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.HIGH)
+    arduino.delay(500)
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
+    arduino.delay(500)
+    blinks++
+    cout << "blinks: " << blinks << "\n"
+}

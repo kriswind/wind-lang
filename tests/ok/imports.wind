@@ -1,0 +1,13 @@
+// Imports written without quotes, with and without ".wind", and from the
+// libraries directory through "::".
+import modules/util
+import modules/shapes.wind as s
+import modules/my-counter as counter
+import ./modules/util as same
+import ::numbers/stats
+import "::numbers/stats" as quoted
+
+int values[4] = {1, 2, 3, 5}
+cout << util.scaled(3) << " " << s.describe(4) << " " << counter.next() << "\n"
+cout << stats.total(values) << " " << stats.mean(values) << " " << quoted.mean(values) << "\n"
+cout << (same.SCALE == util.SCALE) << " " << util.call_count() << "\n"
