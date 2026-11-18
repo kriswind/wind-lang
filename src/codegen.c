@@ -966,8 +966,26 @@ static void emit_c_string(Str s, FILE *out) {
 
 /* Notes that the program uses an external function or constant, whose
    header must then be included. */
+/* The headers that libraries carry and the program uses, each once. */
+static struct {
+    Str *items;
+    size_t count;
+    size_t cap;
+} carried;
+
 static void use_external(const Stmt *decl) {
     use_link(decl->link);
+    if (decl->carried.len) {
+        for (size_t i = 0; i < carried.count; i++) {
+            if (str_eq(carried.items[i], decl->carried)) return;
+        }
+        if (carried.count == carried.cap) {
+            carried.cap = carried.cap ? carried.cap * 2 : 4;
+            carried.items = xrealloc(carried.items, carried.cap * sizeof *carried.items);
+        }
+        carried.items[carried.count++] = decl->carried;
+        return;
+    }
     Str header = decl->header;
     if (!header.len) return;
     for (size_t i = 0; i < used.external_count; i++) {
@@ -2006,7 +2024,8 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
            declaration may differ in what it points to (char against the
            unsigned char of Wind, or const), and Wind has already checked
            them against the extern declaration. */
-        bool external = expr->as.call.symbol->decl->external;
+        bool external = expr->as.call.symbol->decl->external &&
+                        !expr->as.call.symbol->decl->carried.len;
         bool cast_result = external && type_is_pointer(expr->type);
         if (cast_result) fprintf(out, "((%s)(void *)", c_type(expr->type));
         emit_symbol(expr->as.call.symbol, out);
@@ -3441,6 +3460,61 @@ static char *emit_to_memory(void (*emit)(const Unit *, FILE *), const Unit *unit
     return text;
 }
 
+/* Notes the types that an extern in a carried header takes and gives,
+   which the header's C refers to whether or not the program calls it. */
+static void use_carried_types(const Stmt *func) {
+    for (size_t i = 0; i < func->as.func.param_count; i++) {
+        const Param *param = &func->as.func.params[i];
+        TypeInfo *info = type_info(param->type);
+        if (param->is_slice && info) {
+            info->slice_used = true;
+        } else if (param->is_slice) {
+            used.slices[param->type] = true;
+        } else if (param->is_growable && info) {
+            info->list_used = true;
+        } else if (param->is_growable) {
+            used.lists[param->type] = true;
+        } else if (!info) {
+            used.types[param->type] = true;
+        }
+    }
+    if (!type_info(func->as.func.ret)) used.types[func->as.func.ret] = true;
+}
+
+static void use_carried_in(const Unit *unit) {
+    const Block *top = &unit->program.top;
+    for (size_t i = 0; i < top->count; i++) {
+        const Stmt *stmt = top->stmts[i];
+        if (stmt->kind != STMT_FUNC || !stmt->carried.len) continue;
+        for (size_t j = 0; j < carried.count; j++) {
+            if (str_eq(carried.items[j], stmt->carried)) use_carried_types(stmt);
+        }
+    }
+}
+
+/* The leading "#define" lines of a carried header, which must come before
+   any system header is included to have their effect, and then the rest. */
+static void split_carried(Str text, Str *defines, Str *rest) {
+    size_t at = 0, end = 0;
+    while (at < text.len) {
+        size_t line_end = at;
+        while (line_end < text.len && text.data[line_end] != '\n') line_end++;
+        Str line = {text.data + at, line_end - at};
+        size_t i = 0;
+        while (i < line.len && (line.data[i] == ' ' || line.data[i] == '\t')) i++;
+        bool blank = i == line.len;
+        bool comment = i + 1 < line.len && line.data[i] == '/' &&
+                       (line.data[i + 1] == '/' || line.data[i + 1] == '*');
+        bool inside = i < line.len && (line.data[i] == '*' );
+        bool define = line.len - i >= 7 && memcmp(line.data + i, "#define", 7) == 0;
+        if (!blank && !comment && !inside && !define) break;
+        if (define) end = line_end + 1 < text.len ? line_end + 1 : text.len;
+        at = line_end + 1;
+    }
+    *defines = (Str){text.data, end};
+    *rest = (Str){text.data + end, text.len - end};
+}
+
 static void emit_types_of(const Unit *unit, FILE *out) {
     (void)unit;
     emit_declared_types(out);
@@ -3453,6 +3527,7 @@ void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
     free(used.externals);
     memset(&used, 0, sizeof used);
     orders.count = 0;
+    carried.count = 0;
     for (size_t i = 0; i < links.count; i++) free(links.items[i]);
     links.count = 0;
     types_use((TypeTable *)&unit->types);
@@ -3466,10 +3541,26 @@ void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
        finds out what the parts before it must provide. */
     size_t program_len, types_len;
     char *program = emit_to_memory(emit_program, unit, &program_len);
+    for (size_t i = 0; i < unit->module_count; i++) use_carried_in(unit->modules[i]);
+    use_carried_in(unit);
     char *types = emit_to_memory(emit_types_of, unit, &types_len);
+    for (size_t i = 0; i < carried.count; i++) {
+        Str defines, rest;
+        split_carried(carried.items[i], &defines, &rest);
+        fwrite(defines.data, 1, defines.len, out);
+    }
     if (target->prologue) fputs(target->prologue, out);
     emit_runtime(out);
     fwrite(types, 1, types_len, out);
+    /* A carried header reads Wind's types from here; on its own, as an
+       editor reads it, from libs/wind.h. */
+    if (carried.count) fputs("#define WIND_PROGRAM 1\n", out);
+    for (size_t i = 0; i < carried.count; i++) {
+        Str defines, rest;
+        split_carried(carried.items[i], &defines, &rest);
+        fwrite(rest.data, 1, rest.len, out);
+        fputs("\n", out);
+    }
     fwrite(program, 1, program_len, out);
     free(types);
     free(program);

@@ -6,6 +6,7 @@
 //     wind run --fqbn arduino:avr:uno examples/arduino/dice.wind
 
 #target arduino
+#board rp2040:rp2040:rpipico2w
 
 import ::vendor/arduino
 import ::random

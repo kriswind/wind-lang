@@ -2293,7 +2293,28 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
 
 /* Reports a type that cannot pass between Wind and C as it is: one whose
    C form is Wind's own. */
-static void check_crossing(Checker *c, TypeKind type, SrcLoc loc, const char *what) {
+/* For an extern whose header sits beside the file that declares it, reads
+   that header, which the library carries and the generated C holds. */
+static void carry_header(Checker *c, Stmt *stmt) {
+    if (!stmt->header.len || stmt->carried.len) return;
+    char *path = path_beside(c->unit->path, stmt->header);
+    Str text;
+    if (file_exists(path) && !is_directory(path) && file_read(path, &text)) {
+        char *copy = arena_alloc(&c->unit->root->arena, text.len + 1);
+        memcpy(copy, text.data, text.len);
+        copy[text.len] = '\0';
+        stmt->carried = (Str){copy, text.len};
+        free((void *)text.data);
+    }
+    free(path);
+}
+
+/* Reports a type that cannot pass between Wind and C as it is. A header
+   that a library carries is written for Wind, and takes strings as they
+   are in Wind too; carried tells whether this is one. */
+static void check_crossing_to(Checker *c, TypeKind type, SrcLoc loc, const char *what,
+                              bool carried) {
+    if (carried && type == TYPE_STRING) return;
     if (type == TYPE_INVALID || type == TYPE_VOID || type_is_numeric(type) ||
         type == TYPE_BOOL || type == TYPE_CHAR || type_is_enum(type) || type_is_pointer(type)) {
         return;
@@ -2301,6 +2322,7 @@ static void check_crossing(Checker *c, TypeKind type, SrcLoc loc, const char *wh
     error(c, loc, "%s cannot have type '%s'; C has no matching type%s", what, type_name(type),
           type == TYPE_STRING ? "; C's strings are 'char *'" : "");
 }
+
 
 static void check_decl(Checker *c, Stmt *stmt) {
     if (stmt->as.decl.is_array) {
@@ -2312,7 +2334,10 @@ static void check_decl(Checker *c, Stmt *stmt) {
     TypeKind type = stmt->as.decl.type;
     Expr *init = stmt->as.decl.init;
     bool is_const = stmt->kind == STMT_CONST;
-    if (stmt->external) check_crossing(c, type, stmt->loc, "an external constant");
+    if (stmt->external) {
+        carry_header(c, stmt);
+        check_crossing_to(c, type, stmt->loc, "an external constant", stmt->carried.len > 0);
+    }
 
     /* The initializer is checked before the name is declared, so a
        declaration cannot refer to itself. */
@@ -3784,18 +3809,22 @@ void check_program(Unit *unit) {
             }
 
             if (!stmt->external) continue;
+            carry_header(&c, stmt);
+            bool carried = stmt->carried.len > 0;
             if (param->is_map) {
                 error(&c, param->loc, "an external function cannot take a map");
-            } else if (param->is_slice || param->is_growable) {
+            } else if ((param->is_slice || param->is_growable) && !carried) {
                 error(&c, param->loc, "an external function cannot take an array; take a "
                                       "pointer to its elements");
             } else {
-                check_crossing(&c, param->type, param->loc,
-                               "a parameter of an external function");
+                check_crossing_to(&c, param->type, param->loc,
+                                  "a parameter of an external function", carried);
             }
         }
         if (stmt->external) {
-            check_crossing(&c, stmt->as.func.ret, stmt->loc, "an external function");
+            carry_header(&c, stmt);
+            check_crossing_to(&c, stmt->as.func.ret, stmt->loc, "an external function",
+                              stmt->carried.len > 0);
         }
         Symbol *symbol = new_symbol(&c, SYM_FUNC, stmt->as.func.name, stmt->loc,
                                     stmt->as.func.ret);

@@ -1,0 +1,19 @@
+// Part of ::os: the clock and the date.
+#target c
+
+extern "clock.h" {
+    f64 os_clock()
+    void os_today(char into[..])
+    void os_sleep(f64 seconds)
+}
+
+// Seconds on a clock that only goes forward: the difference between two
+// readings is how long passed between them, as precisely as the system
+// keeps time.
+export f64 clock() { return os_clock() }
+
+// Appends today's date, where the program runs, as "2026-11-18".
+export void today(char into[..]) { os_today(into) }
+
+// Waits for the given number of seconds.
+export void sleep(f64 seconds) { os_sleep(seconds) }

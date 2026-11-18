@@ -1,0 +1,27 @@
+// Part of ::os: running other programs.
+#target c
+
+extern "process.h" {
+    int os_run(string command[], string dir, char out[..], char err[..], bool capture)
+    bool os_on_path(string name)
+}
+
+// Runs command[0] with the rest of command as its arguments, and waits for
+// it. The program is found on PATH unless its name has a '/' in it, and it
+// reads and writes where this program does. Returns its exit status: 0 if
+// it succeeded, 128 plus the number of a signal that ended it, 127 if it
+// could not be started, and -1 if no process could be made for it.
+export int run(string command[]) {
+    char unused[..]
+    return os_run(command, "", unused, unused, false)
+}
+
+// Runs command as run does, in the folder dir unless that is "", and
+// appends what it writes to its output to out, and to its error output to
+// err. Returns its exit status, as run does.
+export int capture(string command[], string dir, char out[..], char err[..]) {
+    return os_run(command, dir, out, err, true)
+}
+
+// True if a program of this name would be found to run.
+export bool on_path(string program) { return os_on_path(program) }

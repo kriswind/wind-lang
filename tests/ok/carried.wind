@@ -1,0 +1,11 @@
+// A library's C, in a header beside it, is part of the program built from
+// it, and can take Wind's strings, arrays and growable arrays as they are.
+import ::carried
+
+int main() {
+    string words[3] = {"ab", "cde", "f"}
+    char letters[..]
+    cout << carried.sum(words, letters) << " " << string(letters) << " " << carried.greeting()
+         << "\n"
+    return 0
+}

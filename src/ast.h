@@ -432,6 +432,10 @@ struct Stmt {
        case the generated C declares a function itself. */
     bool external;
     Str header;
+    /* A header beside the file that declares it, which the library carries:
+       its text, which the generated C holds in place of an #include, and
+       which may use Wind's own types. Empty for any other header. */
+    Str carried;
     /* The C library a program that uses it must be linked with, as in
        'link "m"' for -lm, or empty. */
     Str link;

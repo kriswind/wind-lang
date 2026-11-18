@@ -57,9 +57,11 @@ source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
 | `::math` | C's maths functions (`sqrt`, `pow`, `sin`, `atan2`, `floor`, `round`…), `PI` and `E`, and helpers: `min`, `max`, `clamp`, `abs`, `sign`, `gcd`, `lcm`, `is_prime`, `lerp`, `radians`, `degrees` |
 | `::random` | Pseudo-random numbers that a seed makes repeatable on any machine or board: `seed`, `next`, `range`, `unit`, `chance`, `shuffle` |
 | `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`; `split`, `trim`, `join`, `replace`; and `parse_int`, `parse_float`. A folder of four files; `::text/chars` and the others can be imported alone |
+| `::os` | The system a program runs on, for the computer it runs on only: `run` and `capture` other programs, `on_path`; `read_file`, `write_file`, `append_file`, `exists`, `is_file`, `is_dir`, `make_dirs`, `list_dir`, `remove_path`, `current_dir`; `get_env`, `has_env`, `set_env`; `clock`, `today`, `sleep`; and the paths `join`, `dir_name`, `base_name`, `extension`. A folder of parts, each importable alone, as `::os/process` |
 | `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
 
-`::math`, `::random` and `::text` work on every target. Examples that use
+`::math`, `::random` and `::text` work on every target, and `::os` on the
+computer the program runs on. Examples that use
 them are in `examples/libraries`, and `examples/arduino/dice.wind` uses
 `::random` and `::math` on a board.
 
@@ -916,6 +918,28 @@ putchar(i32('!'))
   `export extern "header" { ... }` exports the whole block, which is how
   `::vendor/arduino` is written. `export` goes only before the block, not
   on the lines inside it.
+
+**C that a library carries**
+
+A library can bring its own C. When the header an `extern` names is a file
+beside the `.wind` file that declares it, the library carries it: the
+program built from the library holds the header's text, after Wind's own
+types, in place of an `#include`, so it needs no include path and works the
+same in a sketch for a board. Such a header is written for Wind, and its
+functions take and give Wind's values as they are:
+
+| Wind | C, in a carried header |
+| --- | --- |
+| `string` | `wind_string`: `{ const char *data; size_t len; }` |
+| `int`, `bool`, `char`, `f64`… | `wind_int`, `wind_bool`, `wind_char`, `wind_f64`… |
+| `T values[]` | `wind_slice_T`: `{ T *data; size_t len; }` |
+| `T into[..]` | `wind_list_T *`: `{ T *data; size_t len; size_t cap; }`, to append to |
+
+`#define` lines at the very top of the header come first in the generated
+C, before any system header, which is where feature macros such as
+`_POSIX_C_SOURCE` must be. An editor reading the header on its own finds
+these types in `libs/wind.h`, which a header can include when `WIND_PROGRAM`
+is not defined. `::os` is written this way.
 
 ### The Arduino toolchain
 
