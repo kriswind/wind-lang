@@ -81,6 +81,9 @@ build would.
   modules. Go-to-definition follows a name into the file that exports it, and
   typing `module.` lists what the module exports. Imported files are read
   from disk, so save a file for the files that import it to see the change.
+- The paths of imports are completed too, and so is the board after
+  `#board`, from the boards of the cores `arduino-cli` has installed. A
+  board connected to the computer comes first, with the port it is on.
 
 Code is reported as unreachable only where that is certain: after a
 `return`, `break`, `continue` or `goto`, after a loop that never ends, and in

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Stands in for arduino-cli in tests/lsp.py: two named boards, one of which
+# is connected, and a few thousand more, as many as a real list of installed
+# cores can hold.
+case "$2" in
+listall)
+    echo '{"boards": [{"name": "Arduino UNO", "fqbn": "arduino:avr:uno"},'
+    echo '            {"name": "Raspberry Pi Pico 2W", "fqbn": "rp2040:rp2040:rpipico2w"},'
+    awk 'BEGIN { for (i = 1; i <= 5000; i++)
+                     printf "{\"name\": \"Board %d\", \"fqbn\": \"many:boards:b%d\"}%s\n", i, i, i < 5000 ? "," : "" }'
+    echo ']}'
+    ;;
+list)
+    echo '{"detected_ports": [{"matching_boards": [{"name": "Raspberry Pi Pico 2W",'
+    echo '  "fqbn": "rp2040:rp2040:rpipico2w"}], "port": {"address": "/dev/ttyACM0"}}]}'
+    ;;
+esac

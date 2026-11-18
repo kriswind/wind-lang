@@ -9,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "ast.h"
 #include "json.h"
@@ -34,6 +35,7 @@ enum {
     LSP_COMPLETION_FUNCTION = 3,
     LSP_COMPLETION_VARIABLE = 6,
     LSP_COMPLETION_MODULE = 9,
+    LSP_COMPLETION_VALUE = 12,
     LSP_COMPLETION_ENUM = 13,
     LSP_COMPLETION_KEYWORD = 14,
     LSP_COMPLETION_ENUM_VALUE = 20,
@@ -679,6 +681,20 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
     closedir(entries);
 }
 
+/* The region of the document from offset - len to offset, with its line and
+   column, for a completion item that replaces it. */
+static SrcLoc region_before(Str src, size_t offset, size_t len) {
+    SrcLoc loc = {.offset = offset - len, .len = len, .line = 1, .col = 1};
+    for (size_t i = 0; i < loc.offset; i++) {
+        loc.col++;
+        if (src.data[i] == '\n') {
+            loc.line++;
+            loc.col = 1;
+        }
+    }
+    return loc;
+}
+
 /* Completes the path of an import with every Wind file and every folder
    that holds one at or below the directory the path so far points into,
    each as the whole path to write.
@@ -691,14 +707,7 @@ static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str ty
     while (dir_len > 0 && typed.data[dir_len - 1] != '/') dir_len--;
 
     ImportSearch search = {.buf = buf, .doc = doc, .bare = !quoted};
-    search.typed = (SrcLoc){.offset = offset - typed.len, .len = typed.len, .line = 1, .col = 1};
-    for (size_t i = 0; i < search.typed.offset; i++) {
-        search.typed.col++;
-        if (doc->unit.src.data[i] == '\n') {
-            search.typed.line++;
-            search.typed.col = 1;
-        }
-    }
+    search.typed = region_before(doc->unit.src, offset, typed.len);
 
     bool in_libs = typed.len >= 2 && typed.data[0] == ':' && typed.data[1] == ':';
     if (typed.len >= 1 && typed.data[0] == ':' && !in_libs) return;
@@ -722,6 +731,149 @@ static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str ty
     free(shown);
 }
 
+/* If offset is inside the value of a "#board" setting, as in '#board ard|'
+   or '#board "ard|', sets *typed to the value up to the cursor and returns
+   true. */
+static bool board_before(Str src, size_t offset, Str *typed) {
+    size_t start = offset;
+    while (start > 0 && src.data[start - 1] != '\n') start--;
+    size_t i = start;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (offset - i < 6 || memcmp(src.data + i, "#board", 6) != 0) return false;
+    i += 6;
+    if (i == offset || (src.data[i] != ' ' && src.data[i] != '\t')) return false;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (i < offset && src.data[i] == '"') i++;
+    for (size_t j = i; j < offset; j++) {
+        if (src.data[j] == ' ' || src.data[j] == '\t' || src.data[j] == '"') return false;
+    }
+    *typed = (Str){src.data + i, offset - i};
+    return true;
+}
+
+/* A board that "#board" can name: its FQBN, its name, and the port it is
+   connected on, if it is. */
+typedef struct {
+    Str fqbn;
+    Str name;
+    Str port;
+} Board;
+
+typedef struct {
+    Arena arena; /* holds the boards' text */
+    Board *items;
+    size_t count;
+    size_t cap;
+    time_t read_at;
+    bool read;
+} BoardList;
+
+enum {
+    /* How long, in seconds, the boards found connected are trusted before
+       arduino-cli is asked again: asking takes about a second, and the
+       completion is asked for with each key typed. */
+    CONNECTED_BOARDS_SECONDS = 15,
+};
+
+static void add_board(BoardList *list, const Json *board, Str port) {
+    Board item = {.port = port};
+    if (!json_string(json_get(board, "fqbn"), &item.fqbn) || !item.fqbn.len) return;
+    json_string(json_get(board, "name"), &item.name);
+    ARENA_PUSH(&list->arena, list->items, list->count, list->cap, item);
+}
+
+/* Fills list from what arduino-cli prints for these arguments, as JSON:
+   "board listall" for the boards of the installed cores, "board list" for
+   the ones connected. Empty if arduino-cli is not installed. */
+static void read_boards(BoardList *list, const char *command) {
+    arena_release(&list->arena);
+    list->items = NULL;
+    list->count = list->cap = 0;
+    list->read = true;
+    list->read_at = time(NULL);
+    if (!program_on_path("arduino-cli")) return;
+    char *argv[] = {"arduino-cli", "board", (char *)command, "--format", "json", NULL};
+    int status;
+    char *out = program_output("arduino-cli", argv, &status);
+    Json *root = status == 0 ? json_parse(&list->arena, (Str){out, strlen(out)}) : NULL;
+    const Json *boards = json_get(root, "boards");
+    for (size_t i = 0; i < json_count(boards); i++) {
+        add_board(list, json_at(boards, i), (Str){0});
+    }
+    const Json *ports = json_get(root, "detected_ports");
+    for (size_t i = 0; i < json_count(ports); i++) {
+        const Json *port = json_at(ports, i);
+        Str address = {0};
+        json_string(json_get(json_get(port, "port"), "address"), &address);
+        const Json *matching = json_get(port, "matching_boards");
+        for (size_t j = 0; j < json_count(matching); j++) {
+            add_board(list, json_at(matching, j), address);
+        }
+    }
+    free(out);
+}
+
+static BoardList installed_boards;
+static BoardList connected_boards;
+
+static void write_board(Buf *buf, Str src, SrcLoc typed, const Board *board, bool *first) {
+    if (!*first) buf_puts(buf, ",");
+    *first = false;
+    buf_puts(buf, "{\"label\":");
+    buf_json_string(buf, board->fqbn);
+    buf_printf(buf, ",\"kind\":%d,\"detail\":", LSP_COMPLETION_VALUE);
+    if (board->port.len) {
+        size_t len = board->name.len + board->port.len + 20;
+        char *detail = xmalloc(len);
+        snprintf(detail, len, "%.*s, connected on %.*s", (int)board->name.len,
+                 board->name.data, (int)board->port.len, board->port.data);
+        buf_json_string(buf, (Str){detail, strlen(detail)});
+        free(detail);
+    } else {
+        buf_json_string(buf, board->name);
+    }
+    /* Connected boards sort first. */
+    buf_puts(buf, ",\"sortText\":");
+    size_t len = board->fqbn.len + 2;
+    char *sort = xmalloc(len + 1);
+    snprintf(sort, len + 1, "%c%.*s", board->port.len ? '0' : '1', (int)board->fqbn.len,
+             board->fqbn.data);
+    buf_json_string(buf, (Str){sort, strlen(sort)});
+    free(sort);
+    buf_puts(buf, ",\"filterText\":");
+    buf_json_string(buf, board->fqbn);
+    buf_puts(buf, ",\"textEdit\":{\"range\":");
+    write_range(buf, src, typed);
+    buf_puts(buf, ",\"newText\":");
+    buf_json_string(buf, board->fqbn);
+    buf_puts(buf, "}}");
+}
+
+/* Completes the value of "#board" with the boards that arduino-cli knows:
+   those connected now, and then every board of the installed cores. An item
+   replaces all of what was typed, as the FQBN's ":" may not count as part of
+   a word to the client. */
+static void complete_board(Buf *buf, const Doc *doc, size_t offset, Str typed) {
+    if (!installed_boards.read) read_boards(&installed_boards, "listall");
+    if (!connected_boards.read ||
+        time(NULL) - connected_boards.read_at >= CONNECTED_BOARDS_SECONDS) {
+        read_boards(&connected_boards, "list");
+    }
+    SrcLoc region = region_before(doc->unit.src, offset, typed.len);
+    bool first = true;
+    for (size_t i = 0; i < connected_boards.count; i++) {
+        write_board(buf, doc->unit.src, region, &connected_boards.items[i], &first);
+    }
+    for (size_t i = 0; i < installed_boards.count; i++) {
+        const Board *board = &installed_boards.items[i];
+        bool shown = false;
+        for (size_t j = 0; j < connected_boards.count && !shown; j++) {
+            shown = str_eq(connected_boards.items[j].fqbn, board->fqbn);
+        }
+        if (!shown) write_board(buf, doc->unit.src, region, board, &first);
+    }
+}
+
 static void handle_completion(Server *server, Arena *arena, const Json *id,
                               const Json *params) {
     size_t offset = 0;
@@ -731,6 +883,12 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     buf_puts(&buf, "[");
     Str typed;
     bool quoted;
+    if (doc && board_before(doc->unit.src, offset, &typed)) {
+        complete_board(&buf, doc, offset, typed);
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
     if (doc && import_path_before(doc->unit.src, offset, &typed, &quoted)) {
         complete_import_path(&buf, doc, offset, typed, quoted);
         buf_puts(&buf, "]");

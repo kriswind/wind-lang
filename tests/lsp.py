@@ -12,9 +12,11 @@ URI = "file:///test.wind"
 # use of Name, so byte columns and LSP columns differ.
 TEXT = 'const string Name = "v\\n"\ncout << "\U0001F600é" << Name << Nope\n'
 
-# "::" imports are looked up in tests/libs.
+# "::" imports are looked up in tests/libs, and tests/bin holds a stand-in
+# arduino-cli that reports the boards "#board" is completed with.
 proc = subprocess.Popen(["build/wind", "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                        env=dict(os.environ, WIND_LIBS="tests/libs"))
+                        env=dict(os.environ, WIND_LIBS="tests/libs",
+                                 PATH=os.path.abspath("tests/bin") + os.pathsep + os.environ["PATH"]))
 next_id = 0
 failures = 0
 
@@ -299,6 +301,20 @@ check("a document is checked for the target its #target names",
 notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 11},
                                   "contentChanges": [{"text": BOARD.replace("#target arduino", "#target c")}]})
 check("and for c when it says so", read()["params"]["diagnostics"], [])
+
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 12},
+                                  "contentChanges": [{"text": '#target arduino\n#board rp\n#board "ard'}]})
+read()
+items = request("textDocument/completion", at(1, 9))["result"]
+check("#board offers every board", len(items), 5002)
+items = sorted(items, key=lambda i: i["sortText"])
+check("the connected board first, then the installed ones",
+      [(i["label"], i["detail"]) for i in items[:2]],
+      [("rp2040:rp2040:rpipico2w", "Raspberry Pi Pico 2W, connected on /dev/ttyACM0"),
+       ("arduino:avr:uno", "Arduino UNO")])
+check("a board replaces what was typed of it", items[0]["textEdit"]["range"], rng(1, 7, 9))
+items = request("textDocument/completion", at(2, 11))["result"]
+check("and inside quotes", items[0]["textEdit"]["range"], rng(2, 8, 11))
 
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
