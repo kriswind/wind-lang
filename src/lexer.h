@@ -26,6 +26,7 @@ typedef enum {
     TOK_KW_BREAK,
     TOK_KW_CONTINUE,
     TOK_KW_GOTO,
+    TOK_KW_DEFER,
     TOK_KW_RETURN,
     TOK_KW_TRUE,
     TOK_KW_FALSE,

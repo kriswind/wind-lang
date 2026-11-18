@@ -76,6 +76,7 @@ typedef struct {
     bool writer_used;
     bool writer_emitted;
     bool slice_used;
+    bool list_used;
     bool array_writer_used;
 } TypeInfo;
 

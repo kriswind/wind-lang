@@ -1,0 +1,6 @@
+tests/err/defer.wind:4:15: error: a deferred statement cannot leave with 'break'; it runs as its block is left
+tests/err/defer.wind:5:15: error: a deferred statement cannot leave with 'continue'; it runs as its block is left
+tests/err/defer.wind:12:11: error: a deferred statement cannot 'return'; it runs as its block is left
+tests/err/defer.wind:13:15: error: a declaration or a label cannot be deferred; it would be gone before it ran
+tests/err/defer.wind:19:10: error: 'goto' cannot be used where there is a 'defer', which it could jump past
+tests/err/defer.wind:23:15: error: a 'defer', which would run at once, cannot be a body without braces

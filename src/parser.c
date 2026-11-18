@@ -874,6 +874,7 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_BREAK:
     case TOK_KW_CONTINUE:
     case TOK_KW_GOTO:
+    case TOK_KW_DEFER:
     case TOK_KW_RETURN:
     case TOK_KW_IMPORT:
     case TOK_KW_EXPORT:
@@ -896,7 +897,11 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
     size_t cap = 0;
 
     next(p);
-    if (!at(p, TOK_RBRACKET)) {
+    if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
+        next(p);
+        next(p);
+        stmt->as.decl.is_growable = true;
+    } else if (!at(p, TOK_RBRACKET)) {
         stmt->as.decl.length = parse_expr(p);
         if (!stmt->as.decl.length) return NULL;
     }
@@ -904,6 +909,11 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
 
     if (accept(p, TOK_ASSIGN)) {
         skip_newlines(p);
+        if (stmt->as.decl.is_growable && !at(p, TOK_LBRACE)) {
+            /* "= clone(other)", which the checker holds it to. */
+            stmt->as.decl.init = parse_expr(p);
+            return stmt->as.decl.init ? stmt : NULL;
+        }
         if (!expect(p, TOK_LBRACE, NULL)) return NULL;
         skip_newlines(p);
         while (!at(p, TOK_RBRACE)) {
@@ -915,7 +925,7 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
             skip_newlines(p);
         }
         if (!expect(p, TOK_RBRACE, NULL)) return NULL;
-    } else if (kind == STMT_CONST || !stmt->as.decl.length) {
+    } else if (kind == STMT_CONST || (!stmt->as.decl.length && !stmt->as.decl.is_growable)) {
         diag_add(p->diags, SEV_ERROR, name.loc,
                  kind == STMT_CONST ? "a constant array needs its elements: '= { ... }'"
                                     : "an array needs a length or its elements");
@@ -991,16 +1001,23 @@ static bool parse_params(Parser *p, Stmt *stmt) {
             Param param = {.type = type, .type_ref = type_ref, .name = param_name.text,
                            .loc = param_name.loc};
             if (accept(p, TOK_LBRACKET)) {
+                if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
+                    next(p);
+                    next(p);
+                    param.is_growable = true;
+                } else {
+                    param.is_slice = true;
+                }
                 if (!at(p, TOK_RBRACKET)) {
                     diag_add(p->diags, SEV_ERROR, p->tok.loc,
                              "an array parameter is written '%s %.*s[]', without a "
-                             "length",
+                             "length, or '%s %.*s[..]' for a growable one",
                              type_name(type), (int)param_name.text.len,
-                             param_name.text.data);
+                             param_name.text.data, type_name(type),
+                             (int)param_name.text.len, param_name.text.data);
                     return false;
                 }
                 next(p);
-                param.is_slice = true;
             }
             ARENA_PUSH(p->arena, stmt->as.func.params, stmt->as.func.param_count, cap,
                        param);
@@ -1193,9 +1210,11 @@ static bool parse_body(Parser *p, Block *block, bool braces_optional) {
     Stmt *stmt = parse_statement(p, false, &needs_terminator);
     if (!stmt) return false;
     if (stmt->kind == STMT_CONST || stmt->kind == STMT_VAR || stmt->kind == STMT_LABEL ||
-        stmt->kind == STMT_GROUP) {
+        stmt->kind == STMT_GROUP || stmt->kind == STMT_DEFER) {
         diag_add(p->diags, SEV_ERROR, start, "a %s cannot be a body without braces",
-                 stmt->kind == STMT_LABEL ? "label" : "declaration");
+                 stmt->kind == STMT_LABEL   ? "label"
+                 : stmt->kind == STMT_DEFER ? "'defer', which would run at once,"
+                                            : "declaration");
         return false;
     }
     stmt->start = start;
@@ -2032,6 +2051,31 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         if (!expect(p, TOK_IDENT, &name)) return NULL;
         stmt = new_stmt(p, STMT_GOTO, name.loc);
         stmt->as.label.name = name.text;
+        return stmt;
+    }
+    case TOK_KW_DEFER: {
+        next(p);
+        stmt = new_stmt(p, STMT_DEFER, tok.loc);
+        Stmt *deferred;
+        if (at(p, TOK_LBRACE)) {
+            deferred = new_stmt(p, STMT_BLOCK, p->tok.loc);
+            if (!parse_block(p, &deferred->as.block)) return NULL;
+            *needs_terminator = false;
+        } else {
+            SrcLoc start = p->tok.loc;
+            deferred = parse_statement(p, false, needs_terminator);
+            if (!deferred) return NULL;
+            deferred->start = start;
+            deferred->end = p->prev;
+        }
+        if (deferred->kind == STMT_CONST || deferred->kind == STMT_VAR ||
+            deferred->kind == STMT_LABEL || deferred->kind == STMT_GROUP) {
+            diag_add(p->diags, SEV_ERROR, deferred->loc,
+                     "a declaration or a label cannot be deferred; it would be gone "
+                     "before it ran");
+            return NULL;
+        }
+        stmt->as.deferred = deferred;
         return stmt;
     }
     case TOK_KW_RETURN:

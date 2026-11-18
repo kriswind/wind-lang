@@ -115,10 +115,17 @@ char *import_base(const char *from, Str written, bool *folder_only);
 bool is_directory(const char *path);
 bool file_exists(const char *path);
 
+/* Bounds on the folders below a folder that wind_files_in looks through,
+   which keep a folder high in a large tree, or a link that leads back up,
+   from taking the search on through the whole disk. */
+#define WIND_FOLDER_LIMIT 1000
+#define WIND_FOLDER_DEPTH 16
+
 /* The ".wind" files in a folder and in the folders below it, as paths
    from malloc in an array from malloc, ordered by path. Returns how many
-   there are. */
-size_t wind_files_in(const char *folder, char ***files);
+   there are. If the folder holds more folders than the bounds above allow,
+   returns none and sets *too_large, which may be NULL. */
+size_t wind_files_in(const char *folder, char ***files, bool *too_large);
 
 /* The absolute path of an existing file with every link resolved, from
    malloc, so that two spellings of one file compare equal. Returns NULL,

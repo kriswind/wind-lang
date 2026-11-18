@@ -129,8 +129,15 @@ typedef struct {
     Stmt *func;
     SymbolList *locals;
     SymbolList labels;
-    /* The innermost loop being checked, or NULL outside any loop. */
+    /* The innermost loop being checked, or NULL outside any loop. A
+       deferred statement starts with none, since it cannot leave. */
     const Stmt *loop;
+    /* Inside a deferred statement. */
+    bool in_defer;
+    /* The first goto and the first defer in the function being checked, or
+       in top-level code, which may not go together. */
+    const Stmt *goto_seen;
+    const Stmt *defer_seen;
     int next_id;
 } Checker;
 
@@ -550,7 +557,7 @@ static const Symbol *array_operand(Checker *c, Expr *expr) {
     } else {
         symbol = lookup(c, expr->as.ident.name);
     }
-    if (!symbol || (!symbol->is_array && !symbol->is_slice)) return NULL;
+    if (!symbol || !any_array(symbol)) return NULL;
     if (module.len) {
         resolve_member(c, module, expr->as.ident.module_loc, expr->as.ident.name,
                        expr->as.ident.name_loc);
@@ -652,7 +659,9 @@ static TypeKind check_index(Checker *c, Expr *expr) {
         of.length_known = true;
         of.length = array->length;
     } else if (array) {
-        of.runtime_length = "an array parameter's length is known only when the program runs";
+        of.runtime_length = array->is_growable
+                                ? "a growable array's length is known only when the program runs"
+                                : "an array parameter's length is known only when the program runs";
     } else if (base->type == TYPE_STRING) {
         of.what = "a string";
         of.length_known = const_len(base, &of.length);
@@ -836,6 +845,15 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         const Expr *root = operand;
         while ((root->kind == EXPR_FIELD && !root->as.field.through_pointer) ||
                root->kind == EXPR_INDEX) {
+            if (root->kind == EXPR_INDEX && root->as.index.base->kind == EXPR_IDENT &&
+                root->as.index.base->as.ident.symbol &&
+                root->as.index.base->as.ident.symbol->is_growable) {
+                error(c, operand->loc,
+                      "an element of growable array '%.*s' moves when the array grows, so "
+                      "it cannot be pointed to; keep its index instead",
+                      NAME(root->as.index.base->as.ident.symbol->name));
+                return TYPE_INVALID;
+            }
             root = root->kind == EXPR_FIELD ? root->as.field.base : root->as.index.base;
         }
         if (root->kind == EXPR_IDENT && root->as.ident.symbol) {
@@ -1052,6 +1070,29 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         Expr *arg = expr->as.call.args[i];
         bool has_param = func && i < func->as.func.param_count;
         TypeKind expected = has_param ? func->as.func.params[i].type : TYPE_INVALID;
+        if (has_param && func->as.func.params[i].is_growable) {
+            const Symbol *array = array_operand(c, arg);
+            TypeKind found = array ? array->type : check_expr(c, arg, TYPE_INVALID);
+            if (array && array->is_growable && array->type != expected) {
+                error(c, arg->loc,
+                      "argument %zu of '%.*s' must be a growable array of '%s', found one "
+                      "of '%s'",
+                      i + 1, NAME(name), type_name(expected), type_name(found));
+            } else if (array && !array->is_growable) {
+                error(c, arg->loc,
+                      "argument %zu of '%.*s' must be a growable array of '%s', and '%.*s' "
+                      "%s",
+                      i + 1, NAME(name), type_name(expected), NAME(array->name),
+                      array->is_slice ? "is a parameter's view of an array, which cannot "
+                                        "grow"
+                                      : "has a fixed length");
+            } else if (!array && found != TYPE_INVALID) {
+                error(c, arg->loc, "argument %zu of '%.*s' must be a growable array of '%s', "
+                                   "found '%s'",
+                      i + 1, NAME(name), type_name(expected), type_name(found));
+            }
+            continue;
+        }
         if (has_param && func->as.func.params[i].is_slice) {
             const Symbol *array = array_operand(c, arg);
             TypeKind found = array ? array->type : check_expr(c, arg, TYPE_INVALID);
@@ -1084,6 +1125,150 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         }
     }
     return func ? func->as.func.ret : TYPE_INVALID;
+}
+
+/* The built-in functions on growable arrays, by name. */
+static const struct {
+    const char *name;
+    Builtin builtin;
+} builtin_names[] = {
+    {"append", BUILTIN_APPEND}, {"pop", BUILTIN_POP},       {"clear", BUILTIN_CLEAR},
+    {"reserve", BUILTIN_RESERVE}, {"delete", BUILTIN_DELETE}, {"clone", BUILTIN_CLONE},
+};
+
+/* Which built-in function on growable arrays a call is of, if any. */
+static Builtin builtin_called(const Checker *c, const Expr *expr) {
+    for (size_t i = 0; i < sizeof builtin_names / sizeof builtin_names[0]; i++) {
+        if (is_builtin(c, expr, builtin_names[i].name)) return builtin_names[i].builtin;
+    }
+    return BUILTIN_NONE;
+}
+
+/* Checks the arguments of a call that has gone wrong, so that what is in
+   them is still looked at. */
+static void check_args_anyway(Checker *c, Expr *expr, size_t from) {
+    for (size_t i = from; i < expr->as.call.count; i++) {
+        if (!array_operand(c, expr->as.call.args[i])) {
+            check_expr(c, expr->as.call.args[i], TYPE_INVALID);
+        }
+    }
+}
+
+/* The growable array that a built-in function is called on, its first
+   argument; NULL, with the problem reported, if that is not one. */
+static const Symbol *growable_operand(Checker *c, Expr *expr, const char *name) {
+    if (!expr->as.call.count) {
+        error(c, expr->loc, "'%s' needs a growable array", name);
+        return NULL;
+    }
+    Expr *arg = expr->as.call.args[0];
+    const Symbol *array = array_operand(c, arg);
+    if (array && array->is_growable) return array;
+    if (array) {
+        error(c, arg->loc, "'%s' needs a growable array, and '%.*s' %s", name,
+              NAME(array->name),
+              array->is_slice ? "is a parameter's view of an array; to grow the caller's "
+                                "array, declare the parameter with '[..]'"
+                              : "has a fixed length; declare it with '[..]' to grow it");
+        return NULL;
+    }
+    TypeKind found = check_expr(c, arg, TYPE_INVALID);
+    if (found != TYPE_INVALID) {
+        error(c, arg->loc, "'%s' needs a growable array, found '%s'", name, type_name(found));
+    }
+    return NULL;
+}
+
+/* Checks a call of a built-in function on growable arrays other than
+   clone, which only starts or replaces an array (see check_clone). */
+static TypeKind check_builtin(Checker *c, Expr *expr, Builtin which) {
+    const char *name = builtin_names[0].name;
+    for (size_t i = 0; i < sizeof builtin_names / sizeof builtin_names[0]; i++) {
+        if (builtin_names[i].builtin == which) name = builtin_names[i].name;
+    }
+    expr->as.call.builtin = which;
+    size_t count = expr->as.call.count;
+    if (which == BUILTIN_CLONE) {
+        error(c, expr->loc, "'clone' makes a growable array, so it can only start one or "
+                            "replace one: 'int copy[..] = clone(values)'");
+        check_args_anyway(c, expr, 0);
+        return TYPE_INVALID;
+    }
+    const Symbol *array = growable_operand(c, expr, name);
+    TypeKind elem = array ? array->type : TYPE_INVALID;
+    size_t wanted = which == BUILTIN_RESERVE ? 2 : 1;
+    if (which == BUILTIN_APPEND ? count < 2 : count != wanted) {
+        if (which == BUILTIN_APPEND) {
+            error(c, expr->loc, "'append' takes a growable array and the values to add");
+        } else {
+            error(c, expr->loc, "'%s' takes %zu argument%s, but %zu %s given", name, wanted,
+                  wanted == 1 ? "" : "s", count, count == 1 ? "was" : "were");
+        }
+        check_args_anyway(c, expr, 1);
+        return which == BUILTIN_POP ? elem : TYPE_VOID;
+    }
+    for (size_t i = 1; i < count; i++) {
+        Expr *arg = expr->as.call.args[i];
+        if (which == BUILTIN_RESERVE) {
+            TypeKind found = check_expr(c, arg, TYPE_INT);
+            if (found != TYPE_INVALID && (!type_is_integer(found) || found == TYPE_I128 ||
+                                          found == TYPE_U128)) {
+                error(c, arg->loc, "'reserve' takes a count of elements, an integer of at "
+                                   "most 64 bits, found '%s'",
+                      type_name(found));
+            }
+            continue;
+        }
+        TypeKind found = check_expr(c, arg, elem);
+        if (elem != TYPE_INVALID && found != TYPE_INVALID && found != elem) {
+            error(c, arg->loc, "a value appended to '%.*s' must be '%s', found '%s'",
+                  NAME(array->name), type_name(elem), type_name(found));
+        }
+    }
+    return which == BUILTIN_POP ? elem : TYPE_VOID;
+}
+
+/* Checks the value that a growable array of elem starts out as, or is
+   assigned: "clone(source)", a copy of an array's elements, or of a
+   string's bytes for an array of char. */
+static void check_clone(Checker *c, Expr *value, TypeKind elem) {
+    if (value->kind != EXPR_CALL || builtin_called(c, value) != BUILTIN_CLONE) {
+        const Symbol *array = array_operand(c, value);
+        if (array) {
+            error(c, value->loc, "a growable array has elements of its own; copy those of "
+                                 "'%.*s' with 'clone(%.*s)'",
+                  NAME(array->name), NAME(array->name));
+            return;
+        }
+        check_expr(c, value, TYPE_INVALID);
+        error(c, value->loc, "a growable array starts out as '= { ... }' or "
+                             "'= clone(other)'");
+        return;
+    }
+    value->as.call.builtin = BUILTIN_CLONE;
+    value->type = TYPE_VOID;
+    if (value->as.call.count != 1) {
+        error(c, value->loc, "'clone' takes 1 argument, but %zu were given",
+              value->as.call.count);
+        check_args_anyway(c, value, 0);
+        return;
+    }
+    Expr *source = value->as.call.args[0];
+    const Symbol *array = array_operand(c, source);
+    if (array) {
+        if (elem != TYPE_INVALID && array->type != TYPE_INVALID && array->type != elem) {
+            error(c, source->loc, "cannot make a growable array of '%s' from an array of "
+                                  "'%s'",
+                  type_name(elem), type_name(array->type));
+        }
+        return;
+    }
+    TypeKind found = check_expr(c, source, TYPE_INVALID);
+    if (found == TYPE_STRING && elem == TYPE_CHAR) return;
+    if (found != TYPE_INVALID) {
+        error(c, source->loc, "'clone' copies an array%s, found '%s'",
+              elem == TYPE_CHAR ? " or a string" : "", type_name(found));
+    }
 }
 
 static TypeKind check_cast(Checker *c, Expr *expr) {
@@ -1189,6 +1374,14 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
             return TYPE_INVALID;
         }
         symbol->used = true;
+        if (symbol->is_growable) {
+            symbol->used = true;
+            error(c, expr->loc,
+                  "growable array '%.*s' cannot be used as a pointer, since its elements "
+                  "move when it grows; index it, or pass it to an array parameter",
+                  NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
         if (symbol->is_array || symbol->is_slice) {
             /* As a value, an array's name is a pointer to its first
                element. */
@@ -1223,6 +1416,7 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         return check_binary(c, expr, hint);
     case EXPR_CALL:
         if (is_builtin(c, expr, "len")) return check_len(c, expr);
+        if (builtin_called(c, expr)) return check_builtin(c, expr, builtin_called(c, expr));
         if (is_builtin(c, expr, "cstring")) return check_cstring(c, expr);
         return check_call(c, expr);
     case EXPR_CAST:
@@ -1249,6 +1443,11 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
             if (array && array->is_array) {
                 of = array->type;
                 count = array->length;
+            } else if (array && array->is_growable) {
+                error(c, expr->loc,
+                      "the size of growable array '%.*s' changes as it grows; "
+                      "'len(%.*s) * sizeof(%s)' is the size of its elements",
+                      NAME(array->name), NAME(array->name), type_name(array->type));
             } else if (array) {
                 of = TYPE_STRING; /* a slice is also a pointer and a length */
             } else {
@@ -1506,9 +1705,37 @@ static Expr *settle_constant(Expr *expr) {
 /* Keeps a mistyped length from asking for an absurd amount of memory. */
 #define MAX_ARRAY_LENGTH (1LL << 28)
 
+/* Checks "T name[..]", with "= { ... }" or "= clone(other)" if given. */
+static void check_growable_decl(Checker *c, Stmt *stmt) {
+    TypeKind type = stmt->as.decl.type;
+    if (stmt->kind == STMT_CONST) {
+        error(c, stmt->loc, "a constant array cannot be growable, since its elements never "
+                            "change; give it a length or leave the length out");
+    }
+    if (stmt->as.decl.init) check_clone(c, stmt->as.decl.init, type);
+    for (size_t i = 0; i < stmt->as.decl.elem_count; i++) {
+        Expr *elem = stmt->as.decl.elems[i];
+        TypeKind found = check_expr(c, elem, type);
+        if (type != TYPE_INVALID && found != TYPE_INVALID && found != type) {
+            error(c, elem->loc, "an element of this array must be '%s', found '%s'",
+                  type_name(type), type_name(found));
+        }
+    }
+    Symbol *symbol = new_symbol(c, SYM_VAR, stmt->as.decl.name, stmt->loc, type);
+    symbol->decl = stmt;
+    symbol->is_growable = true;
+    stmt->as.decl.symbol = symbol;
+    declare(c, symbol);
+    list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+}
+
 static void check_array_decl(Checker *c, Stmt *stmt) {
     stmt->as.decl.type = declared_type(c, stmt->as.decl.type, stmt->as.decl.type_ref,
                                        stmt->loc, stmt->as.decl.name);
+    if (stmt->as.decl.is_growable) {
+        check_growable_decl(c, stmt);
+        return;
+    }
     TypeKind type = stmt->as.decl.type;
     bool is_const = stmt->kind == STMT_CONST;
     size_t count = stmt->as.decl.elem_count;
@@ -1570,8 +1797,9 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
        no message at all: a machine with 64-bit pointers usually gives a
        program 8 MB of stack, and a small board much less. */
     size_t stack_limit = types_platform()->pointer_size >= 8 ? (size_t)1 << 20 : 1024;
-    if (!is_const && !symbol->global && length_known && type != TYPE_INVALID &&
-        length > stack_limit / type_size(type)) {
+    size_t element_size = type == TYPE_INVALID ? 0 : type_size(type);
+    if (!is_const && !symbol->global && length_known && element_size &&
+        length > stack_limit / element_size) {
         diag_add(c->diags, SEV_WARNING, stmt->loc,
                  "array '%.*s' takes %zu bytes of the stack, which may be more than it "
                  "has; declare it at the top level, outside any function",
@@ -1633,7 +1861,7 @@ static void check_decl(Checker *c, Stmt *stmt) {
 /* True for an array's name that stands for the array itself. */
 static bool names_array(const Expr *expr) {
     return expr->kind == EXPR_IDENT && !expr->as.ident.decayed && expr->as.ident.symbol &&
-           (expr->as.ident.symbol->is_array || expr->as.ident.symbol->is_slice);
+           any_array(expr->as.ident.symbol);
 }
 
 /* The variable that a place is part of, when it is reached without going
@@ -1717,8 +1945,12 @@ static TypeKind check_place(Checker *c, Expr *expr, bool assigning) {
         Symbol *symbol = resolve(c, name, expr->loc);
         if (!symbol) return TYPE_INVALID;
         if (!assigning) symbol->used = true;
-        if (symbol->is_array || symbol->is_slice) {
-            if (assigning) {
+        if (any_array(symbol)) {
+            if (assigning && symbol->is_growable) {
+                error(c, expr->loc, "cannot assign to growable array '%.*s' as a whole, "
+                                    "except with a copy: '%.*s = clone(other)'",
+                      NAME(name), NAME(name));
+            } else if (assigning) {
                 error(c, expr->loc, "cannot assign to array '%.*s' as a whole; assign its "
                                     "elements",
                       NAME(name));
@@ -1764,6 +1996,18 @@ static TypeKind check_place(Checker *c, Expr *expr, bool assigning) {
 
 static void check_assign(Checker *c, Stmt *stmt) {
     Expr *target = stmt->as.assign.target;
+    Expr *value = stmt->as.assign.value;
+    if (target->kind == EXPR_IDENT && !target->as.ident.module.len && !stmt->as.assign.compound &&
+        value->kind == EXPR_CALL && builtin_called(c, value) == BUILTIN_CLONE) {
+        Symbol *symbol = lookup(c, target->as.ident.name);
+        if (symbol && symbol->is_growable) {
+            add_ref(c, target->as.ident.name_loc, symbol);
+            target->as.ident.symbol = symbol;
+            target->type = symbol->type;
+            check_clone(c, value, symbol->type);
+            return;
+        }
+    }
     TypeKind expected = check_place(c, target, true);
     Op op = stmt->as.assign.op;
     bool compound = stmt->as.assign.compound;
@@ -1814,6 +2058,10 @@ static void check_assign(Checker *c, Stmt *stmt) {
 
 static void check_return(Checker *c, Stmt *stmt) {
     Expr *value = stmt->as.ret.value;
+    if (c->in_defer) {
+        error(c, stmt->loc, "a deferred statement cannot 'return'; it runs as its block is "
+                            "left");
+    }
     if (!c->func) {
         error(c, stmt->loc, "'return' outside of a function");
         if (value) check_expr(c, value, TYPE_INVALID);
@@ -1951,6 +2199,15 @@ static bool block_terminates(const Block *block) {
     return exits;
 }
 
+/* A goto could jump past a defer, or out of the block it belongs to, so a
+   function, or the top-level code, holds one or the other. */
+static void check_goto_with_defer(Checker *c) {
+    if (c->goto_seen && c->defer_seen) {
+        error(c, c->goto_seen->loc, "'goto' cannot be used where there is a 'defer', which "
+                                    "it could jump past");
+    }
+}
+
 static void check_func(Checker *c, Stmt *stmt) {
     if (stmt->external) return; /* its signature was checked with the others */
     Stmt *outer_func = c->func;
@@ -1973,12 +2230,19 @@ static void check_func(Checker *c, Stmt *stmt) {
         Param *param = &stmt->as.func.params[i];
         Symbol *symbol = new_symbol(c, SYM_PARAM, param->name, param->loc, param->type);
         symbol->is_slice = param->is_slice;
+        symbol->is_growable = param->is_growable;
         symbol->visible_from = body->open.offset;
         param->symbol = symbol;
         declare(c, symbol);
     }
+    const Stmt *outer_goto = c->goto_seen;
+    const Stmt *outer_defer = c->defer_seen;
+    c->goto_seen = c->defer_seen = NULL;
     collect_labels(c, body);
     for (size_t i = 0; i < body->count; i++) check_stmt(c, body->stmts[i]);
+    check_goto_with_defer(c);
+    c->goto_seen = outer_goto;
+    c->defer_seen = outer_defer;
     warn_after_exit(c, body);
     pop_scope(c);
 
@@ -2150,10 +2414,25 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_FOR:
         check_loop(c, stmt);
         break;
+    case STMT_DEFER: {
+        if (!c->defer_seen) c->defer_seen = stmt;
+        const Stmt *outer_loop = c->loop;
+        bool outer_in_defer = c->in_defer;
+        c->loop = NULL;
+        c->in_defer = true;
+        check_stmt(c, stmt->as.deferred);
+        c->loop = outer_loop;
+        c->in_defer = outer_in_defer;
+        break;
+    }
     case STMT_BREAK:
     case STMT_CONTINUE:
         stmt->as.target = c->loop;
-        if (!c->loop) {
+        if (!c->loop && c->in_defer) {
+            error(c, stmt->loc, "a deferred statement cannot leave with '%s'; it runs as "
+                                "its block is left",
+                  stmt->kind == STMT_BREAK ? "break" : "continue");
+        } else if (!c->loop) {
             error(c, stmt->loc, "'%s' outside of a loop",
                   stmt->kind == STMT_BREAK ? "break" : "continue");
         }
@@ -2202,7 +2481,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                 if (target->index) check_expr(c, target->index, TYPE_INT);
                 continue;
             }
-            bool is_array = symbol->is_array || symbol->is_slice;
+            bool is_array = any_array(symbol);
             if (target->index) {
                 Indexed of = {.what = "an array", .length_known = symbol->is_array,
                               .length = symbol->length, .name = target->name,
@@ -2245,6 +2524,10 @@ static void check_stmt(Checker *c, Stmt *stmt) {
         }
         break;
     case STMT_GOTO: {
+        if (!c->goto_seen) c->goto_seen = stmt;
+        if (c->in_defer) {
+            error(c, stmt->loc, "a deferred statement cannot leave with 'goto'");
+        }
         Str name = stmt->as.label.name;
         Symbol *symbol = find_in(&c->labels, name);
         if (!symbol) {
@@ -2659,6 +2942,7 @@ static size_t load_parts(Checker *c, const Stmt *stmt, const Unit ***parts, bool
     sprintf(file, "%s%s", base, has_extension ? "" : ".wind");
 
     char **paths = NULL;
+    bool too_large = false;
     size_t count = 0;
     if (!folder_only && !has_extension && !file_exists(file) && !is_directory(base)) {
         error(c, stmt->loc, "there is no file '%s' or folder '%s'", file, base);
@@ -2671,8 +2955,15 @@ static size_t load_parts(Checker *c, const Stmt *stmt, const Unit ***parts, bool
     } else if (!is_directory(base)) {
         error(c, stmt->loc, "cannot open the folder '%s'", base);
         *failed = true;
-    } else if (*folder = true, (count = wind_files_in(base, &paths)) == 0) {
-        error(c, stmt->loc, "the folder '%s' holds no .wind files", base);
+    } else if (*folder = true, (count = wind_files_in(base, &paths, &too_large)) == 0) {
+        if (too_large) {
+            error(c, stmt->loc,
+                  "the folder '%s' holds more than %d folders, or goes more than %d deep, "
+                  "which is too large to be a module; import a folder further down",
+                  base, WIND_FOLDER_LIMIT, WIND_FOLDER_DEPTH);
+        } else {
+            error(c, stmt->loc, "the folder '%s' holds no .wind files", base);
+        }
         *failed = true;
     }
     free(file);
@@ -2820,7 +3111,7 @@ void check_program(Unit *unit) {
             param->type = declared_type(&c, param->type, param->type_ref, param->loc,
                                         param->name);
             if (!stmt->external) continue;
-            if (param->is_slice) {
+            if (param->is_slice || param->is_growable) {
                 error(&c, param->loc, "an external function cannot take an array; take a "
                                       "pointer to its elements");
             } else {
@@ -2868,6 +3159,7 @@ void check_program(Unit *unit) {
 
     collect_labels(&c, top);
     for (size_t i = 0; i < top->count; i++) check_stmt(&c, top->stmts[i]);
+    check_goto_with_defer(&c);
     warn_after_exit(&c, top);
     warn_unused(&c);
 }

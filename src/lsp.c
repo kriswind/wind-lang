@@ -427,6 +427,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
                    name);
         if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
         if (symbol->is_slice) buf_puts(buf, "[]");
+        if (symbol->is_growable) buf_puts(buf, "[..]");
         break;
     case SYM_LABEL:
         buf_printf(buf, "%.*s:", len, name);
@@ -439,7 +440,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
             const Param *param = &func->as.func.params[i];
             buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(param->type),
                        type_gap(param->type), (int)param->name.len, param->name.data,
-                       param->is_slice ? "[]" : "");
+                       param->is_slice ? "[]" : param->is_growable ? "[..]" : "");
         }
         buf_puts(buf, ")");
         break;
@@ -659,7 +660,7 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
             /* A folder that holds Wind files is a module of its own,
                imported by the folder's path. */
             char **files;
-            size_t count = wind_files_in(full, &files);
+            size_t count = wind_files_in(full, &files, NULL);
             if (count) {
                 add_importable(search, full, (Str){spelled, strlen(spelled)},
                                LSP_COMPLETION_MODULE);

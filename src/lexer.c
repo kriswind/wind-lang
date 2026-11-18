@@ -19,6 +19,7 @@ static const struct {
     {"break", TOK_KW_BREAK, TYPE_INVALID},
     {"continue", TOK_KW_CONTINUE, TYPE_INVALID},
     {"goto", TOK_KW_GOTO, TYPE_INVALID},
+    {"defer", TOK_KW_DEFER, TYPE_INVALID},
     {"return", TOK_KW_RETURN, TYPE_INVALID},
     {"true", TOK_KW_TRUE, TYPE_INVALID},
     {"false", TOK_KW_FALSE, TYPE_INVALID},
@@ -117,6 +118,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_BREAK:  return "'break'";
     case TOK_KW_CONTINUE: return "'continue'";
     case TOK_KW_GOTO:   return "'goto'";
+    case TOK_KW_DEFER:  return "'defer'";
     case TOK_KW_RETURN: return "'return'";
     case TOK_KW_TRUE:   return "'true'";
     case TOK_KW_FALSE:  return "'false'";

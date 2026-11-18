@@ -323,9 +323,16 @@ typedef struct {
     char **items;
     size_t count;
     size_t cap;
+    size_t folders; /* looked through so far */
+    bool too_large;
 } PathList;
 
-static void collect_wind_files(const char *folder, PathList *list) {
+static void collect_wind_files(const char *folder, PathList *list, int depth) {
+    if (list->too_large) return;
+    if (++list->folders > WIND_FOLDER_LIMIT || depth > WIND_FOLDER_DEPTH) {
+        list->too_large = true;
+        return;
+    }
     DIR *entries = opendir(folder);
     if (!entries) return;
     for (struct dirent *entry; (entry = readdir(entries));) {
@@ -337,7 +344,7 @@ static void collect_wind_files(const char *folder, PathList *list) {
         struct stat info;
         bool is_file = false;
         if (stat(full, &info) == 0 && S_ISDIR(info.st_mode)) {
-            collect_wind_files(full, list);
+            collect_wind_files(full, list, depth + 1);
         } else if (stat(full, &info) == 0 && S_ISREG(info.st_mode) && len > 5 &&
                    strcmp(name + len - 5, ".wind") == 0) {
             is_file = true;
@@ -359,9 +366,16 @@ static int compare_paths(const void *a, const void *b) {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-size_t wind_files_in(const char *folder, char ***files) {
+size_t wind_files_in(const char *folder, char ***files, bool *too_large) {
     PathList list = {0};
-    collect_wind_files(folder, &list);
+    collect_wind_files(folder, &list, 0);
+    if (too_large) *too_large = list.too_large;
+    if (list.too_large) {
+        for (size_t i = 0; i < list.count; i++) free(list.items[i]);
+        free(list.items);
+        *files = NULL;
+        return 0;
+    }
     if (list.count) qsort(list.items, list.count, sizeof *list.items, compare_paths);
     *files = list.items;
     return list.count;

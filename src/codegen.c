@@ -60,6 +60,7 @@ static bool bounds_checked;
 static struct {
     bool types[TYPE_COUNT];
     bool slices[TYPE_COUNT];        /* by element type */
+    bool lists[TYPE_COUNT];         /* growable arrays, by element type */
     bool array_writers[TYPE_COUNT]; /* by element type */
     bool helpers[HELPER_COUNT];
     unsigned headers; /* Header flags the program's own code relies on */
@@ -266,6 +267,50 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return p;\n"
         "}\n",
         0, {HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_OUT_OF_MEMORY] = {
+        "WIND_RARE static _Noreturn void wind_out_of_memory(int line) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": out of memory\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_GROW] = {
+        "/* Makes room for need elements of size bytes in the block at data, which\n"
+        "   has room for *cap, and returns where the elements now are. Room grows\n"
+        "   by doubling, so that appending one at a time stays quick. */\n"
+        "static void *wind_grow(void *data, size_t *cap, size_t need, size_t size, int line) {\n"
+        "    if (need <= *cap) return data;\n"
+        "    size_t room = *cap ? *cap : 4;\n"
+        "    while (room < need) room *= 2;\n"
+        "    void *grown = realloc(data, room * size);\n"
+        "    if (!grown) wind_out_of_memory(line);\n"
+        "    *cap = room;\n"
+        "    return grown;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB, {HELPER_OUT_OF_MEMORY}, {0}},
+    [HELPER_CLONE] = {
+        "/* A copy of len elements of size bytes from data, on the heap. */\n"
+        "static void *wind_clone(const void *data, size_t len, size_t size, int line) {\n"
+        "    if (!len) return NULL;\n"
+        "    void *copy = malloc(len * size);\n"
+        "    if (!copy) wind_out_of_memory(line);\n"
+        "    memcpy(copy, data, len * size);\n"
+        "    return copy;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB | HEADER_STRING, {HELPER_OUT_OF_MEMORY}, {0}},
+    [HELPER_POP_CHECK] = {
+        "/* Stops the program if there is no element to pop. */\n"
+        "static void wind_pop_check(size_t len, int line) {\n"
+        "    if (len) return;\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": pop from an empty array\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        HEADER_STDDEF, {HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -657,7 +702,8 @@ static void use_external(const Stmt *decl) {
     used.externals[used.external_count++] = header;
 }
 
-static void emit_symbol(const Symbol *symbol, FILE *out) {
+/* The C name of a symbol, as it is declared. */
+static void emit_symbol_name(const Symbol *symbol, FILE *out) {
     int len = (int)symbol->name.len;
     const char *name = symbol->name.data;
     if (symbol->decl && symbol->decl->external) {
@@ -682,6 +728,15 @@ static void emit_symbol(const Symbol *symbol, FILE *out) {
     }
 }
 
+/* A symbol as it is used. A growable array parameter is a pointer to the
+   caller's array, used here as the array itself. */
+static void emit_symbol(const Symbol *symbol, FILE *out) {
+    bool through = symbol->kind == SYM_PARAM && symbol->is_growable;
+    if (through) fputs("(*", out);
+    emit_symbol_name(symbol, out);
+    if (through) fputs(")", out);
+}
+
 /* The string literal a constant string expression ultimately names,
    following constant-to-constant initializers. */
 static Str const_string(const Expr *expr) {
@@ -699,6 +754,19 @@ static void emit_slice_type(TypeKind elem, FILE *out) {
     }
     used.slices[elem] = true;
     fprintf(out, "wind_slice_%s", type_name(elem));
+}
+
+/* The type of a growable array of an element type, noted as needing its
+   definition. Its data and len come first, as in a slice. */
+static void emit_list_type(TypeKind elem, FILE *out) {
+    TypeInfo *info = type_info(elem);
+    if (info) {
+        info->list_used = true;
+        fprintf(out, "wind_list_%s", info->c_stem);
+        return;
+    }
+    used.lists[elem] = true;
+    fprintf(out, "wind_list_%s", type_name(elem));
 }
 
 /* True for a constant that is stored in the generated program, and so is
@@ -720,7 +788,7 @@ static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField
    pointer to its first element. */
 static bool is_array_name(const Expr *expr) {
     return expr->kind == EXPR_IDENT && expr->as.ident.symbol && !expr->as.ident.decayed &&
-           (expr->as.ident.symbol->is_array || expr->as.ident.symbol->is_slice);
+           any_array(expr->as.ident.symbol);
 }
 
 /* Emits a pointer, checked for NULL, as a pointer of its own type again. */
@@ -735,7 +803,7 @@ static void emit_checked_pointer(const Expr *pointer, FILE *out) {
    to the element it names and returns true. Such an index needs nothing
    worked out when the program runs. */
 static bool literal_position(const Symbol *array, const Expr *index, size_t *position) {
-    if (array->is_slice || index->kind != EXPR_INT_LIT) return false;
+    if (runtime_length(array) || index->kind != EXPR_INT_LIT) return false;
     if (index->as.int_lit >= array->length) return false;
     *position = (size_t)index->as.int_lit;
     return true;
@@ -750,7 +818,7 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
         return;
     }
     emit_symbol(array, out);
-    if (array->is_slice) fputs(".data", out);
+    if (runtime_length(array)) fputs(".data", out);
     if (!bounds_checked) {
         fputs("[(size_t)(", out);
         emit_expr(index, out);
@@ -761,7 +829,7 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
     fputs("[wind_index((long long)(", out);
     emit_expr(index, out);
     fprintf(out, "), %d, ", type_is_signed(index->type));
-    if (array->is_slice) {
+    if (runtime_length(array)) {
         emit_symbol(array, out);
         fputs(".len", out);
     } else {
@@ -898,7 +966,7 @@ static bool is_stable(const Expr *expr) {
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
         if (symbol->kind != SYM_VAR && symbol->kind != SYM_PARAM) return true;
-        if (symbol->is_array || symbol->is_slice) return true;
+        if (any_array(symbol)) return true;
         return !symbol->global && !symbol->address_taken;
     }
     case EXPR_LEN:
@@ -1021,6 +1089,104 @@ static void emit_binary(const Expr *expr, FILE *out) {
     fputs("))", out);
 }
 
+/* A new growable array of elem holding a copy of source's elements, or of
+   a string's bytes. */
+static void emit_clone(const Expr *source, TypeKind elem, int line, FILE *out) {
+    used.helpers[HELPER_CLONE] = true;
+    if (!is_array_name(source)) {
+        int id = ++held.next_id;
+        fprintf(out, "__extension__ ({ %s wind_s%d = ", c_type(TYPE_STRING), id);
+        emit_expr(source, out);
+        fputs("; (", out);
+        emit_list_type(elem, out);
+        fprintf(out, "){ wind_clone(wind_s%d.data, wind_s%d.len, 1, %d), wind_s%d.len, "
+                     "wind_s%d.len }; })",
+                id, id, line, id, id);
+        return;
+    }
+    const Symbol *array = source->as.ident.symbol;
+    fputs("(", out);
+    emit_list_type(elem, out);
+    fputs("){ wind_clone(", out);
+    emit_symbol(array, out);
+    if (runtime_length(array)) {
+        fputs(".data, ", out);
+        emit_symbol(array, out);
+        fprintf(out, ".len, sizeof(%s), %d), ", c_type(elem), line);
+        emit_symbol(array, out);
+        fputs(".len, ", out);
+        emit_symbol(array, out);
+        fputs(".len }", out);
+    } else {
+        fprintf(out, ", %zu, sizeof(%s), %d), %zu, %zu }", array->length, c_type(elem), line,
+                array->length, array->length);
+    }
+}
+
+/* A call of one of the built-in functions on growable arrays. Those that
+   give no value are statement expressions ending in "(void)0". */
+static void emit_builtin(const Expr *expr, FILE *out) {
+    const Symbol *array = expr->as.call.args[0]->as.ident.symbol;
+    int line = expr->loc.line;
+    int id = ++held.next_id;
+    fputs("__extension__ ({ ", out);
+    if (expr->as.call.builtin == BUILTIN_APPEND) {
+        /* The values first, in order, since they may read the array. */
+        size_t count = expr->as.call.count - 1;
+        for (size_t i = 0; i < count; i++) {
+            fprintf(out, "%s wind_a%d_%zu = ", c_type(array->type), id, i);
+            emit_expr(expr->as.call.args[i + 1], out);
+            fputs("; ", out);
+        }
+        used.helpers[HELPER_GROW] = true;
+        emit_list_type(array->type, out);
+        fprintf(out, " *wind_d%d = &", id);
+        emit_symbol(array, out);
+        fprintf(out, "; wind_d%d->data = wind_grow(wind_d%d->data, &wind_d%d->cap, "
+                     "wind_d%d->len + %zu, sizeof *wind_d%d->data, %d); ",
+                id, id, id, id, count, id, line);
+        for (size_t i = 0; i < count; i++) {
+            fprintf(out, "wind_d%d->data[wind_d%d->len++] = wind_a%d_%zu; ", id, id, id, i);
+        }
+        fputs("(void)0; })", out);
+        return;
+    }
+    emit_list_type(array->type, out);
+    fprintf(out, " *wind_d%d = &", id);
+    emit_symbol(array, out);
+    fputs("; ", out);
+    switch (expr->as.call.builtin) {
+    case BUILTIN_POP:
+        if (bounds_checked) {
+            used.helpers[HELPER_POP_CHECK] = true;
+            fprintf(out, "wind_pop_check(wind_d%d->len, %d); ", id, line);
+        }
+        fprintf(out, "wind_d%d->data[--wind_d%d->len]; })", id, id);
+        return;
+    case BUILTIN_CLEAR:
+        fprintf(out, "wind_d%d->len = 0; (void)0; })", id);
+        return;
+    case BUILTIN_RESERVE:
+        used.helpers[HELPER_GROW] = true;
+        fprintf(out, "long long wind_n%d = (long long)(", id);
+        emit_expr(expr->as.call.args[1], out);
+        fprintf(out, "); if (wind_n%d > 0) wind_d%d->data = wind_grow(wind_d%d->data, "
+                     "&wind_d%d->cap, (size_t)wind_n%d, sizeof *wind_d%d->data, %d); "
+                     "(void)0; })",
+                id, id, id, id, id, id, line);
+        return;
+    case BUILTIN_DELETE:
+        used.headers |= HEADER_STDLIB;
+        fprintf(out, "free(wind_d%d->data); wind_d%d->data = NULL; "
+                     "wind_d%d->len = wind_d%d->cap = 0; (void)0; })",
+                id, id, id, id);
+        return;
+    default:
+        fputs("(void)0; })", out);
+        return;
+    }
+}
+
 static void emit_expr_kind(const Expr *expr, FILE *out) {
     switch (expr->kind) {
     case EXPR_INDEX: {
@@ -1066,7 +1232,7 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             fputs("(", out);
             emit_expr(operand, out);
             fputs(").len)", out);
-        } else if (operand->as.ident.symbol->is_slice) {
+        } else if (runtime_length(operand->as.ident.symbol)) {
             emit_symbol(operand->as.ident.symbol, out);
             fputs(".len)", out);
         } else {
@@ -1175,6 +1341,10 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
         emit_binary(expr, out);
         break;
     case EXPR_CALL: {
+        if (expr->as.call.builtin) {
+            emit_builtin(expr, out);
+            break;
+        }
         /* Pointers cross into and out of C through void *, since C's own
            declaration may differ in what it points to (char against the
            unsigned char of Wind, or const), and Wind has already checked
@@ -1184,6 +1354,7 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
         if (cast_result) fprintf(out, "((%s)(void *)", c_type(expr->type));
         emit_symbol(expr->as.call.symbol, out);
         fputs("(", out);
+        const Stmt *func = expr->as.call.symbol->decl;
         for (size_t i = 0; i < expr->as.call.count; i++) {
             const Expr *arg = expr->as.call.args[i];
             if (i) fputs(", ", out);
@@ -1192,8 +1363,21 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
                 emit_expr(arg, out);
             } else if (!is_array_name(arg)) {
                 emit_expr(arg, out);
+            } else if (func->as.func.params[i].is_growable) {
+                /* The function is given the caller's own array, to grow. */
+                fputs("&", out);
+                emit_symbol(arg->as.ident.symbol, out);
             } else if (arg->as.ident.symbol->is_slice) {
                 emit_symbol(arg->as.ident.symbol, out);
+            } else if (arg->as.ident.symbol->is_growable) {
+                /* A view of the elements the array holds now. */
+                fputs("(", out);
+                emit_slice_type(arg->as.ident.symbol->type, out);
+                fputs("){ ", out);
+                emit_symbol(arg->as.ident.symbol, out);
+                fputs(".data, ", out);
+                emit_symbol(arg->as.ident.symbol, out);
+                fputs(".len }", out);
             } else {
                 /* A fixed array is passed as a view of all its elements. */
                 fputs("(", out);
@@ -1338,7 +1522,7 @@ static void emit_write(const Expr *arg, FILE *out) {
             fprintf(out, "wind_write_array_%s(", type_name(array->type));
         }
         emit_symbol(array, out);
-        if (array->is_slice) {
+        if (runtime_length(array)) {
             fputs(".data, ", out);
             emit_symbol(array, out);
             fputs(".len);\n", out);
@@ -1487,6 +1671,53 @@ static void emit_stmt(const Stmt *stmt, int depth, FILE *out) {
     bounds_checked = outer;
 }
 
+/* The deferred statements of the blocks being emitted, innermost last, and
+   for each loop being emitted how many of them there were as it began. A
+   block that is left runs its own, innermost first: at its end, and before
+   a return, a break or a continue that leaves it. Each such place writes
+   them out again. */
+static struct {
+    const Stmt **items;
+    size_t count;
+    size_t cap;
+} deferred;
+
+static struct {
+    const Stmt **loops;
+    size_t *marks;
+    size_t count;
+    size_t cap;
+} loop_marks;
+
+/* The function being emitted, whose return type a return needs; NULL in
+   top-level code. */
+static const Stmt *emitting_func;
+
+/* Writes out the deferred statements above mark, innermost first. */
+static void emit_deferred(size_t mark, int depth, FILE *out) {
+    for (size_t i = deferred.count; i-- > mark;) {
+        emit_stmt(deferred.items[i]->as.deferred, depth, out);
+    }
+}
+
+static void push_loop(const Stmt *loop) {
+    if (loop_marks.count == loop_marks.cap) {
+        loop_marks.cap = loop_marks.cap ? loop_marks.cap * 2 : 8;
+        loop_marks.loops = xrealloc(loop_marks.loops, loop_marks.cap * sizeof *loop_marks.loops);
+        loop_marks.marks = xrealloc(loop_marks.marks, loop_marks.cap * sizeof *loop_marks.marks);
+    }
+    loop_marks.loops[loop_marks.count] = loop;
+    loop_marks.marks[loop_marks.count++] = deferred.count;
+}
+
+/* How many deferred statements there were as the loop began. */
+static size_t loop_mark(const Stmt *loop) {
+    for (size_t i = loop_marks.count; i-- > 0;) {
+        if (loop_marks.loops[i] == loop) return loop_marks.marks[i];
+    }
+    return deferred.count;
+}
+
 static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     switch (stmt->kind) {
     case STMT_BLOCK:
@@ -1505,6 +1736,41 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         break;
     case STMT_VAR:
         indent(depth, out);
+        if (stmt->as.decl.is_growable) {
+            /* Empty, or a copy, and then the elements given, in order. */
+            const Symbol *array = stmt->as.decl.symbol;
+            emit_symbol(array, out);
+            fputs(" = ", out);
+            if (stmt->as.decl.init) {
+                emit_clone(stmt->as.decl.init->as.call.args[0], array->type,
+                           stmt->loc.line, out);
+            } else {
+                fputs("(", out);
+                emit_list_type(array->type, out);
+                fputs("){0}", out);
+            }
+            fputs(";\n", out);
+            size_t count = stmt->as.decl.elem_count;
+            if (count) {
+                used.helpers[HELPER_GROW] = true;
+                indent(depth, out);
+                emit_symbol(array, out);
+                fputs(".data = wind_grow(NULL, &", out);
+                emit_symbol(array, out);
+                fprintf(out, ".cap, %zu, sizeof(%s), %d);\n", count, c_type(array->type),
+                        stmt->loc.line);
+                for (size_t i = 0; i < count; i++) {
+                    indent(depth, out);
+                    emit_symbol(array, out);
+                    fputs(".data[", out);
+                    emit_symbol(array, out);
+                    fputs(".len++] = ", out);
+                    emit_expr(stmt->as.decl.elems[i], out);
+                    fputs(";\n", out);
+                }
+            }
+            break;
+        }
         if (stmt->as.decl.is_array) {
             /* Elements the initializer leaves out are zero, as in C. */
             const Symbol *array = stmt->as.decl.symbol;
@@ -1545,6 +1811,23 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     case STMT_ASSIGN: {
         const Expr *target = stmt->as.assign.target;
         const Expr *value = stmt->as.assign.value;
+        if (value->kind == EXPR_CALL && value->as.call.builtin == BUILTIN_CLONE) {
+            /* The copy is made before the old elements are freed, since it
+               may be a copy of them. */
+            const Symbol *array = target->as.ident.symbol;
+            used.headers |= HEADER_STDLIB;
+            indent(depth, out);
+            fputs("{ ", out);
+            emit_list_type(array->type, out);
+            fputs(" wind_copy = ", out);
+            emit_clone(value->as.call.args[0], array->type, stmt->loc.line, out);
+            fputs("; free(", out);
+            emit_symbol(array, out);
+            fputs(".data); ", out);
+            emit_symbol(array, out);
+            fputs(" = wind_copy; }\n", out);
+            break;
+        }
         TypeKind type = target->type;
         Op op = stmt->as.assign.op;
         bool compound = stmt->as.assign.compound;
@@ -1646,7 +1929,9 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
             fputs("1", out);
         }
         fputs(") {\n", out);
+        push_loop(stmt);
         emit_block(&stmt->as.loop.body, depth + 1, out);
+        loop_marks.count--;
         if (stmt->as.loop.step) {
             if (continues(&stmt->as.loop.body, stmt)) {
                 fprintf(out, "wind_step_%d:;\n", stmt->as.loop.id);
@@ -1659,17 +1944,28 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     case STMT_DO_WHILE:
         indent(depth, out);
         fputs("do {\n", out);
+        push_loop(stmt);
         emit_block(&stmt->as.loop.body, depth + 1, out);
+        loop_marks.count--;
         indent(depth, out);
         fputs("} while (", out);
         emit_expr(stmt->as.loop.cond, out);
         fputs(");\n", out);
         break;
+    case STMT_DEFER:
+        if (deferred.count == deferred.cap) {
+            deferred.cap = deferred.cap ? deferred.cap * 2 : 8;
+            deferred.items = xrealloc(deferred.items, deferred.cap * sizeof *deferred.items);
+        }
+        deferred.items[deferred.count++] = stmt;
+        break;
     case STMT_BREAK:
+        emit_deferred(loop_mark(stmt->as.target), depth, out);
         indent(depth, out);
         fputs("break;\n", out);
         break;
     case STMT_CONTINUE:
+        emit_deferred(loop_mark(stmt->as.target), depth, out);
         indent(depth, out);
         if (stmt->as.target->as.loop.step) {
             fprintf(out, "goto wind_step_%d;\n", stmt->as.target->as.loop.id);
@@ -1689,6 +1985,23 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         fputs(":;\n", out);
         break;
     case STMT_RETURN:
+        if (deferred.count) {
+            /* The value is worked out before the deferred statements run. */
+            indent(depth, out);
+            fputs("{\n", out);
+            if (stmt->as.ret.value) {
+                indent(depth + 1, out);
+                fprintf(out, "%s wind_result = ", c_type(emitting_func->as.func.ret));
+                emit_expr(stmt->as.ret.value, out);
+                fputs(";\n", out);
+            }
+            emit_deferred(0, depth + 1, out);
+            indent(depth + 1, out);
+            fputs(stmt->as.ret.value ? "return wind_result;\n" : "return;\n", out);
+            indent(depth, out);
+            fputs("}\n", out);
+            break;
+        }
         indent(depth, out);
         fputs("return", out);
         if (stmt->as.ret.value) {
@@ -1701,13 +2014,22 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
 }
 
 static void emit_block(const Block *block, int depth, FILE *out) {
+    size_t mark = deferred.count;
     for (size_t i = 0; i < block->count; i++) emit_stmt(block->stmts[i], depth, out);
+    emit_deferred(mark, depth, out);
+    deferred.count = mark;
 }
 
 static void emit_variables(const SymbolList *variables, const char *prefix, FILE *out) {
     for (size_t i = 0; i < variables->count; i++) {
         const Symbol *variable = variables->items[i];
-        fprintf(out, "%s%s ", prefix, c_type(variable->type));
+        fputs(prefix, out);
+        if (variable->is_growable) {
+            emit_list_type(variable->type, out);
+            fputs(" ", out);
+        } else {
+            fprintf(out, "%s ", c_type(variable->type));
+        }
         emit_symbol(variable, out);
         if (variable->is_array) fprintf(out, "[%zu]", variable->length);
         fputs(" = {0};\n", out);
@@ -1725,10 +2047,13 @@ static void emit_signature(const Stmt *func, FILE *out) {
         if (param->is_slice) {
             emit_slice_type(param->type, out);
             fputs(" ", out);
+        } else if (param->is_growable) {
+            emit_list_type(param->type, out);
+            fputs(" *", out);
         } else {
             fprintf(out, "%s ", c_type(param->type));
         }
-        emit_symbol(param->symbol, out);
+        emit_symbol_name(param->symbol, out);
     }
     fputs(")", out);
 }
@@ -1764,7 +2089,7 @@ static void emit_runtime(FILE *out) {
 
     unsigned headers = used.headers;
     for (int type = 0; type < TYPE_COUNT; type++) {
-        if (!used.slices[type]) continue;
+        if (!used.slices[type] && !used.lists[type]) continue;
         used.types[type] = true;
         headers |= HEADER_STDDEF;
     }
@@ -1809,10 +2134,18 @@ static void emit_runtime(FILE *out) {
         any = true;
     }
     for (int type = 0; type < TYPE_COUNT; type++) {
-        if (!used.slices[type]) continue;
-        fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
-                type_c_name(type), type_name(type));
-        any = true;
+        if (used.slices[type]) {
+            fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
+                    type_c_name(type), type_name(type));
+            any = true;
+        }
+        if (used.lists[type]) {
+            fprintf(out,
+                    "typedef struct {\n    %s *data;\n    size_t len;\n    size_t cap;\n"
+                    "} wind_list_%s;\n",
+                    type_c_name(type), type_name(type));
+            any = true;
+        }
     }
     if (any) fputs("\n", out);
 
@@ -1933,7 +2266,9 @@ static void emit_functions(const Unit *unit, FILE *out) {
         emit_variables(&func->as.func.locals, "    ", out);
         bool outer = bounds_checked;
         if (func->bounds != BOUNDS_INHERIT) bounds_checked = func->bounds == BOUNDS_CHECKED;
+        emitting_func = func;
         emit_block(&func->as.func.body, 1, out);
+        emitting_func = NULL;
         bounds_checked = outer;
         fputs("}\n\n", out);
     }
@@ -2044,10 +2379,18 @@ static void emit_declared_types(FILE *out) {
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
-        if (!info->slice_used) continue;
-        used.headers |= HEADER_STDDEF;
-        fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
-                info->c_name, info->c_stem);
+        if (info->slice_used) {
+            used.headers |= HEADER_STDDEF;
+            fprintf(out, "typedef struct {\n    %s *data;\n    size_t len;\n} wind_slice_%s;\n",
+                    info->c_name, info->c_stem);
+        }
+        if (info->list_used) {
+            used.headers |= HEADER_STDDEF;
+            fprintf(out,
+                    "typedef struct {\n    %s *data;\n    size_t len;\n    size_t cap;\n"
+                    "} wind_list_%s;\n",
+                    info->c_name, info->c_stem);
+        }
     }
     if (count) fputs("\n", out);
 
@@ -2161,7 +2504,7 @@ void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
     for (size_t i = 0; i < types_count(); i++) {
         TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
         info->writer_used = info->writer_emitted = false;
-        info->slice_used = info->array_writer_used = false;
+        info->slice_used = info->list_used = info->array_writer_used = false;
     }
 
     /* Written in the reverse of the order they appear in, since each part

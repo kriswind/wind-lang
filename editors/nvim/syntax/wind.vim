@@ -8,7 +8,7 @@ syn keyword windOperator typeof
 syn keyword windInclude import
 syn match windInclude "\<as\>\ze\s\+\h\w*\s*$"
 syn keyword windConditional if else
-syn keyword windStatement goto return break continue
+syn keyword windStatement goto return break continue defer
 syn keyword windRepeat while do for
 syn keyword windOperator sizeof
 syn keyword windBuiltin cout cin

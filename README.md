@@ -351,6 +351,45 @@ way, the name is a pointer to the array's first element; see
 [Pointers](#pointers). Arrays have one dimension, and their elements cannot
 themselves be arrays.
 
+**Growable arrays**
+
+An array declared with `[..]` has no fixed length: it starts empty, or with
+the elements given, and grows as values are appended. Its elements live on
+the heap.
+
+```wind
+int scores[..]                  // empty; nothing allocated yet
+string names[..] = {"ada", "bo"}
+int copy[..] = clone(scores)    // a copy of any array's elements
+
+append(scores, 12, 47)          // adds values at the end
+int last = pop(scores)          // removes the last element and gives it
+reserve(scores, 1000)           // makes room ahead, for speed
+clear(scores)                   // removes every element, keeping the room
+delete(scores)                  // frees the elements; scores is empty again
+defer delete(names)             // frees them when the block is left
+```
+
+- It is indexed, measured with `len`, printed, and passed to a `T name[]`
+  parameter like any other array, with every index checked against how many
+  elements it holds now.
+- A parameter declared `T name[..]` is given the caller's own growable
+  array, which the function can grow: `void add(int into[..]) { append(into, 1) }`.
+- Its elements move when it grows, so none can be pointed to: `&scores[0]`
+  is an error, and so is using its name as a pointer. Keep an index instead.
+- One growable array is not assigned to another; `copy = clone(scores)`
+  replaces `copy`'s elements with a copy of `scores`'s. A `char` array can
+  also be made from a string's bytes: `char text[..] = clone("hi")`.
+- `delete` returns the memory, and leaves the array empty and usable again;
+  deleting twice does nothing more. Memory never deleted is returned when
+  the program ends, which is fine for a program that runs and exits.
+- `pop` on an empty array stops the program with a message, as an index out
+  of range does, unless bounds checks are off. Running out of memory always
+  stops it with a message.
+
+How this was chosen, and what is to come (maps, `for` over an array,
+building strings), is in [docs/design/memory.md](docs/design/memory.md).
+
 ### Operators
 
 | Operators | Operands | Result |
@@ -445,6 +484,23 @@ for (int i = 0; i < count; i++) {
   a label is known throughout the function it is in (or throughout the
   top-level code of a script), so a `goto` can jump forwards or backwards,
   and into or out of blocks.
+- `defer` runs a statement, or a block, when the block it is in is left: at
+  its end, or by a `return`, `break` or `continue`. Several run in reverse
+  order, the latest first, so cleanup sits next to what it cleans up:
+
+  ```wind
+  int read_all() {
+      int values[..]
+      defer delete(values)
+      ...
+      return len(values)    // worked out before the deferred delete runs
+  }
+  ```
+
+  A `defer` in a loop's body runs at the end of each pass. What is deferred
+  cannot itself leave with `return`, `goto`, or a `break` or `continue`
+  meant for a loop outside it, and a function that uses `defer` cannot use
+  `goto`, which could jump past it.
 
 ### Functions
 
@@ -920,9 +976,9 @@ cout << name << " is " << age << "\n"
 
 - A struct field cannot be an array, and a struct or an enum cannot be read
   with `cin`; read into the fields.
-- There is no `void *`, no pointer to a function, and no way to allocate
-  memory while the program runs: a pointer points to a variable, an element
-  or a field. `cin` reads into a variable, not through a pointer.
+- There is no `void *` and no pointer to a function, and memory is
+  allocated only by growable arrays: a pointer points to a variable, an
+  element or a field. `cin` reads into a variable, not through a pointer.
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.

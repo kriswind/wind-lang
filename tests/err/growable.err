@@ -1,0 +1,18 @@
+tests/err/growable.wind:3:11: error: a constant array cannot be growable, since its elements never change; give it a length or leave the length out
+tests/err/growable.wind:7:12: error: 'append' needs a growable array, and 'values' is a parameter's view of an array; to grow the caller's array, declare the parameter with '[..]'
+tests/err/growable.wind:8:10: error: argument 1 of 'grow' must be a growable array of 'int', and 'values' is a parameter's view of an array, which cannot grow
+tests/err/growable.wind:10:22: error: an external function cannot take an array; take a pointer to its elements
+tests/err/growable.wind:14:19: error: an element of growable array 'numbers' moves when the array grows, so it cannot be pointed to; keep its index instead
+tests/err/growable.wind:15:16: error: growable array 'numbers' cannot be used as a pointer, since its elements move when it grows; index it, or pass it to an array parameter
+tests/err/growable.wind:16:10: error: argument 1 of 'grow' must be a growable array of 'int', and 'fixed' has a fixed length
+tests/err/growable.wind:17:12: error: 'append' needs a growable array, and 'fixed' has a fixed length; declare it with '[..]' to grow it
+tests/err/growable.wind:18:5: error: cannot assign to growable array 'numbers' as a whole, except with a copy: 'numbers = clone(other)'
+tests/err/growable.wind:19:21: error: a growable array has elements of its own; copy those of 'numbers' with 'clone(numbers)'
+tests/err/growable.wind:20:13: error: 'clone' makes a growable array, so it can only start one or replace one: 'int copy[..] = clone(values)'
+tests/err/growable.wind:21:21: error: a value appended to 'numbers' must be 'int', found 'string'
+tests/err/growable.wind:22:5: error: 'append' takes a growable array and the values to add
+tests/err/growable.wind:23:16: error: the size of growable array 'numbers' changes as it grows; 'len(numbers) * sizeof(int)' is the size of its elements
+tests/err/growable.wind:24:21: error: index -1 counts back from the end, which needs a length known at compile time, and a growable array's length is known only when the program runs; write 'numbers[len(numbers) - 1]'
+tests/err/growable.wind:25:22: error: 'reserve' takes a count of elements, an integer of at most 64 bits, found 'string'
+tests/err/growable.wind:26:15: error: 'pop' takes 1 argument, but 2 were given
+tests/err/growable.wind:27:30: error: cannot make a growable array of 'string' from an array of 'int'

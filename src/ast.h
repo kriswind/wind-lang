@@ -9,6 +9,17 @@ typedef struct Stmt Stmt;
 typedef struct Symbol Symbol;
 typedef struct Unit Unit;
 
+/* The built-in functions on growable arrays. */
+typedef enum {
+    BUILTIN_NONE,
+    BUILTIN_APPEND,  /* append(xs, v, ...): adds values at the end */
+    BUILTIN_POP,     /* pop(xs): removes the last element and gives it */
+    BUILTIN_CLEAR,   /* clear(xs): removes every element, keeping the room */
+    BUILTIN_RESERVE, /* reserve(xs, n): makes room for n elements */
+    BUILTIN_DELETE,  /* delete(xs): frees the elements, leaving it empty */
+    BUILTIN_CLONE,   /* clone(a): a new growable array with a copy of a's elements */
+} Builtin;
+
 /* ---- Symbols ---- */
 
 typedef enum {
@@ -39,6 +50,10 @@ struct Symbol {
        length known only at run time). */
     bool is_array;
     bool is_slice;
+    /* A growable array, "T name[..]": its elements live on the heap, and
+       it grows as they are appended. As a parameter, it is the caller's
+       own array, which the function may grow. */
+    bool is_growable;
     size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
@@ -65,6 +80,18 @@ struct Symbol {
     /* A variable some "&" points into, which a call can therefore change. */
     bool address_taken;
 };
+
+/* True for a symbol that is an array of any kind: fixed, a parameter's
+   view, or growable. */
+static inline bool any_array(const Symbol *symbol) {
+    return symbol->is_array || symbol->is_slice || symbol->is_growable;
+}
+
+/* True for an array whose length is known only when the program runs, and
+   which is held as a pointer to its elements and their count. */
+static inline bool runtime_length(const Symbol *symbol) {
+    return symbol->is_slice || symbol->is_growable;
+}
 
 typedef struct {
     Symbol **items;
@@ -192,6 +219,10 @@ struct Expr {
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
             Expr **args;
             size_t count;
+            /* Set by unit_analyze for a call of one of the built-in
+               functions on growable arrays, whose first argument is the
+               array; symbol is then NULL. */
+            Builtin builtin;
         } call;
         struct {
             TypeKind to;
@@ -258,6 +289,9 @@ typedef enum {
     STMT_BREAK,
     STMT_CONTINUE,
     STMT_GOTO,
+    /* "defer statement": runs the statement when the enclosing block is
+       left, by its end, a return, a break or a continue. */
+    STMT_DEFER,
     STMT_LABEL,
     STMT_RETURN,
     STMT_FUNC,
@@ -319,6 +353,7 @@ typedef struct {
     Str name;
     SrcLoc loc;
     bool is_slice;  /* declared as "T name[]" */
+    bool is_growable; /* declared as "T name[..]" */
     Symbol *symbol; /* set by unit_analyze */
 } Param;
 
@@ -372,6 +407,9 @@ struct Stmt {
             bool broken;
             /* "T name[length] = { elems }". Elements left out are zero. */
             bool is_array;
+            /* "T name[..]", growable; its starting elements are elems, or
+               the copy that init makes with clone(). */
+            bool is_growable;
             Expr *length; /* NULL when the length comes from the element count */
             Expr **elems;
             size_t elem_count;
@@ -428,6 +466,8 @@ struct Stmt {
         /* STMT_BREAK, STMT_CONTINUE: the loop it applies to; set by
            unit_analyze, NULL if it is not inside one. */
         const Stmt *target;
+        /* STMT_DEFER: what runs when the block is left */
+        Stmt *deferred;
         /* STMT_GOTO, STMT_LABEL */
         struct {
             Str name;
