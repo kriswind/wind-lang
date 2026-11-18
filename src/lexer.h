@@ -17,6 +17,7 @@ typedef enum {
     TOK_DIRECTIVE, /* "#name"; the text is the name */
     TOK_KW_CONST,
     TOK_KW_COUT,
+    TOK_KW_CERR,
     TOK_KW_CIN,
     TOK_KW_IF,
     TOK_KW_ELSE,

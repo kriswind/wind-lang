@@ -1,0 +1,54 @@
+// The text library: taking strings apart, putting them together, and
+// reading numbers out of them.
+import ::text
+
+int main() {
+    string pieces[..]
+    text.split("a,b,,c", ",", pieces)
+    cout << pieces << " " << len(pieces) << "\n"
+    clear(pieces)
+    text.split("  wind  is\tfast \n", "", pieces)
+    cout << pieces << "\n"
+    clear(pieces)
+    text.split("no separator here", "::", pieces)
+    cout << pieces << "\n"
+
+    cout << "[" << text.trim("  padded \n") << "][" << text.trim("   ") << "]\n"
+
+    char line[..]
+    string words[3] = {"one", "two", "three"}
+    text.join(line, words, ", ")
+    cout << string(line) << "\n"
+
+    char fixed_up[..]
+    text.replace(fixed_up, "the cat sat on the mat", "at", "og")
+    cout << string(fixed_up) << "\n"
+
+    f64 value = -1
+    string tries[8] = {"3", "-2.5", ".5", "6.02e23", "1e-3", "abc", "1.", "2e"}
+    for (string t in tries) {
+        bool ok = text.parse_float(t, &value)
+        cout << t << "=" << ok << ":" << value << " "
+    }
+    cout << "\n"
+
+    // Reading "name value" lines, the way a script reads a results file.
+    string results = "wind 0.051\nc 0.049\nrust 0.067\n"
+    string lines[..]
+    text.split(text.trim(results), "\n", lines)
+    f64 times[string]
+    for (string row in lines) {
+        string fields[..]
+        text.split(row, " ", fields)
+        f64 seconds = 0
+        if (len(fields) == 2 && text.parse_float(fields[1], &seconds)) times[fields[0]] = seconds
+        delete(fields)
+    }
+    cout << times << "\n"
+    delete(pieces)
+    delete(line)
+    delete(fixed_up)
+    delete(lines)
+    delete(times)
+    return 0
+}

@@ -34,6 +34,7 @@ typedef enum {
 typedef enum {
     HELPER_NONE, /* ends a helper's list of needs */
     HELPER_HINTS,
+    HELPER_SINK, /* sends what wind_put is given into a char array instead */
 
     /* Supplied by the target. */
     HELPER_PUT,           /* void wind_put(const char *bytes, size_t count) */
@@ -48,6 +49,8 @@ typedef enum {
     HELPER_WRITE_F32,
     HELPER_WRITE_F64,
     HELPER_WRITE_F128,
+    HELPER_WRITE_FIXED, /* void wind_write_fixed(long double v, int digits) */
+    HELPER_EXIT,        /* void wind_exit(int status): ends the program */
 
     /* The same on every target. */
     HELPER_DIGITS,
@@ -100,12 +103,14 @@ typedef enum {
     HELPER_MAP_REMOVE,
     HELPER_MAP_CLEAR,
     HELPER_MAP_DELETE,
+    HELPER_PAD,
+    HELPER_SLICE,
     HELPER_COUNT,
 } Helper;
 
 /* The first and last helpers that a target supplies. */
 #define HELPER_TARGET_FIRST HELPER_PUT
-#define HELPER_TARGET_LAST HELPER_WRITE_F128
+#define HELPER_TARGET_LAST HELPER_EXIT
 
 typedef struct {
     const char *definition;

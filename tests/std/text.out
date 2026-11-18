@@ -1,0 +1,8 @@
+["a", "b", "", "c"] 4
+["wind", "is", "fast"]
+["no separator here"]
+[padded][]
+one, two, three
+the cog sog on the mog
+3=true:3 -2.5=true:-2.5 .5=true:0.5 6.02e23=true:6.02e+23 1e-3=true:0.001 abc=false:0.001 1.=true:1 2e=false:1 
+{"wind": 0.051, "c": 0.049, "rust": 0.067}

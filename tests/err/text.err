@@ -1,0 +1,10 @@
+tests/err/text.wind:7:18: error: cannot append a 'void' value
+tests/err/text.wind:8:21: error: a value appended to 'numbers' must be 'int', found 'string'
+tests/err/text.wind:9:21: error: 'left' writes a value for 'cout', 'cerr' or 'append' to a char array, and gives no value of its own
+tests/err/text.wind:10:19: error: 'fixed' writes a number, found 'string'
+tests/err/text.wind:10:40: error: 'right' takes how many characters wide to write, an integer, found 'string'
+tests/err/text.wind:10:51: error: 'left' takes 2 arguments, but 1 was given
+tests/err/text.wind:11:26: error: cannot make a string of an array of 'int'; only an array of 'char' holds text
+tests/err/text.wind:12:10: error: 'exit' takes an integer, found 'string'
+tests/err/text.wind:13:5: warning: unreachable code: it follows a call of 'exit'
+tests/err/text.wind:13:13: error: cannot print a 'void' value

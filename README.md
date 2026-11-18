@@ -56,7 +56,7 @@ source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
 | --- | --- |
 | `::math` | C's maths functions (`sqrt`, `pow`, `sin`, `atan2`, `floor`, `round`…), `PI` and `E`, and helpers: `min`, `max`, `clamp`, `abs`, `sign`, `gcd`, `lcm`, `is_prime`, `lerp`, `radians`, `degrees` |
 | `::random` | Pseudo-random numbers that a seed makes repeatable on any machine or board: `seed`, `next`, `range`, `unit`, `chance`, `shuffle` |
-| `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`, and `parse_int`. A folder of three files; `::text/chars` and the others can be imported alone |
+| `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`; `split`, `trim`, `join`, `replace`; and `parse_int`, `parse_float`. A folder of four files; `::text/chars` and the others can be imported alone |
 | `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
 
 `::math`, `::random` and `::text` work on every target. Examples that use
@@ -292,6 +292,11 @@ cout << len(scores) << "\n"   // 5
   `const int count = len(pets)`.
 - A string can be indexed the same way: `word[0]` is a `char`. Strings cannot
   be changed, so a character cannot be assigned.
+- `word[from:to]` is the part of a string from position `from` up to, not
+  including, `to`; either can be left out, for the start or the end:
+  `"windmill"[4:]` is `"mill"`. It is a view of the same characters, so it
+  costs nothing to make. Its ends are checked, like an index: they must be
+  in order and within the string.
 - `const int Primes[3] = {2, 3, 5}` declares an array whose elements cannot
   be changed.
 - `cout << scores` prints the whole array as `[12, 57, 3, 0, 13]`. Inside an
@@ -970,6 +975,48 @@ folder's name is the sketch's.
 and so can a whole array:
 integers in decimal, floats with the fewest digits that read back as the same
 value, `bool` as `true` or `false`.
+
+`cerr << ...` writes the same way to the error output, after anything
+`cout` has written so far. `exit(status)` ends the program at once, from
+anywhere, with that exit status; deferred statements do not run.
+
+Three functions give a printed value a width or a number of digits. They can
+be used wherever a value is written as text: in `cout`, in `cerr`, and when
+appending to an array of `char`.
+
+```wind
+cout << left("name", 10) << right(42, 6) << "\n"   // "name          42"
+cout << fixed(3.14159, 2) << "\n"                 // "3.14"
+cout << right(fixed(t, 3), 8) << "\n"             // a fixed-point column
+```
+
+- `left(v, width)` writes `v` followed by spaces, and `right(v, width)`
+  spaces and then `v`, to make `width` characters. A wider value is written
+  whole. Characters are counted, not bytes, so `"█"` takes one column.
+- `fixed(x, digits)` writes a number with that many digits after the point,
+  rounded.
+
+**Building text**
+
+An array of `char` that grows is where text is built. Appending any value
+to one writes it as `cout` would, and `string(text)` is a view of what it
+holds:
+
+```wind
+char line[..]
+append(line, "took ", fixed(t, 3), " s for ", runs, " runs")
+cout << string(line) << "\n"
+
+char path[..] = clone("build/")
+append(path, name, ".wind")
+run(string(path))
+```
+
+The values are worked out before any of them is written, so a value that
+prints something while it is worked out does not print into the text. A view
+made with `string(text)` shows the characters as they are when it is made,
+and is not valid after the array grows or is deleted; make the view again
+after changing the text.
 
 ### Input
 

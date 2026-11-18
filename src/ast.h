@@ -20,6 +20,11 @@ typedef enum {
     BUILTIN_CLONE,   /* clone(a): a new growable array with a copy of a's elements */
     BUILTIN_HAS,     /* has(m, k): whether a map holds a key */
     BUILTIN_REMOVE,  /* remove(m, k): takes a key out of a map */
+    /* What cout, cerr and appending to a char array can write a value as: */
+    BUILTIN_LEFT,    /* left(v, width): v and then spaces, to fill width */
+    BUILTIN_RIGHT,   /* right(v, width): spaces and then v */
+    BUILTIN_FIXED,   /* fixed(x, digits): x with that many digits after the point */
+    BUILTIN_EXIT,    /* exit(status): ends the program */
 } Builtin;
 
 /* ---- Symbols ---- */
@@ -154,6 +159,7 @@ typedef enum {
     /* "cin" used as a value: whether the most recent read succeeded. */
     EXPR_CIN_OK,
     EXPR_INDEX,
+    EXPR_SLICE, /* "s[from:to]": a view of part of a string */
     /* The built-in len(x); a call to "len" becomes this during analysis. */
     EXPR_LEN,
     /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
@@ -267,6 +273,12 @@ struct Expr {
             Expr *base;
             Expr *index;
         } index;
+        /* EXPR_SLICE; from and to are NULL where left out: the start, the end */
+        struct {
+            Expr *base;
+            Expr *from;
+            Expr *to;
+        } slice;
         struct {
             Expr *operand; /* as for index.base */
         } len;
@@ -457,10 +469,11 @@ struct Stmt {
                setting. */
             bool leading;
         } setting;
-        /* STMT_COUT */
+        /* STMT_COUT, for "cout" and "cerr" */
         struct {
             Expr **args;
             size_t count;
+            bool to_error; /* "cerr": to the program's error output */
         } cout;
         /* STMT_CIN */
         struct {

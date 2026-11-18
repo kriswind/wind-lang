@@ -695,6 +695,39 @@ static TypeKind check_index(Checker *c, Expr *expr) {
     return result;
 }
 
+/* Checks one end of a slice: an integer, and not one known to be negative. */
+static void check_slice_end(Checker *c, Expr *end) {
+    if (!end) return;
+    TypeKind type = check_expr(c, end, TYPE_INT);
+    long long value;
+    if (type == TYPE_INVALID) return;
+    if (!type_is_integer(type) || type == TYPE_I128 || type == TYPE_U128) {
+        error(c, end->loc, "a slice's ends are integers of at most 64 bits, found '%s'%s",
+              type_name(type), char_hint(type == TYPE_CHAR));
+    } else if (type_is_signed(type) && eval_const_int(end, &value) && value < 0) {
+        error(c, end->loc, "a slice's ends are positions from 0 to the string's length; "
+                           "count from the end with 'len(s) - %lld'",
+              -value);
+    }
+}
+
+/* "s[from:to]": a view of part of a string, which must be one. */
+static TypeKind check_slice(Checker *c, Expr *expr) {
+    Expr *base = expr->as.slice.base;
+    const Symbol *array = array_operand(c, base);
+    TypeKind type = array ? TYPE_INVALID : check_expr(c, base, TYPE_INVALID);
+    if (array) {
+        error(c, base->loc, "only a string can be sliced; 'string(%.*s)' is a view of a "
+                            "growable array of char",
+              NAME(array->name));
+    } else if (type != TYPE_STRING && type != TYPE_INVALID) {
+        error(c, base->loc, "only a string can be sliced, found '%s'", type_name(type));
+    }
+    check_slice_end(c, expr->as.slice.from);
+    check_slice_end(c, expr->as.slice.to);
+    return TYPE_STRING;
+}
+
 /* True for a call to a built-in function of the given name, which is used
    unless the program declares the name itself. */
 static bool is_builtin(const Checker *c, const Expr *expr, const char *name) {
@@ -1183,8 +1216,13 @@ static const struct {
 } builtin_names[] = {
     {"append", BUILTIN_APPEND}, {"pop", BUILTIN_POP},       {"clear", BUILTIN_CLEAR},
     {"reserve", BUILTIN_RESERVE}, {"delete", BUILTIN_DELETE}, {"clone", BUILTIN_CLONE},
-    {"has", BUILTIN_HAS},         {"remove", BUILTIN_REMOVE},
+    {"has", BUILTIN_HAS},         {"remove", BUILTIN_REMOVE},     {"left", BUILTIN_LEFT},
+    {"right", BUILTIN_RIGHT},     {"fixed", BUILTIN_FIXED},       {"exit", BUILTIN_EXIT},
 };
+
+static bool is_format(Builtin builtin) {
+    return builtin == BUILTIN_LEFT || builtin == BUILTIN_RIGHT || builtin == BUILTIN_FIXED;
+}
 
 /* Which built-in function on growable arrays a call is of, if any. */
 static Builtin builtin_called(const Checker *c, const Expr *expr) {
@@ -1235,6 +1273,47 @@ static const Symbol *growable_operand(Checker *c, Expr *expr, const char *name) 
     return NULL;
 }
 
+/* Checks something written as text: by cout or cerr, or appended to an
+   array of char. It may be any value, a whole array or map, or a value
+   given a width or a number of digits by left, right or fixed. */
+static void check_written(Checker *c, Expr *arg, const char *doing) {
+    if (array_operand(c, arg) || map_operand(c, arg)) return;
+    Builtin which = arg->kind == EXPR_CALL ? builtin_called(c, arg) : BUILTIN_NONE;
+    if (!is_format(which)) {
+        if (check_expr(c, arg, TYPE_INVALID) == TYPE_VOID) {
+            error(c, arg->loc, "cannot %s a 'void' value", doing);
+        }
+        return;
+    }
+    const char *name = which == BUILTIN_LEFT ? "left" : which == BUILTIN_RIGHT ? "right" : "fixed";
+    arg->as.call.builtin = which;
+    arg->type = TYPE_VOID;
+    if (arg->as.call.count != 2) {
+        error(c, arg->loc, "'%s' takes 2 arguments, but %zu %s given", name,
+              arg->as.call.count, arg->as.call.count == 1 ? "was" : "were");
+        check_args_anyway(c, arg, 0);
+        return;
+    }
+    Expr *value = arg->as.call.args[0];
+    Expr *amount = arg->as.call.args[1];
+    if (which == BUILTIN_FIXED) {
+        TypeKind found = check_expr(c, value, TYPE_F64);
+        if (found != TYPE_INVALID && !type_is_numeric(found)) {
+            error(c, value->loc, "'fixed' writes a number, found '%s'", type_name(found));
+        }
+    } else {
+        check_written(c, value, doing);
+    }
+    TypeKind found = check_expr(c, amount, TYPE_INT);
+    if (found != TYPE_INVALID &&
+        (!type_is_integer(found) || found == TYPE_I128 || found == TYPE_U128)) {
+        error(c, amount->loc, "'%s' takes %s, an integer, found '%s'", name,
+              which == BUILTIN_FIXED ? "how many digits to write after the point"
+                                     : "how many characters wide to write",
+              type_name(found));
+    }
+}
+
 /* Checks a call of a built-in function on a map: has, remove, clear or
    delete. */
 static TypeKind check_map_builtin(Checker *c, Expr *expr, Builtin which, const char *name) {
@@ -1279,6 +1358,28 @@ static TypeKind check_builtin(Checker *c, Expr *expr, Builtin which) {
     }
     expr->as.call.builtin = which;
     size_t count = expr->as.call.count;
+    if (is_format(which)) {
+        error(c, expr->loc, "'%s' writes a value for 'cout', 'cerr' or 'append' to a char "
+                            "array, and gives no value of its own",
+              name);
+        check_args_anyway(c, expr, 0);
+        return TYPE_INVALID;
+    }
+    if (which == BUILTIN_EXIT) {
+        if (count != 1) {
+            error(c, expr->loc, "'exit' takes the program's exit status, but %zu "
+                                "arguments were given",
+                  count);
+            check_args_anyway(c, expr, 0);
+            return TYPE_VOID;
+        }
+        TypeKind found = check_expr(c, expr->as.call.args[0], TYPE_INT);
+        if (found != TYPE_INVALID && !type_is_integer(found)) {
+            error(c, expr->as.call.args[0]->loc, "'exit' takes an integer, found '%s'",
+                  type_name(found));
+        }
+        return TYPE_VOID;
+    }
     if (which == BUILTIN_CLONE) {
         error(c, expr->loc, "'clone' makes a growable array, so it can only start one or "
                             "replace one: 'int copy[..] = clone(values)'");
@@ -1313,6 +1414,11 @@ static TypeKind check_builtin(Checker *c, Expr *expr, Builtin which) {
                                    "most 64 bits, found '%s'",
                       type_name(found));
             }
+            continue;
+        }
+        if (elem == TYPE_CHAR) {
+            /* An array of char takes any value, written as text. */
+            check_written(c, arg, "append");
             continue;
         }
         TypeKind found = check_expr(c, arg, elem);
@@ -1374,6 +1480,17 @@ static TypeKind check_cast(Checker *c, Expr *expr) {
     }
     TypeKind to = expr->as.cast.to;
     Expr *operand = expr->as.cast.operand;
+    /* string(text) for a growable array of char is a view of its
+       characters: all of them, since it knows how many it holds. */
+    const Symbol *chars = to == TYPE_STRING ? array_operand(c, operand) : NULL;
+    if (chars && chars->is_growable) {
+        if (chars->type != TYPE_CHAR && chars->type != TYPE_INVALID) {
+            error(c, operand->loc, "cannot make a string of an array of '%s'; only an array "
+                                   "of 'char' holds text",
+                  type_name(chars->type));
+        }
+        return TYPE_STRING;
+    }
     /* A struct type in front of "{ ... }" is what gives that value its
        type, as in C's "(Point){ 1, 2 }". */
     bool hinted = type_is_numeric(to) || type_is_struct(to) || type_is_pointer(to);
@@ -1508,6 +1625,8 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     }
     case EXPR_INDEX:
         return check_index(c, expr);
+    case EXPR_SLICE:
+        return check_slice(c, expr);
     case EXPR_FIELD:
         return check_field(c, expr);
     case EXPR_INIT:
@@ -1651,6 +1770,7 @@ static bool is_constant(const Expr *expr) {
     case EXPR_SIZEOF:
     case EXPR_CIN_OK:
     case EXPR_INDEX:
+    case EXPR_SLICE:
         return false;
     }
     return false;
@@ -2354,15 +2474,22 @@ static bool loops_forever(const Stmt *loop) {
 
 static bool stmt_has_label(const Stmt *stmt);
 
+/* True for a statement that is a call of exit, which ends the program. */
+static bool is_exit(const Stmt *stmt) {
+    return stmt->kind == STMT_EXPR && stmt->as.expr->kind == EXPR_CALL &&
+           stmt->as.expr->as.call.builtin == BUILTIN_EXIT;
+}
+
 /* True if control cannot run off the end of the block. Conservative: it only
-   recognizes a return or goto, an if/else whose branches both qualify, and a
-   loop that never ends. Whatever follows such a statement cannot be reached,
-   unless a label lets a goto back in. */
+   recognizes a return, a goto or an exit, an if/else whose branches both
+   qualify, and a loop that never ends. Whatever follows such a statement
+   cannot be reached, unless a label lets a goto back in. */
 static bool block_terminates(const Block *block) {
     bool exits = false;
     for (size_t i = 0; i < block->count; i++) {
         const Stmt *stmt = block->stmts[i];
         if (stmt_has_label(stmt)) exits = false;
+        if (is_exit(stmt)) exits = true;
         switch (stmt->kind) {
         case STMT_RETURN:
         case STMT_GOTO:
@@ -2507,6 +2634,7 @@ static const char *never_continues(const Stmt *stmt) {
     case STMT_BREAK:    return stmt->as.target ? "it follows a 'break'" : NULL;
     case STMT_CONTINUE: return stmt->as.target ? "it follows a 'continue'" : NULL;
     case STMT_GOTO:     return "it follows a 'goto'";
+    case STMT_EXPR:     return is_exit(stmt) ? "it follows a call of 'exit'" : NULL;
     case STMT_BLOCK:
         return block_terminates(&stmt->as.block) ? "the block before it never reaches its end"
                                                  : NULL;
@@ -2703,11 +2831,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_COUT:
         for (size_t i = 0; i < stmt->as.cout.count; i++) {
             Expr *arg = stmt->as.cout.args[i];
-            /* An array's or a map's name can be printed whole. */
-            if (array_operand(c, arg) || map_operand(c, arg)) continue;
-            if (check_expr(c, arg, TYPE_INVALID) == TYPE_VOID) {
-                error(c, arg->loc, "cannot print a 'void' value");
-            }
+            check_written(c, arg, "print");
         }
         break;
     case STMT_CIN:

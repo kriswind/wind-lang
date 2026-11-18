@@ -29,6 +29,12 @@
 static const HelperInfo host_helpers[HELPER_COUNT] = {
     [HELPER_PUT] = {
         "static void wind_put(const char *bytes, size_t count) {\n"
+        "#ifdef WIND_SINK\n"
+        "    if (wind_sink) {\n"
+        "        wind_sink_put(bytes, count);\n"
+        "        return;\n"
+        "    }\n"
+        "#endif\n"
         "    if (count) fwrite(bytes, 1, count, stdout);\n"
         "}\n",
         HEADER_STDDEF | HEADER_STDIO, {0}, {0}},
@@ -73,6 +79,31 @@ static const HelperInfo host_helpers[HELPER_COUNT] = {
                           {HELPER_FLOAT_SUPPORT}, {TYPE_F64}},
     [HELPER_WRITE_F128] = {"WIND_WRITE_FLOAT(wind_write_f128, wind_f128, 21, strtold)\n", 0,
                            {HELPER_FLOAT_SUPPORT}, {TYPE_F128}},
+    [HELPER_WRITE_FIXED] = {
+        "/* Writes v with digits digits after the point, rounded. */\n"
+        "static void wind_write_fixed(long double v, int digits) {\n"
+        "    if (digits < 0) digits = 0;\n"
+        "    if (digits > 40) digits = 40;\n"
+        "    char small[64];\n"
+        "    int len = snprintf(small, sizeof small, \"%.*Lf\", digits, v);\n"
+        "    if (len < 0) return;\n"
+        "    if ((size_t)len < sizeof small) {\n"
+        "        wind_put(small, (size_t)len);\n"
+        "        return;\n"
+        "    }\n"
+        "    char *text = malloc((size_t)len + 1);\n"
+        "    if (!text) return;\n"
+        "    snprintf(text, (size_t)len + 1, \"%.*Lf\", digits, v);\n"
+        "    wind_put(text, (size_t)len);\n"
+        "    free(text);\n"
+        "}\n",
+        HEADER_STDIO | HEADER_STDLIB, {HELPER_PUT}, {0}},
+    [HELPER_EXIT] = {
+        "static _Noreturn void wind_exit(int status) {\n"
+        "    fflush(stdout);\n"
+        "    exit(status);\n"
+        "}\n",
+        HEADER_STDIO | HEADER_STDLIB, {0}, {0}},
 };
 
 const Target target_host = {

@@ -105,6 +105,12 @@ static const HelperInfo arduino_helpers[HELPER_COUNT] = {
         "void wind_board_write(const char *bytes, size_t count);\n"
         "\n"
         "static void wind_put(const char *bytes, size_t count) {\n"
+        "#ifdef WIND_SINK\n"
+        "    if (wind_sink) {\n"
+        "        wind_sink_put(bytes, count);\n"
+        "        return;\n"
+        "    }\n"
+        "#endif\n"
         "    if (count) wind_board_write(bytes, count);\n"
         "}\n",
         HEADER_STDDEF, {0}, {0}},
@@ -172,6 +178,64 @@ static const HelperInfo arduino_helpers[HELPER_COUNT] = {
         "    wind_write_double((double)v, " DOUBLE_DIGITS ");\n"
         "}\n",
         0, {HELPER_FLOAT_SUPPORT}, {TYPE_F128}},
+    [HELPER_WRITE_FIXED] = {
+        "/* Writes v with digits digits after the point, rounded; one too large\n"
+        "   for a 32-bit count is written as cout would write it. */\n"
+        "static void wind_write_fixed(long double value, int digits) {\n"
+        "    double v = (double)value;\n"
+        "    if (digits < 0) digits = 0;\n"
+        "    if (digits > 9) digits = 9;\n"
+        "    if (v != v) {\n"
+        "        wind_put(\"nan\", 3);\n"
+        "        return;\n"
+        "    }\n"
+        "    if (v < 0.0) {\n"
+        "        wind_put(\"-\", 1);\n"
+        "        v = -v;\n"
+        "    }\n"
+        "    unsigned long scale = 1;\n"
+        "    for (int i = 0; i < digits; i++) scale *= 10;\n"
+        "    double scaled = v * (double)scale + 0.5;\n"
+        "    if (v - v != 0.0 || scaled >= 4294967295.0) {\n"
+        "        wind_write_double(v, " DOUBLE_DIGITS ");\n"
+        "        return;\n"
+        "    }\n"
+        "    unsigned long n = (unsigned long)scaled;\n"
+        "    char text[24];\n"
+        "    int len = 0;\n"
+        "    unsigned long whole = n / scale;\n"
+        "    do {\n"
+        "        text[len++] = (char)('0' + whole % 10);\n"
+        "        whole /= 10;\n"
+        "    } while (whole);\n"
+        "    for (int i = 0, j = len - 1; i < j; i++, j--) {\n"
+        "        char t = text[i];\n"
+        "        text[i] = text[j];\n"
+        "        text[j] = t;\n"
+        "    }\n"
+        "    if (digits) {\n"
+        "        unsigned long part = n % scale;\n"
+        "        text[len++] = '.';\n"
+        "        for (int i = digits - 1; i >= 0; i--) {\n"
+        "            text[len + i] = (char)('0' + part % 10);\n"
+        "            part /= 10;\n"
+        "        }\n"
+        "        len += digits;\n"
+        "    }\n"
+        "    wind_put(text, (size_t)len);\n"
+        "}\n",
+        0, {HELPER_FLOAT_SUPPORT}, {0}},
+    [HELPER_EXIT] = {
+        "void wind_board_halt(void);\n"
+        "\n"
+        "/* A board has nowhere to return a status to, so it stops. */\n"
+        "static _Noreturn void wind_exit(int status) {\n"
+        "    (void)status;\n"
+        "    wind_board_halt();\n"
+        "    for (;;) {\n"
+        "    }\n"
+        "}\n",
+        0, {0}, {0}},
 };
 
 /* The serial port's speed, which arduino_sketch starts it at. */

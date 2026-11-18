@@ -11,7 +11,7 @@ syn keyword windConditional if else
 syn keyword windStatement goto return break continue defer
 syn keyword windRepeat while do for
 syn keyword windOperator sizeof
-syn keyword windBuiltin cout cin
+syn keyword windBuiltin cout cerr cin
 syn keyword windBoolean true false NULL
 syn keyword windType void bool string char byte
 syn keyword windType int i8 i16 i32 i64 i128

@@ -267,6 +267,33 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return p;\n"
         "}\n",
         0, {HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_SINK] = {
+        "/* While a value is written into an array of char as text, wind_put\n"
+        "   adds what it is given to the array, here, instead of writing it out. */\n"
+        "#define WIND_SINK 1\n"
+        "static wind_list_char *wind_sink;\n"
+        "static int wind_sink_line;\n"
+        "static _Noreturn void wind_out_of_memory(int line);\n"
+        "\n"
+        "static void wind_sink_put(const char *bytes, size_t count) {\n"
+        "    wind_list_char *into = wind_sink;\n"
+        "    if (into->len + count > into->cap) {\n"
+        "        /* What is written may be the array's own text, which moves. */\n"
+        "        const char *start = (const char *)into->data;\n"
+        "        int own = start && bytes >= start && bytes < start + into->len;\n"
+        "        size_t offset = own ? (size_t)(bytes - start) : 0;\n"
+        "        size_t room = into->cap ? into->cap : 16;\n"
+        "        while (room < into->len + count) room *= 2;\n"
+        "        wind_char *grown = realloc(into->data, room);\n"
+        "        if (!grown) wind_out_of_memory(wind_sink_line);\n"
+        "        into->data = grown;\n"
+        "        into->cap = room;\n"
+        "        if (own) bytes = (const char *)grown + offset;\n"
+        "    }\n"
+        "    if (count) memcpy(into->data + into->len, bytes, count);\n"
+        "    into->len += count;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB | HEADER_STRING, {HELPER_OUT_OF_MEMORY}, {TYPE_CHAR}},
     [HELPER_OUT_OF_MEMORY] = {
         "WIND_RARE static _Noreturn void wind_out_of_memory(int line) {\n"
         "    wind_flush();\n"
@@ -461,6 +488,46 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    memset(m, 0, sizeof *m);\n"
         "}\n",
         HEADER_STDLIB | HEADER_STRING, {HELPER_MAP_CLEAR}, {0}},
+    [HELPER_PAD] = {
+        "/* Writes the count bytes of text with spaces before them, or after\n"
+        "   them if left, to make width characters; a character is counted\n"
+        "   once, however many bytes it takes. */\n"
+        "static void wind_pad(const wind_char *text, size_t count, long long width, int left) {\n"
+        "    long long chars = 0;\n"
+        "    for (size_t i = 0; i < count; i++) chars += (text[i] & 0xC0) != 0x80;\n"
+        "    long long spaces = width > chars ? width - chars : 0;\n"
+        "    for (long long i = 0; !left && i < spaces; i++) wind_put(\" \", 1);\n"
+        "    wind_put((const char *)text, count);\n"
+        "    for (long long i = 0; left && i < spaces; i++) wind_put(\" \", 1);\n"
+        "}\n",
+        HEADER_STDDEF, {HELPER_PUT}, {TYPE_CHAR}},
+    [HELPER_SLICE] = {
+        "WIND_RARE static _Noreturn void wind_slice_fail(long long from, long long to, size_t len, int line) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": slice from \");\n"
+        "    wind_error_number(from, 1);\n"
+        "    wind_error(\" to \");\n"
+        "    wind_error_number(to, 1);\n"
+        "    wind_error(\" is out of range for length \");\n"
+        "    wind_error_number((long long)len, 0);\n"
+        "    wind_error(\"\\n\");\n"
+        "    wind_stop();\n"
+        "}\n"
+        "\n"
+        "/* The part of s from position from up to position to, or to the end\n"
+        "   without has_to. With check, the positions must be in order and in s. */\n"
+        "static inline wind_string wind_slice(wind_string s, long long from, long long to,\n"
+        "                                     int has_to, int check, int line) {\n"
+        "    if (!has_to) to = (long long)s.len;\n"
+        "    if (check && (from < 0 || to < from || (unsigned long long)to > s.len)) {\n"
+        "        wind_slice_fail(from, to, s.len, line);\n"
+        "    }\n"
+        "    wind_string part = { s.data + from, (size_t)(to - from) };\n"
+        "    return part;\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {TYPE_STRING}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -1092,6 +1159,10 @@ static bool has_call(const Expr *expr) {
         return true;
     case EXPR_INDEX:
         return has_call(expr->as.index.base) || has_call(expr->as.index.index);
+    case EXPR_SLICE:
+        return has_call(expr->as.slice.base) ||
+               (expr->as.slice.from && has_call(expr->as.slice.from)) ||
+               (expr->as.slice.to && has_call(expr->as.slice.to));
     case EXPR_LEN:
         return has_call(expr->as.len.operand);
     case EXPR_FIELD:
@@ -1135,13 +1206,22 @@ static bool is_stable(const Expr *expr) {
         return !symbol->global && !symbol->address_taken;
     }
     case EXPR_LEN:
-        return is_stable(expr->as.len.operand);
+        /* A growable array's or a map's length changes as it grows. */
+        if (is_array_name(expr->as.len.operand)) {
+            return !expr->as.len.operand->as.ident.symbol->is_growable;
+        }
+        return expr->as.len.operand->kind != EXPR_IDENT || !expr->as.len.operand->as.ident.symbol ||
+                       !expr->as.len.operand->as.ident.symbol->is_map
+                   ? is_stable(expr->as.len.operand)
+                   : false;
     case EXPR_UNARY:
         if (expr->as.unary.op == OP_ADDR) return expr->as.unary.operand->kind == EXPR_IDENT;
         return expr->as.unary.op != OP_DEREF && is_stable(expr->as.unary.operand);
     case EXPR_BINARY:
         return is_stable(expr->as.binary.left) && is_stable(expr->as.binary.right);
     case EXPR_CAST:
+        /* A view of a growable array's text changes with it. */
+        if (expr->type == TYPE_STRING && is_array_name(expr->as.cast.operand)) return false;
         return is_stable(expr->as.cast.operand);
     case EXPR_TERNARY:
         return is_stable(expr->as.ternary.cond) && is_stable(expr->as.ternary.then) &&
@@ -1192,6 +1272,8 @@ static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
     *operands = NULL;
     switch (expr->kind) {
     case EXPR_CALL:
+        /* A built-in function works out its arguments in order itself. */
+        if (expr->as.call.builtin) break;
         count = expr->as.call.count;
         *operands = xmalloc((count ? count : 1) * sizeof **operands);
         for (size_t i = 0; i < count; i++) (*operands)[i] = expr->as.call.args[i];
@@ -1214,6 +1296,12 @@ static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
         *operands = xmalloc(2 * sizeof **operands);
         (*operands)[0] = expr->as.index.base;
         (*operands)[1] = expr->as.index.index;
+        break;
+    case EXPR_SLICE:
+        *operands = xmalloc(3 * sizeof **operands);
+        (*operands)[count++] = expr->as.slice.base;
+        if (expr->as.slice.from) (*operands)[count++] = expr->as.slice.from;
+        if (expr->as.slice.to) (*operands)[count++] = expr->as.slice.to;
         break;
     default:
         break;
@@ -1282,6 +1370,95 @@ static void emit_clone(const Expr *source, TypeKind elem, int line, FILE *out) {
     }
 }
 
+static void emit_write(const Expr *arg, FILE *out);
+
+static bool is_format_call(const Expr *expr) {
+    if (expr->kind != EXPR_CALL) return false;
+    Builtin which = expr->as.call.builtin;
+    return which == BUILTIN_LEFT || which == BUILTIN_RIGHT || which == BUILTIN_FIXED;
+}
+
+static void use_sink(void) {
+    used.helpers[HELPER_SINK] = true;
+    used.lists[TYPE_CHAR] = true;
+}
+
+/* Works out a value into a temporary that stands for it from here on. */
+static void hold_value(const Expr *expr, FILE *out) {
+    if (is_stable(expr)) return;
+    int id = ++held.next_id;
+    fprintf(out, "%s wind_t%d = ", c_type(expr->type), id);
+    emit_expr(expr, out);
+    fputs("; ", out);
+    hold(expr, id, false);
+}
+
+/* Works out what is written by arg, a format's parts included. */
+static void hold_written(const Expr *arg, FILE *out) {
+    if (is_array_name(arg) || (arg->kind == EXPR_IDENT && arg->as.ident.symbol &&
+                               arg->as.ident.symbol->is_map)) {
+        return;
+    }
+    if (is_format_call(arg)) {
+        if (arg->as.call.builtin == BUILTIN_FIXED) {
+            hold_value(arg->as.call.args[0], out);
+        } else {
+            hold_written(arg->as.call.args[0], out);
+        }
+        hold_value(arg->as.call.args[1], out);
+        return;
+    }
+    hold_value(arg, out);
+}
+
+/* Writes args as text into the array of char that the C expression into
+   points to. The values are worked out first, in order, so that nothing
+   they print themselves lands in it. With nul, a '\0' ends the text. */
+static void emit_written_into(Expr *const *args, size_t count, const char *into, int line,
+                              bool nul, FILE *out) {
+    use_sink();
+    int id = ++held.next_id;
+    size_t mark = held.count;
+    fputs("{ ", out);
+    for (size_t i = 0; i < count; i++) hold_written(args[i], out);
+    fprintf(out, "wind_list_char *wind_outer%d = wind_sink; wind_sink = %s; "
+                 "wind_sink_line = %d;\n",
+            id, into, line);
+    for (size_t i = 0; i < count; i++) emit_write(args[i], out);
+    if (nul) fputs("wind_put(\"\", 1);\n", out);
+    fprintf(out, "wind_sink = wind_outer%d; }", id);
+    held.count = mark;
+}
+
+/* left, right and fixed, as cout or a sink writes them. */
+static void emit_format(const Expr *expr, FILE *out) {
+    const Expr *value = expr->as.call.args[0];
+    const Expr *amount = expr->as.call.args[1];
+    if (expr->as.call.builtin == BUILTIN_FIXED) {
+        used.helpers[HELPER_WRITE_FIXED] = true;
+        fputs("wind_write_fixed((long double)(", out);
+        emit_expr(value, out);
+        fputs("), (int)(", out);
+        emit_expr(amount, out);
+        fputs("));\n", out);
+        return;
+    }
+    /* The value is written into a scratch array first, to be measured. */
+    use_sink();
+    used.helpers[HELPER_PAD] = true;
+    used.headers |= HEADER_STDLIB;
+    int id = ++held.next_id;
+    fprintf(out, "{ wind_list_char *wind_outer%d = wind_sink; wind_list_char wind_f%d = {0}; "
+                 "wind_sink = &wind_f%d;\n",
+            id, id, id);
+    emit_write(value, out);
+    fprintf(out, "wind_sink = wind_outer%d; wind_pad(wind_f%d.data, wind_f%d.len, (long long)(",
+            id, id, id);
+    emit_expr(amount, out);
+    fprintf(out, "), %d); free(wind_f%d.data); }\n", expr->as.call.builtin == BUILTIN_LEFT,
+            id);
+}
+
 /* The map an expression names, if it is a map's name. */
 static const Symbol *map_named(const Expr *expr) {
     return expr->kind == EXPR_IDENT && expr->as.ident.symbol && expr->as.ident.symbol->is_map
@@ -1346,6 +1523,13 @@ static void emit_map_builtin(const Expr *expr, const Symbol *map, FILE *out) {
 /* A call of one of the built-in functions on growable arrays. Those that
    give no value are statement expressions ending in "(void)0". */
 static void emit_builtin(const Expr *expr, FILE *out) {
+    if (expr->as.call.builtin == BUILTIN_EXIT) {
+        used.helpers[HELPER_EXIT] = true;
+        fputs("wind_exit((int)(", out);
+        emit_expr(expr->as.call.args[0], out);
+        fputs("))", out);
+        return;
+    }
     const Symbol *map = map_named(expr->as.call.args[0]);
     if (map) {
         emit_map_builtin(expr, map, out);
@@ -1355,6 +1539,19 @@ static void emit_builtin(const Expr *expr, FILE *out) {
     int line = expr->loc.line;
     int id = ++held.next_id;
     fputs("__extension__ ({ ", out);
+    if (expr->as.call.builtin == BUILTIN_APPEND && array->type == TYPE_CHAR) {
+        /* Into an array of char, each value is written as text. */
+        use_sink();
+        fprintf(out, "wind_list_char *wind_in%d = &", id);
+        emit_symbol(array, out);
+        fputs("; ", out);
+        char into[32];
+        snprintf(into, sizeof into, "wind_in%d", id);
+        emit_written_into(expr->as.call.args + 1, expr->as.call.count - 1, into, line, false,
+                          out);
+        fputs(" (void)0; })", out);
+        return;
+    }
     if (expr->as.call.builtin == BUILTIN_APPEND) {
         /* The values first, in order, since they may read the array. */
         size_t count = expr->as.call.count - 1;
@@ -1448,6 +1645,25 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
                 expr->loc.line);
         break;
     }
+    case EXPR_SLICE:
+        used.helpers[HELPER_SLICE] = true;
+        fputs("wind_slice(", out);
+        emit_expr(expr->as.slice.base, out);
+        fputs(", (long long)(", out);
+        if (expr->as.slice.from) {
+            emit_expr(expr->as.slice.from, out);
+        } else {
+            fputs("0", out);
+        }
+        fputs("), (long long)(", out);
+        if (expr->as.slice.to) {
+            emit_expr(expr->as.slice.to, out);
+        } else {
+            fputs("0", out);
+        }
+        fprintf(out, "), %d, %d, %d)", expr->as.slice.to != NULL, bounds_checked,
+                expr->loc.line);
+        break;
     case EXPR_LEN: {
         const Expr *operand = expr->as.len.operand;
         fprintf(out, "((%s)", c_type(TYPE_INT));
@@ -1624,6 +1840,17 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
         break;
     }
     case EXPR_CAST:
+        if (expr->type == TYPE_STRING && is_array_name(expr->as.cast.operand) &&
+            expr->as.cast.operand->as.ident.symbol->is_growable) {
+            /* A view of the characters an array of char holds now. */
+            const Symbol *chars = expr->as.cast.operand->as.ident.symbol;
+            fprintf(out, "((%s){ (const char *)", c_type(TYPE_STRING));
+            emit_symbol(chars, out);
+            fputs(".data, ", out);
+            emit_symbol(chars, out);
+            fputs(".len })", out);
+            break;
+        }
         if (type_is_struct(expr->type)) {
             /* Only a struct converts to a struct, and C has no cast for it. */
             emit_expr(expr->as.cast.operand, out);
@@ -1743,6 +1970,10 @@ static const char *value_writer(TypeKind type, bool in_array, const char **cast)
 }
 
 static void emit_write(const Expr *arg, FILE *out) {
+    if (is_format_call(arg)) {
+        emit_format(arg, out);
+        return;
+    }
     const Symbol *map = map_named(arg);
     if (map) {
         /* A whole map prints as "{key: value, ...}", in the order its keys
@@ -2230,6 +2461,26 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         fputs(";\n", out);
         break;
     case STMT_COUT:
+        if (stmt->as.cout.to_error) {
+            /* Written out whole, after what cout has written so far. */
+            int id = ++held.next_id;
+            used.helpers[HELPER_FLUSH] = true;
+            used.helpers[HELPER_ERROR] = true;
+            used.headers |= HEADER_STDLIB;
+            indent(depth, out);
+            fprintf(out, "{ wind_list_char wind_e%d = {0};\n", id);
+            char into[32];
+            snprintf(into, sizeof into, "&wind_e%d", id);
+            indent(depth + 1, out);
+            emit_written_into(stmt->as.cout.args, stmt->as.cout.count, into, stmt->loc.line,
+                              true, out);
+            fputs("\n", out);
+            indent(depth + 1, out);
+            fprintf(out, "wind_flush(); wind_error((const char *)wind_e%d.data); "
+                         "free(wind_e%d.data); }\n",
+                    id, id);
+            break;
+        }
         for (size_t i = 0; i < stmt->as.cout.count; i++) {
             indent(depth, out);
             emit_write(stmt->as.cout.args[i], out);

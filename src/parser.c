@@ -716,9 +716,28 @@ static Expr *parse_primary(Parser *p) {
 static Expr *parse_index(Parser *p, Expr *base) {
     next(p);
     skip_newlines(p);
-    Expr *index = parse_enclosed_expr(p);
-    if (!index) return NULL;
-    skip_newlines(p);
+    Expr *index = NULL;
+    if (!at(p, TOK_COLON)) {
+        index = parse_enclosed_expr(p);
+        if (!index) return NULL;
+        skip_newlines(p);
+    }
+    if (accept(p, TOK_COLON)) {
+        /* "base[from:to]", either end of which may be left out. */
+        skip_newlines(p);
+        Expr *to = NULL;
+        if (!at(p, TOK_RBRACKET)) {
+            to = parse_enclosed_expr(p);
+            if (!to) return NULL;
+            skip_newlines(p);
+        }
+        if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
+        Expr *slice = new_expr(p, EXPR_SLICE, span(base->loc, p->prev));
+        slice->as.slice.base = base;
+        slice->as.slice.from = index;
+        slice->as.slice.to = to;
+        return slice;
+    }
     if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
     Expr *expr = new_expr(p, EXPR_INDEX, span(base->loc, p->prev));
     expr->as.index.base = base;
@@ -866,6 +885,7 @@ static bool at_statement_keyword(const Parser *p) {
     switch (p->tok.kind) {
     case TOK_KW_CONST:
     case TOK_KW_COUT:
+    case TOK_KW_CERR:
     case TOK_KW_CIN:
     case TOK_KW_IF:
     case TOK_KW_WHILE:
@@ -1075,6 +1095,7 @@ static Stmt *parse_func(Parser *p, TypeKind ret, TypeRef *ret_ref, Token name,
 
 static Stmt *parse_cout(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_COUT, p->tok.loc);
+    stmt->as.cout.to_error = at(p, TOK_KW_CERR);
     size_t cap = 0;
     next(p);
     bool ok = true;
@@ -2110,6 +2131,7 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         if (stmt) export_stmt(p, stmt);
         return stmt;
     case TOK_KW_COUT:
+    case TOK_KW_CERR:
         return parse_cout(p);
     case TOK_KW_CIN:
         return parse_cin(p);

@@ -1,0 +1,17 @@
+// exit ends the program at once with the status given, from anywhere;
+// deferred statements do not run then.
+void check(int value) {
+    defer cout << "check returns\n"
+    if (value < 0) {
+        cerr << "negative: " << value << "\n"
+        exit(1)
+    }
+    cout << "fine: " << value << "\n"
+}
+
+int main() {
+    check(3)
+    check(-2)
+    cout << "not reached\n"
+    return 0
+}

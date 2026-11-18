@@ -48,14 +48,20 @@ is rebuilt, which keeps the order of the others. Writing `m[k] = v` works
 out the key and the value first, and then finds or puts the entry, so the
 value never refers to a place the insertion has moved.
 
+Text is built in an array of `char` that grows: appending any value to one
+writes it as `cout` would. While it does, the program's one output function,
+`wind_put`, adds to that array instead of writing out, so every way of
+printing a value works for building text too, and a program that never
+builds text has nothing added to its output path. `left`, `right` and
+`fixed` are written the same way, `left` and `right` by writing the value
+into a scratch array first, to measure it. `cerr` builds its text this way
+and then writes it out whole.
+
 ## To come
 
-1. **Building strings**: `append(text, "more")` on a `char[..]` to add a
-   string's bytes, `string(text)` for a view of them, and formatting into
-   one, which gives string concatenation and padded, fixed-precision output.
-2. **Scratch memory**: `#temp { ... }`, where everything allocated inside is
+1. **Scratch memory**: `#temp { ... }`, where everything allocated inside is
    freed as the block ends; it could later name an allocator to use there.
-3. **Leak reports**: an optional report, at exit, of growable arrays never
+2. **Leak reports**: an optional report, at exit, of growable arrays never
    deleted, for programs that should clean up.
-4. **Boards**: a warning, or an opt-in, for growable arrays on boards with a
+3. **Boards**: a warning, or an opt-in, for growable arrays on boards with a
    few kilobytes of memory, where the heap fragments quickly.

@@ -10,6 +10,7 @@ static const struct {
 } keywords[] = {
     {"const", TOK_KW_CONST, TYPE_INVALID},
     {"cout", TOK_KW_COUT, TYPE_INVALID},
+    {"cerr", TOK_KW_CERR, TYPE_INVALID},
     {"cin", TOK_KW_CIN, TYPE_INVALID},
     {"if", TOK_KW_IF, TYPE_INVALID},
     {"else", TOK_KW_ELSE, TYPE_INVALID},
@@ -109,6 +110,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_DIRECTIVE: return "a directive";
     case TOK_KW_CONST:  return "'const'";
     case TOK_KW_COUT:   return "'cout'";
+    case TOK_KW_CERR:   return "'cerr'";
     case TOK_KW_CIN:    return "'cin'";
     case TOK_KW_IF:     return "'if'";
     case TOK_KW_ELSE:   return "'else'";
