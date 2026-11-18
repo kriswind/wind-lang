@@ -46,8 +46,10 @@ struct Symbol {
     const Unit *unit;
     /* Marked "export": other files that import this one can use it. */
     bool exported;
-    /* SYM_MODULE: the imported file, or NULL if it could not be loaded. */
-    const Unit *module;
+    /* SYM_MODULE: the files the import brought in: one for a file, every
+       ".wind" file in it for a folder. None if they could not be loaded. */
+    const Unit **parts;
+    size_t part_count;
     /* The declaring statement: STMT_CONST, STMT_VAR, STMT_FUNC,
        STMT_IMPORT or STMT_TYPE. NULL for parameters and labels. */
     const Stmt *decl;
@@ -265,7 +267,8 @@ typedef enum {
        header. Only the parser sees one; the program holds its declarations
        in its place. */
     STMT_EXTERN_GROUP,
-    /* "#target name" or "#board name": what the file is compiled for. */
+    /* "#target name" or "#board name", what the file is compiled for, or
+       "#module name", what an import of it is called. */
     STMT_SETTING,
 } StmtKind;
 
@@ -380,8 +383,8 @@ struct Stmt {
         Block block;
         /* STMT_SETTING */
         struct {
-            Str name;  /* "target" or "board" */
-            Str value; /* the target's name, or the board's */
+            Str name;  /* "target", "board" or "module" */
+            Str value; /* the target's name, the board's or the module's */
             SrcLoc value_loc;
             /* Comes before every statement of the file that is not a
                setting. */
@@ -494,6 +497,8 @@ struct Unit {
        file does not exist. */
     const char *real_path;
     Unit *root; /* itself for the root */
+    /* What its "#module" calls it, or empty. */
+    Str module_name;
     /* 0 for the root, and unique among its modules; keeps the generated C
        names of different files apart. */
     int id;

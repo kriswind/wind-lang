@@ -27,6 +27,16 @@ int wind_board_read(void) {
     return c == EOF ? -1 : c;
 }
 
+/* The port counts as open from the start, and nothing is waiting in it but
+   what stdin holds, which is not counted. */
+int wind_serial_connected(void) {
+    return 1;
+}
+
+int wind_serial_available(void) {
+    return 0;
+}
+
 void wind_board_halt(void) {
     fputs("[halted]\n", stdout);
     exit(0);
@@ -62,6 +72,9 @@ unsigned long micros(void) {
 
 void delay(unsigned long ms) {
     now += ms;
+}
+
+void yield(void) {
 }
 
 void delayMicroseconds(unsigned int us) {

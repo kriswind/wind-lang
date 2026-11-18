@@ -105,11 +105,20 @@ void libs_locate(const char *program);
 /* The directory libs_locate found, or NULL if there is none. */
 const char *libs_dir(void);
 
-/* The file an import names, from malloc: "::path" in the libraries
-   directory, any other path beside the file at "from" as path_beside finds
-   it, and ".wind" added unless the path ends with it. Returns NULL if the
-   path starts with "::" and there is no libraries directory. */
-char *path_of_import(const char *from, Str written);
+/* Where an import's path leads, before any ".wind" is added, from malloc:
+   "::path" in the libraries directory, any other path beside the file at
+   "from" as path_beside finds it. A path that ends in "/" names a folder
+   and nothing else, which sets *folder_only; the "/" is left off. Returns
+   NULL if the path starts with "::" and there is no libraries directory. */
+char *import_base(const char *from, Str written, bool *folder_only);
+
+bool is_directory(const char *path);
+bool file_exists(const char *path);
+
+/* The ".wind" files in a folder and in the folders below it, as paths
+   from malloc in an array from malloc, ordered by path. Returns how many
+   there are. */
+size_t wind_files_in(const char *folder, char ***files);
 
 /* The absolute path of an existing file with every link resolved, from
    malloc, so that two spellings of one file compare equal. Returns NULL,

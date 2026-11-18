@@ -1,0 +1,36 @@
+#target arduino
+
+// The board's serial port, which cout and cin use, as far as it is more
+// than those: whether a computer has it open, and what has arrived on it.
+// Part of the arduino library (see core.wind); import it alone as
+// ::vendor/arduino/serial.
+//
+// On a board whose port is its own USB connection, such as a Raspberry Pi
+// Pico, what is printed while no computer has the port open is lost;
+// waitForSerial lets a program hold its output back until one has.
+
+// Defined by the sketch file that "wind build -t arduino" writes, since
+// the port itself is a C++ object.
+extern {
+    int wind_serial_connected()
+    int wind_serial_available()
+}
+
+extern "Arduino.h" {
+    u32 millis()
+    void yield()
+}
+
+// Whether a computer has the port open. Where the port goes through a
+// separate USB chip, as on an Arduino Uno, it always counts as open.
+export bool serialConnected() { return wind_serial_connected() != 0 }
+
+// How many bytes have arrived and not yet been read.
+export int serialAvailable() { return wind_serial_available() }
+
+// Waits until a computer has the port open, or until ms milliseconds have
+// passed.
+export void waitForSerial(u32 ms) {
+    u32 start = millis()
+    while (!serialConnected() && millis() - start < ms) yield()
+}

@@ -2,9 +2,10 @@ start serial 2 4
 2.5 0.125 0.333333333333333 10000000000 0.0001 -0.5 123456 1e-07
 [Reading{pin = 14, value = 512}, Reading{pin = 15, value = -3}] ON true c -32768 65535 -9000000000
 read 42 wind 1.5 true
+port open true, waiting 0
 [pin 13 mode 1] 160
 [pin 13 = 1] round 1 at 0
 [pin 13 = 0] round 2 at 250
 [pin 13 = 1] round 3 at 500
-wind: line 37: index 3 is out of range for length 2
+wind: line 39: index 3 is out of range for length 2
 [halted]

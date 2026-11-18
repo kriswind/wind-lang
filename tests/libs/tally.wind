@@ -1,0 +1,3 @@
+// A library at the top of the libraries folder, with no #module: it is
+// named after the file.
+export int count(int values[]) { return len(values) }

@@ -1,0 +1,2 @@
+export int same() { return 1 }
+export int only_a() { return 1 }

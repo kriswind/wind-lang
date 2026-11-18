@@ -24,6 +24,8 @@ float f
 cin >> n >> word >> f
 cout << "read " << n << " " << word << " " << f << " " << cin << "\n"
 
+arduino.waitForSerial(5000)
+cout << "port open " << arduino.serialConnected() << ", waiting " << arduino.serialAvailable() << "\n"
 arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
 cout << " " << arduino.analogRead(arduino.A2) << "\n"
 

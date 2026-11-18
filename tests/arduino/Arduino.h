@@ -32,3 +32,5 @@ uint8_t shiftIn(uint8_t data_pin, uint8_t clock_pin, uint8_t bit_order);
 
 #define interrupts()
 #define noInterrupts()
+
+void yield(void);

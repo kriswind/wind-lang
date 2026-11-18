@@ -1,16 +1,20 @@
 #target arduino
 
 // The Arduino core: pins, time and the board's own constants, for programs
-// built with "wind build -t arduino" for any board that has one. Import it as
+// built with "wind build -t arduino" for any board that has one.
+//
+// This folder is one library, made of equal parts: this file, serial.wind
+// for the serial port, and any others beside them. Import all of it as
 //
 //     import ::vendor/arduino
 //
-// and reach what it holds as arduino.pinMode, arduino.HIGH and so on.
+// and reach what any part exports as arduino.pinMode, arduino.HIGH,
+// arduino.waitForSerial and so on; or import one part alone, as
+// ::vendor/arduino/serial.
 //
-// Everything here is the Arduino library's own, declared through "extern",
-// so the constants have the values of the board being built for. The
-// "#target" above makes a program that imports this one for any other
-// target an error.
+// What is here is the Arduino library's own, declared through "extern", so
+// the constants have the values of the board being built for. The "#target"
+// above makes a program that imports this one for any other target an error.
 
 export extern "Arduino.h" {
     // Pin levels and modes.

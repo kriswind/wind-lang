@@ -233,7 +233,10 @@ check("import completion without quotes replaces what was typed",
       [{"range": rng(0, 7, 9), "newText": "shapes"}])
 items = request("textDocument/completion", at_main(1, 12))["result"]
 check("import completion in the libraries directory",
-      sorted(item["label"] for item in items), ["::numbers/rounding", "::numbers/stats"])
+      sorted((item["label"], item["kind"]) for item in items),
+      [("::geometry", 9), ("::geometry/area", 17), ("::geometry/perimeter", 17), ("::geometry/solids", 9),
+       ("::geometry/solids/volume", 17), ("::numbers", 9), ("::numbers/rounding", 17), ("::numbers/stats", 17),
+       ("::tally", 17)])
 items = request("textDocument/completion", at_main(2, 18))["result"]
 check("import completion inside a library folder",
       [(item["label"], item["textEdit"]["range"]) for item in items if item["label"] == "::numbers/rounding"],

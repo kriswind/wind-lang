@@ -16,7 +16,8 @@
  *                | [ "export" ] extern ) terminator
  *              | if | while | for | [ "export" ] func | label
  *   directive  = "#no_bounds_check" | "#bounds_check"
- *   setting    = "#target" IDENT | "#board" ( STRING | name up to a space )
+ *   setting    = "#target" IDENT | "#module" IDENT
+ *              | "#board" ( STRING | name up to a space )
  *   import     = "import" ( STRING | path ) [ "as" IDENT ]
  *   path       = the characters up to the next space, as in a/b or ::x/y
  *   extern     = "extern" [ STRING ] ( external
@@ -1485,20 +1486,27 @@ static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
 /* Called at a directive: parses it and the statement, block or function it
    covers. */
 static bool is_setting(Str name) {
-    return str_eq_cstr(name, "target") || str_eq_cstr(name, "board");
+    return str_eq_cstr(name, "target") || str_eq_cstr(name, "board") ||
+           str_eq_cstr(name, "module");
 }
 
 /* Called at "#target" or "#board": parses the setting and its value. */
 static Stmt *parse_setting(Parser *p, bool top_level) {
     Token directive = p->tok;
-    bool is_target = str_eq_cstr(directive.text, "target");
+    /* The settings other than #board take a name. */
+    bool is_target = !str_eq_cstr(directive.text, "board");
     next(p);
     Stmt *stmt = new_stmt(p, STMT_SETTING, directive.loc);
     stmt->as.setting.name = directive.text;
     stmt->as.setting.value = p->tok.text;
     stmt->as.setting.value_loc = p->tok.loc;
     if (is_target) {
-        if (!expect(p, TOK_IDENT, NULL)) return NULL;
+        if (!expect(p, TOK_IDENT, NULL)) {
+            /* Consumed so that a keyword here is not then read as the start
+               of a statement. */
+            if (!at_terminator(p)) next(p);
+            return NULL;
+        }
     } else if (at(p, TOK_STRING)) {
         next(p);
     } else if (at_terminator(p)) {
@@ -1533,7 +1541,7 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
     if (bounds == BOUNDS_INHERIT) {
         diag_add(p->diags, SEV_ERROR, directive.loc,
                  "unknown directive '#%.*s'; there are '#no_bounds_check', "
-                 "'#bounds_check', '#target' and '#board'",
+                 "'#bounds_check', '#target', '#board' and '#module'",
                  (int)directive.text.len, directive.text.data);
         return NULL;
     }
@@ -1983,6 +1991,13 @@ FileSettings file_settings(Str src) {
     for (;;) {
         while (tok.kind == TOK_NEWLINE || tok.kind == TOK_SEMI) tok = lexer_next(&lexer);
         if (tok.kind != TOK_DIRECTIVE || !is_setting(tok.text)) break;
+        if (str_eq_cstr(tok.text, "module")) {
+            /* Not about what the file is compiled for: skipped. */
+            tok = lexer_next(&lexer);
+            if (tok.kind != TOK_IDENT) break;
+            tok = lexer_next(&lexer);
+            continue;
+        }
         bool is_target = str_eq_cstr(tok.text, "target");
         Token value = lexer_next(&lexer);
         tok = lexer_next(&lexer);

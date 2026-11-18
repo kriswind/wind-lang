@@ -83,6 +83,14 @@
  *   variables are initialized before the program starts.
  * - A path that starts with "::" is in the libraries directory; any other
  *   is beside the importing file. ".wind" may be left off.
+ * - A path that names a folder imports every ".wind" file in it and in the
+ *   folders below it, as one module: each file is a part of it on an equal
+ *   footing, and what any of them exports, the module exports. Two parts
+ *   cannot export one name. A path is a file before it is a folder, unless
+ *   it ends in "/".
+ * - An import of a folder is called what the "#module" of its files says,
+ *   else after the folder; an import of a file is called after the file.
+ *   "as" gives either another name.
  *
  * External declarations:
  *
@@ -237,9 +245,23 @@ static void pop_scope(Checker *c) {
 
 /* Looks a name up for reading or writing and records the reference.
    Returns NULL, with the problem reported, if it cannot be used here. */
+static Str default_module_name(Str path);
+
 static Symbol *resolve(Checker *c, Str name, SrcLoc loc) {
     Symbol *symbol = lookup(c, name);
     if (!symbol) {
+        /* An import is named by its file's #module, which may not be what
+           its path suggests. */
+        const Block *top = &c->unit->program.top;
+        for (size_t i = 0; i < top->count; i++) {
+            const Stmt *stmt = top->stmts[i];
+            const Symbol *module = stmt->kind == STMT_IMPORT ? stmt->as.import.symbol : NULL;
+            if (module && str_eq(default_module_name(stmt->as.import.path), name)) {
+                error(c, loc, "undefined name '%.*s'; the import of '%.*s' is named '%.*s'",
+                      NAME(name), NAME(stmt->as.import.path), NAME(module->name));
+                return NULL;
+            }
+        }
         error(c, loc, "undefined name '%.*s'", NAME(name));
         return NULL;
     }
@@ -279,6 +301,18 @@ static Symbol *module_member(const Unit *module, Str name) {
    the problem reported, if the name cannot be used here. A module that
    failed to load has had that reported at its import, and yields NULL
    quietly. */
+/* What an import's parts declare at their top level under a name: an
+   exported one if there is one, else any; NULL if there is nothing. */
+static Symbol *part_member(const Symbol *owner, Str name) {
+    Symbol *found = NULL;
+    for (size_t i = 0; i < owner->part_count; i++) {
+        Symbol *symbol = module_member(owner->parts[i], name);
+        if (symbol && symbol->exported) return symbol;
+        if (symbol && !found) found = symbol;
+    }
+    return found;
+}
+
 static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str name,
                               SrcLoc name_loc) {
     Symbol *owner = resolve(c, module, module_loc);
@@ -289,8 +323,8 @@ static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str nam
         return NULL;
     }
     owner->used = true;
-    if (!owner->module) return NULL;
-    Symbol *symbol = module_member(owner->module, name);
+    if (!owner->part_count) return NULL;
+    Symbol *symbol = part_member(owner, name);
     if (!symbol) {
         error(c, name_loc, "module '%.*s' has no '%.*s'", NAME(module), NAME(name));
         return NULL;
@@ -317,8 +351,8 @@ static Symbol *type_named_by(const Checker *c, const Expr *expr) {
     Symbol *symbol;
     if (expr->as.ident.module.len) {
         const Symbol *owner = lookup(c, expr->as.ident.module);
-        if (!owner || owner->kind != SYM_MODULE || !owner->module) return NULL;
-        symbol = module_member(owner->module, expr->as.ident.name);
+        if (!owner || owner->kind != SYM_MODULE || !owner->part_count) return NULL;
+        symbol = part_member(owner, expr->as.ident.name);
         if (symbol && !symbol->exported) return NULL;
     } else {
         symbol = lookup(c, expr->as.ident.name);
@@ -510,8 +544,8 @@ static const Symbol *array_operand(Checker *c, Expr *expr) {
     Symbol *symbol;
     if (module.len) {
         const Symbol *owner = lookup(c, module);
-        if (!owner || owner->kind != SYM_MODULE || !owner->module) return NULL;
-        symbol = module_member(owner->module, expr->as.ident.name);
+        if (!owner || owner->kind != SYM_MODULE || !owner->part_count) return NULL;
+        symbol = part_member(owner, expr->as.ident.name);
         if (symbol && !symbol->exported) return NULL;
     } else {
         symbol = lookup(c, expr->as.ident.name);
@@ -2185,14 +2219,15 @@ static void check_settings(Checker *c) {
     const Block *top = &c->unit->program.top;
     bool is_program = c->unit->root == c->unit;
     const char *building = types_platform()->name;
-    const Stmt *seen_target = NULL, *seen_board = NULL;
+    const Stmt *seen_target = NULL, *seen_board = NULL, *seen_module = NULL;
     for (size_t i = 0; i < top->count; i++) {
         const Stmt *stmt = top->stmts[i];
         if (stmt->kind != STMT_SETTING) continue;
         Str name = stmt->as.setting.name;
         Str value = stmt->as.setting.value;
         bool is_target = str_eq_cstr(name, "target");
-        const Stmt **seen = is_target ? &seen_target : &seen_board;
+        bool is_module = str_eq_cstr(name, "module");
+        const Stmt **seen = is_target ? &seen_target : is_module ? &seen_module : &seen_board;
         if (!stmt->as.setting.leading) {
             error(c, stmt->loc, "'#%.*s' goes at the top of the file, above everything but "
                                 "other settings",
@@ -2204,6 +2239,10 @@ static void check_settings(Checker *c) {
             *seen = stmt;
         }
         if (*seen != stmt) continue;
+        if (is_module) {
+            c->unit->module_name = value;
+            continue;
+        }
         if (is_target && !target_find(value)) {
             error(c, stmt->as.setting.value_loc,
                   "unknown target '%.*s'; the targets are " TARGET_NAMES, NAME(value));
@@ -2289,6 +2328,7 @@ static Str default_module_name(Str path);
 static Str type_qualifier(const Checker *c) {
     const Unit *unit = c->unit;
     if (unit->root == unit) return (Str){0};
+    if (unit->module_name.len) return unit->module_name;
     return default_module_name((Str){unit->path, strlen(unit->path)});
 }
 
@@ -2406,12 +2446,15 @@ static void check_type_decl(Checker *c, Stmt *stmt) {
 
 static void analyze(Unit *unit);
 
-/* The name a module gets when its import does not give one: the file's name
-   without its directory and ".wind". */
+/* The name a module gets when neither its import nor its #module gives
+   one: the last part of the path, the file's name without ".wind" or the
+   folder's, after any directory and the "::" of the libraries. */
 static Str default_module_name(Str path) {
-    size_t start = path.len;
-    while (start > 0 && path.data[start - 1] != '/') start--;
-    Str name = {path.data + start, path.len - start};
+    size_t end = path.len;
+    while (end > 0 && path.data[end - 1] == '/') end--;
+    size_t start = end;
+    while (start > 0 && path.data[start - 1] != '/' && path.data[start - 1] != ':') start--;
+    Str name = {path.data + start, end - start};
     if (name.len > 5 && memcmp(name.data + name.len - 5, ".wind", 5) == 0) name.len -= 5;
     return name;
 }
@@ -2437,23 +2480,16 @@ static const char *arena_cstr(Arena *arena, const char *text) {
     return copy;
 }
 
-/* Returns the unit for the file an import names, analyzing the file if no
-   import has reached it yet. Returns NULL, with the problem reported, if
-   the file cannot be read or the import closes a cycle. */
-static const Unit *load_module(Checker *c, const Stmt *stmt) {
+/* Returns the unit for a file that an import brings in, analyzing the file
+   if no import has reached it yet. Returns NULL, with the problem reported,
+   if the file cannot be read or the import closes a cycle. */
+static Unit *load_file(Checker *c, const Stmt *stmt, const char *path) {
     Unit *root = c->unit->root;
     Str written = stmt->as.import.path;
-    char *path = path_of_import(c->unit->path, written);
-    if (!path) {
-        error(c, stmt->loc, "'::' is the libraries directory, which was not found; set "
-                            "WIND_LIBS to it");
-        return NULL;
-    }
     char *real_path = path_canonical(path);
     Str src;
     if (!real_path) {
         error(c, stmt->loc, "cannot open '%s': %s", path, strerror(errno));
-        free(path);
         return NULL;
     }
 
@@ -2463,7 +2499,6 @@ static const Unit *load_module(Checker *c, const Stmt *stmt) {
         if (strcmp(root->modules[i]->real_path, real_path) == 0) module = root->modules[i];
     }
     if (module) {
-        free(path);
         free(real_path);
         if (module->loading) {
             error(c, stmt->loc, "import cycle: '%.*s' leads back to itself",
@@ -2475,7 +2510,6 @@ static const Unit *load_module(Checker *c, const Stmt *stmt) {
 
     if (!file_read(real_path, &src)) {
         error(c, stmt->loc, "cannot read '%s': %s", path, strerror(errno));
-        free(path);
         free(real_path);
         return NULL;
     }
@@ -2487,7 +2521,6 @@ static const Unit *load_module(Checker *c, const Stmt *stmt) {
     module->src = (Str){text, src.len};
     module->path = arena_cstr(&root->arena, path);
     module->real_path = arena_cstr(&root->arena, real_path);
-    free(path);
     free(real_path);
     module->root = root;
     module->id = (int)root->module_count + 1;
@@ -2505,18 +2538,132 @@ static const Unit *load_module(Checker *c, const Stmt *stmt) {
     return module;
 }
 
+/* Loads the files an import names: the file, or every ".wind" file in the
+   folder, which sets *folder. Returns how many it loaded into *parts, from
+   the root's arena, reporting each problem; 0 if there is nothing to use.
+   *failed is set if any file could not be loaded. */
+static size_t load_parts(Checker *c, const Stmt *stmt, const Unit ***parts, bool *failed,
+                         bool *folder) {
+    Unit *root = c->unit->root;
+    Str written = stmt->as.import.path;
+    *parts = NULL;
+    *failed = false;
+    *folder = false;
+    bool folder_only;
+    char *base = import_base(c->unit->path, written, &folder_only);
+    if (!base) {
+        error(c, stmt->loc, "'::' is the libraries directory, which was not found; set "
+                            "WIND_LIBS to it");
+        *failed = true;
+        return 0;
+    }
+    bool has_extension = written.len >= 5 &&
+                         memcmp(written.data + written.len - 5, ".wind", 5) == 0;
+    char *file = xmalloc(strlen(base) + sizeof ".wind");
+    sprintf(file, "%s%s", base, has_extension ? "" : ".wind");
+
+    char **paths = NULL;
+    size_t count = 0;
+    if (!folder_only && !has_extension && !file_exists(file) && !is_directory(base)) {
+        error(c, stmt->loc, "there is no file '%s' or folder '%s'", file, base);
+        *failed = true;
+    } else if (!folder_only && (has_extension || file_exists(file) || !is_directory(base))) {
+        paths = xmalloc(sizeof *paths);
+        paths[0] = file;
+        file = NULL;
+        count = 1;
+    } else if (!is_directory(base)) {
+        error(c, stmt->loc, "cannot open the folder '%s'", base);
+        *failed = true;
+    } else if (*folder = true, (count = wind_files_in(base, &paths)) == 0) {
+        error(c, stmt->loc, "the folder '%s' holds no .wind files", base);
+        *failed = true;
+    }
+    free(file);
+    free(base);
+
+    const Unit **loaded = arena_alloc(&root->arena, (count ? count : 1) * sizeof *loaded);
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+        const Unit *part = load_file(c, stmt, paths[i]);
+        if (part) {
+            loaded[kept++] = part;
+        } else {
+            *failed = true;
+        }
+        free(paths[i]);
+    }
+    free(paths);
+    *parts = loaded;
+    return kept;
+}
+
+/* The part of a path that tells it apart from the others of a folder: what
+   follows the import's own path. */
+static const char *part_name(const Unit *part) {
+    const char *slash = strrchr(part->path, '/');
+    return slash ? slash + 1 : part->path;
+}
+
+/* Reports a name that two parts of an import export, which a program could
+   not tell apart. */
+static void check_parts_apart(Checker *c, const Stmt *stmt, const Unit **parts, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        for (size_t k = 0; k < parts[i]->symbols.count; k++) {
+            const Symbol *symbol = parts[i]->symbols.items[k];
+            if (!symbol->exported || !symbol->global) continue;
+            for (size_t j = i + 1; j < count; j++) {
+                const Symbol *other = module_member(parts[j], symbol->name);
+                if (!other || !other->exported) continue;
+                error(c, stmt->loc, "'%.*s' is exported by both '%s' and '%s' of '%.*s'",
+                      NAME(symbol->name), part_name(parts[i]), part_name(parts[j]),
+                      NAME(stmt->as.import.path));
+            }
+        }
+    }
+}
+
+/* What the "#module" of an import's parts calls it, or empty if none says.
+   Parts that name it differently are reported. */
+static Str parts_module_name(Checker *c, const Stmt *stmt, const Unit **parts, size_t count) {
+    Str name = {0};
+    const Unit *named_by = NULL;
+    for (size_t i = 0; i < count; i++) {
+        Str own = parts[i]->module_name;
+        if (!own.len) continue;
+        if (!named_by) {
+            name = own;
+            named_by = parts[i];
+        } else if (!str_eq(own, name)) {
+            error(c, stmt->loc, "'%s' names the module '%.*s' and '%s' names it '%.*s'",
+                  part_name(named_by), NAME(name), part_name(parts[i]), NAME(own));
+        }
+    }
+    return name;
+}
+
 static void check_import(Checker *c, Stmt *stmt) {
     Str path = stmt->as.import.path;
     if (path.len == 0 || memchr(path.data, '\0', path.len)) {
         error(c, stmt->loc, "an import needs the path of a file");
         return;
     }
-    const Unit *module = load_module(c, stmt);
-    bool broken = !module || module->diags.error_count > 0;
-    if (module && broken) error(c, stmt->loc, "'%.*s' has errors", NAME(path));
+    const Unit **parts;
+    bool failed, folder;
+    size_t count = load_parts(c, stmt, &parts, &failed, &folder);
+    bool has_errors = false;
+    for (size_t i = 0; i < count; i++) has_errors = has_errors || parts[i]->diags.error_count;
+    if (has_errors) error(c, stmt->loc, "'%.*s' has errors", NAME(path));
+    check_parts_apart(c, stmt, parts, count);
+    bool broken = failed || has_errors || count == 0;
 
     bool has_alias = stmt->as.import.alias.len > 0;
-    Str name = has_alias ? stmt->as.import.alias : default_module_name(stmt->as.import.path);
+    /* A module is a folder, which its files' #module names; a file imported
+       on its own is named after the file. */
+    Str own_name = folder ? parts_module_name(c, stmt, parts, count) : (Str){0};
+    Str name = has_alias      ? stmt->as.import.alias
+               : own_name.len ? own_name
+                              : default_module_name(stmt->as.import.path);
     if (!is_usable_name(name)) {
         error(c, stmt->loc, "'%.*s' cannot be used as a name; give the import one with "
                             "'as name'",
@@ -2527,7 +2674,8 @@ static void check_import(Checker *c, Stmt *stmt) {
                                 has_alias ? stmt->as.import.alias_loc : stmt->loc,
                                 TYPE_INVALID);
     symbol->decl = stmt;
-    symbol->module = module;
+    symbol->parts = parts;
+    symbol->part_count = count;
     symbol->visible_from = 0;
     /* An import that failed has its error; "never used" would add nothing. */
     symbol->used = broken;

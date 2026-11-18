@@ -47,14 +47,14 @@ both for building `wind` and by `wind` itself (default `cc`).
 ## Libraries
 
 `libs/` holds the libraries that come with Wind. An import whose path starts
-with `::` is found there, so `import ::vendor/arduino` is
-`libs/vendor/arduino.wind`. The compiler looks for the directory beside
-itself: `libs` in a build of the source, `share/wind/libs` once installed.
-`WIND_LIBS` names another one.
+with `::` is found there, so `import ::vendor/arduino` is the folder
+`libs/vendor/arduino`, a [module made of several files](#modules). The
+compiler looks for the directory beside itself: `libs` in a build of the
+source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
 
 | Library | What it holds |
 | --- | --- |
-| `::vendor/arduino` | The Arduino core: pins, time and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
+| `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
 
 ## Tooling
 
@@ -605,9 +605,18 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
   with `::` is in the [libraries](#libraries) directory instead.
 - `.wind` can be left off. A path is written as it is, up to the first
   space, or in quotes: `import "lib/my text.wind"`.
-- The module's name is the file's name without `.wind`; `as name` gives it
-  another. A file whose name is not a valid name, such as `my-text.wind`,
-  needs `as`.
+- A path that names a folder imports every `.wind` file in it, and in the
+  folders below it, as one module. The files are equal parts of it: what
+  any of them exports, the module exports, so `import ::vendor/arduino`
+  gives both `arduino.pinMode` from `core.wind` and `arduino.waitForSerial`
+  from `serial.wind`. Two parts cannot export the same name. A path to one
+  of the files, or to a folder below, imports just that:
+  `import ::vendor/arduino/serial`. A path is a file before it is a folder;
+  one that ends in `/` is always a folder.
+- A file's module is named after the file, without `.wind`, and a folder's
+  after the folder, unless its files' `#module` names it otherwise; `as
+  name` gives either another name. A path whose last part is not a valid
+  name, such as `my-text.wind`, needs `as`.
 - What a module exports is used as `module.name`. Names never leak into the
   importing file, so two modules can export the same name.
 - Functions, constants and types can be exported. Everything else in a file
@@ -631,6 +640,7 @@ else:
 ```wind
 #target arduino
 #board arduino:avr:uno
+#module blinker
 ```
 
 - `#target` names the target: `c`, the machine `wind` runs on, or
@@ -644,6 +654,10 @@ else:
 - Only the program's own file chooses. A file it imports can state the
   target it is written for, as `::vendor/arduino` does, and importing it
   into a program for another target is then an error.
+- `#module name` names the module that a folder makes, for its imports,
+  when that should not be the folder's name. Any of the folder's files can
+  say it, and those that do must agree. It does not rename a file imported
+  on its own.
 
 ### External functions and constants
 
@@ -742,8 +756,8 @@ wind emit blink.wind                   # prints the C the sketch holds
   its bootloader, for one) or when two of them are connected. `arduino-cli
   board list` shows the names and ports. The sketch is built in a
   temporary folder, which is removed when the run ends. The output is
-  shown from the moment the port can be opened after the upload, so what a
-  program prints in its first seconds may be missed.
+  shown from the moment the port can be opened after the upload; see
+  "Output at the start" below.
 
 - **Start and repeat.** The top level, or `main` in a file laid out as a C
   program, runs once when the board starts, as Arduino's `setup()`. A
@@ -757,7 +771,15 @@ wind emit blink.wind                   # prints the C the sketch holds
 - **The library.** `import ::vendor/arduino` brings in the pin, analog,
   time, pulse and shift functions and the board's constants (`HIGH`,
   `OUTPUT`, `LED_BUILTIN`, `A0` to `A5` and so on), all taken from the
-  board's own Arduino core.
+  board's own Arduino core, and the serial port: `serialConnected()`,
+  `serialAvailable()` and `waitForSerial(ms)`.
+- **Output at the start.** On a board whose serial port is its own USB
+  connection, such as the Pico, what is printed before a computer opens the
+  port is lost, and `wind run` opens it some seconds after the upload. A
+  program that should not lose its first lines starts with
+  `arduino.waitForSerial(10000)`, which waits for the port to be opened, or
+  ten seconds at most so that the board also starts on its own. Where the
+  port goes through a separate USB chip, as on an Uno, it returns at once.
 - **Sizes.** Checking assumes an AVR board (the Uno, Nano or Mega): `int`,
   `uint` and pointers are 16 bits, so `int x = 40000` is an error; use
   `i32`. A `double`, and so `float` and `f64`, is 32 bits there. `i128` and

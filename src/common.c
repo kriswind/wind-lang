@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -266,7 +267,11 @@ const char *temp_dir(void) {
 
 static char *libs;
 
-static bool is_directory(const char *path) {
+bool file_exists(const char *path) {
+    return access(path, F_OK) == 0;
+}
+
+bool is_directory(const char *path) {
     struct stat info;
     return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
 }
@@ -301,21 +306,63 @@ const char *libs_dir(void) {
     return libs;
 }
 
-char *path_of_import(const char *from, Str written) {
-    bool has_extension = written.len >= 5 &&
-                         memcmp(written.data + written.len - 5, ".wind", 5) == 0;
-    const char *extension = has_extension ? "" : ".wind";
-    char *found;
+char *import_base(const char *from, Str written, bool *folder_only) {
+    *folder_only = written.len > 0 && written.data[written.len - 1] == '/';
+    while (written.len > 1 && written.data[written.len - 1] == '/') written.len--;
     if (written.len >= 2 && written.data[0] == ':' && written.data[1] == ':') {
         if (!libs) return NULL;
         Str rest = {written.data + 2, written.len - 2};
-        found = xmalloc(strlen(libs) + rest.len + 7);
+        char *found = xmalloc(strlen(libs) + rest.len + 2);
         sprintf(found, "%s/%.*s", libs, (int)rest.len, rest.data);
-    } else {
-        found = path_beside(from, written);
+        return found;
     }
-    char *path = xmalloc(strlen(found) + 6);
-    sprintf(path, "%s%s", found, extension);
-    free(found);
-    return path;
+    return path_beside(from, written);
+}
+
+typedef struct {
+    char **items;
+    size_t count;
+    size_t cap;
+} PathList;
+
+static void collect_wind_files(const char *folder, PathList *list) {
+    DIR *entries = opendir(folder);
+    if (!entries) return;
+    for (struct dirent *entry; (entry = readdir(entries));) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (name[0] == '.') continue;
+        char *full = xmalloc(strlen(folder) + len + 2);
+        sprintf(full, "%s/%s", folder, name);
+        struct stat info;
+        bool is_file = false;
+        if (stat(full, &info) == 0 && S_ISDIR(info.st_mode)) {
+            collect_wind_files(full, list);
+        } else if (stat(full, &info) == 0 && S_ISREG(info.st_mode) && len > 5 &&
+                   strcmp(name + len - 5, ".wind") == 0) {
+            is_file = true;
+        }
+        if (!is_file) {
+            free(full);
+            continue;
+        }
+        if (list->count == list->cap) {
+            list->cap = list->cap ? list->cap * 2 : 8;
+            list->items = xrealloc(list->items, list->cap * sizeof *list->items);
+        }
+        list->items[list->count++] = full;
+    }
+    closedir(entries);
+}
+
+static int compare_paths(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+size_t wind_files_in(const char *folder, char ***files) {
+    PathList list = {0};
+    collect_wind_files(folder, &list);
+    if (list.count) qsort(list.items, list.count, sizeof *list.items, compare_paths);
+    *files = list.items;
+    return list.count;
 }

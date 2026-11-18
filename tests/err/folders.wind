@@ -1,0 +1,11 @@
+#module tool
+#module again
+import folders/clash
+import folders/named
+import folders/blank
+import folders/nowhere/
+import folders/absent
+import ::geometry
+int main() {
+    return geometry.squareArea(2) + geo.missing() + clash.only_a()
+}

@@ -484,8 +484,9 @@ static void handle_definition(Server *server, Arena *arena, const Json *id,
        declaration, which may be in an imported file. */
     const Unit *target = symbol->unit;
     SrcLoc loc = symbol->loc;
-    if (symbol->kind == SYM_MODULE && symbol->module) {
-        target = symbol->module;
+    if (symbol->kind == SYM_MODULE && symbol->part_count) {
+        /* A folder's module goes to its first file. */
+        target = symbol->parts[0];
         loc = (SrcLoc){.line = 1, .col = 1};
     }
     Buf buf = begin_result(arena, id);
@@ -615,6 +616,27 @@ typedef struct {
 /* Adds the Wind files in the directory at dir_path, and in the directories
    below it, to the completion list. shown is the same directory as an
    import would spell it: empty, or ending in "/". */
+/* Adds one path to the completion list, unless it is the document's own
+   file, which it cannot import. file is where the path leads. */
+static void add_importable(ImportSearch *search, const char *file, Str text, int kind) {
+    char *real_path = path_canonical(file);
+    const char *own = search->doc->unit.real_path;
+    if (!real_path || !own || strcmp(real_path, own) != 0) {
+        Buf *buf = search->buf;
+        if (search->count++) buf_puts(buf, ",");
+        buf_puts(buf, "{\"label\":");
+        buf_json_string(buf, text);
+        buf_printf(buf, ",\"kind\":%d,\"filterText\":", kind);
+        buf_json_string(buf, text);
+        buf_puts(buf, ",\"textEdit\":{\"range\":");
+        write_range(buf, search->doc->unit.src, search->typed);
+        buf_puts(buf, ",\"newText\":");
+        buf_json_string(buf, text);
+        buf_puts(buf, "}}");
+    }
+    free(real_path);
+}
+
 static void list_importable(ImportSearch *search, const char *dir_path, const char *shown,
                             int depth) {
     DIR *entries = opendir(dir_path[0] ? dir_path : ".");
@@ -632,30 +654,24 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
         if (stat(full, &info) != 0) {
             /* unreadable or a dangling link: not importable */
         } else if (S_ISDIR(info.st_mode)) {
+            /* A folder that holds Wind files is a module of its own,
+               imported by the folder's path. */
+            char **files;
+            size_t count = wind_files_in(full, &files);
+            if (count) {
+                add_importable(search, full, (Str){spelled, strlen(spelled)},
+                               LSP_COMPLETION_MODULE);
+            }
+            for (size_t i = 0; i < count; i++) free(files[i]);
+            free(files);
             if (depth < IMPORT_SEARCH_DEPTH) {
                 strcat(full, "/");
                 strcat(spelled, "/");
                 list_importable(search, full, spelled, depth + 1);
             }
         } else if (S_ISREG(info.st_mode) && len > 5 && strcmp(name + len - 5, ".wind") == 0) {
-            /* A file cannot import itself. */
-            char *real_path = path_canonical(full);
-            const char *own = search->doc->unit.real_path;
-            if (!real_path || !own || strcmp(real_path, own) != 0) {
-                Buf *buf = search->buf;
-                Str text = {spelled, strlen(spelled) - (search->bare ? 5 : 0)};
-                if (search->count++) buf_puts(buf, ",");
-                buf_puts(buf, "{\"label\":");
-                buf_json_string(buf, text);
-                buf_printf(buf, ",\"kind\":%d,\"filterText\":", LSP_COMPLETION_FILE);
-                buf_json_string(buf, text);
-                buf_puts(buf, ",\"textEdit\":{\"range\":");
-                write_range(buf, search->doc->unit.src, search->typed);
-                buf_puts(buf, ",\"newText\":");
-                buf_json_string(buf, text);
-                buf_puts(buf, "}}");
-            }
-            free(real_path);
+            add_importable(search, full, (Str){spelled, strlen(spelled) - (search->bare ? 5 : 0)},
+                           LSP_COMPLETION_FILE);
         }
         free(full);
         free(spelled);
@@ -663,8 +679,9 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
     closedir(entries);
 }
 
-/* Completes the path of an import with every Wind file at or below the
-   directory the path so far points into, each as the whole path to write.
+/* Completes the path of an import with every Wind file and every folder
+   that holds one at or below the directory the path so far points into,
+   each as the whole path to write.
    An item replaces all of what was typed, so that the client need not agree
    with the server on what a word is inside a path. A path that starts with
    "::" is looked for in the libraries directory. */
@@ -732,12 +749,15 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     if (module) {
         /* After "module." only what the module exports can follow. */
         bool first = true;
-        for (size_t i = 0; module->module && i < module->module->symbols.count; i++) {
-            const Symbol *symbol = module->module->symbols.items[i];
-            if (!symbol->exported) continue;
-            if (!first) buf_puts(&buf, ",");
-            write_completion(&buf, arena, symbol);
-            first = false;
+        for (size_t part = 0; part < module->part_count; part++) {
+            const Unit *unit = module->parts[part];
+            for (size_t i = 0; i < unit->symbols.count; i++) {
+                const Symbol *symbol = unit->symbols.items[i];
+                if (!symbol->exported || !symbol->global) continue;
+                if (!first) buf_puts(&buf, ",");
+                write_completion(&buf, arena, symbol);
+                first = false;
+            }
         }
         buf_puts(&buf, "]");
         send_result(&buf);

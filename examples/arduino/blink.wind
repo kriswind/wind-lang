@@ -19,6 +19,12 @@ import ::vendor/arduino
 int blinks = 0
 
 arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+
+// On a board whose serial port is its own USB connection, such as the Pico,
+// what is printed before a computer opens the port is lost, and "wind run"
+// opens it some seconds after the upload; so the program waits for that,
+// for ten seconds at most, so that it also starts on its own.
+arduino.waitForSerial(10000)
 cout << "blinking\n"
 
 void loop() {
