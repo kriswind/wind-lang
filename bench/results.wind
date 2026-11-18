@@ -1,0 +1,136 @@
+// What the benchmark scripts share for writing their results files: the
+// Markdown files in bench/ that the README links to, which each full run of
+// a script writes again.
+
+import ::math
+import ::os
+import ::text
+
+// Appends the first version number in what a command prints, on the first
+// line that holds pick unless that is "": a run of digits and dots with at
+// least one dot, as "16.2.1", or a dated build, as "dev-2026-10". Returns
+// false, appending nothing, if the command cannot be run or prints none.
+export bool tool_version(string command[], string pick, char into[..]) {
+    char out[..]
+    char err[..]
+    defer delete(out)
+    defer delete(err)
+    if (os.capture(command, "", out, err) < 0) return false
+    append(out, string(err))
+    string lines[..]
+    defer delete(lines)
+    text.split(string(out), "\n", lines)
+    for (string line in lines) {
+        if (len(pick) > 0 && !text.contains(line, pick)) continue
+        for (int at = 0; at < len(line); at++) {
+            int end = version_at(line, at)
+            if (end > at) {
+                append(into, line[at:end])
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Where a version number that starts at position at in line ends, or at if
+// none starts there.
+int version_at(string line, int at) {
+    if (at > 0 && text.is_digit(line[at - 1])) return at
+    if (text.starts_with(line[at:], "dev-")) {
+        int end = at + 4
+        int digits = 0
+        while (end < len(line) && (text.is_digit(line[end]) || line[end] == '-')) {
+            if (text.is_digit(line[end])) digits++
+            end++
+        }
+        if (line[end - 1] == '-') end--
+        return digits >= 6 ? end : at
+    }
+    int end = at
+    int dots = 0
+    while (end < len(line) && (text.is_digit(line[end]) ||
+                               (line[end] == '.' && end > at && end + 1 < len(line) &&
+                                text.is_digit(line[end + 1])))) {
+        if (line[end] == '.') dots++
+        end++
+    }
+    return dots > 0 && text.is_digit(line[at]) ? end : at
+}
+
+// Appends the processor and system the benchmarks ran on, for the reader
+// to weigh the numbers by, as "AMD Ryzen 5 5600H, Linux x86_64".
+export void machine(char into[..]) {
+    char info[..]
+    defer delete(info)
+    bool named = false
+    if (os.read_file("/proc/cpuinfo", info)) {
+        string lines[..]
+        defer delete(lines)
+        text.split(string(info), "\n", lines)
+        for (string line in lines) {
+            if (named || !text.starts_with(line, "model name")) continue
+            int colon = text.index_of(line, ":")
+            append(into, text.trim(line[colon + 1:]))
+            named = true
+        }
+    }
+    if (!named) append(into, "an unknown processor")
+    string system[2] = {"uname", "-s"}
+    string kind[2] = {"uname", "-m"}
+    char out[..]
+    char err[..]
+    defer delete(out)
+    defer delete(err)
+    os.capture(system, "", out, err)
+    append(into, ", ", text.trim(string(out)))
+    clear(out)
+    os.capture(kind, "", out, err)
+    append(into, " ", text.trim(string(out)))
+}
+
+export float geometric_mean(float values[]) {
+    float sum = 0
+    for (float value in values) sum += math.log(value)
+    return math.exp(sum / float(len(values)))
+}
+
+// Appends a ratio with as many digits as it needs to be told apart from
+// its neighbours: "1.04", "12.9", "128".
+export void ratio_text(char into[..], float ratio) {
+    int digits = ratio < 10 ? 2 : ratio < 100 ? 1 : 0
+    append(into, fixed(ratio, digits))
+}
+
+// Appends a bar one block long per times the baseline, in eighths of a
+// block.
+export void bar(char into[..], float ratio) {
+    int eighths = int(math.round(ratio * 8))
+    if (eighths < 1) eighths = 1
+    for (int i = 0; i < eighths / 8; i++) append(into, "█")
+    string partial[8] = {"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"}
+    append(into, partial[eighths % 8])
+}
+
+// Appends the top of a results file: what it is, what wrote it, where it
+// ran, and how each time was taken, as in "the best of up to 3 runs".
+export void heading(char into[..], string title, string command, string timing) {
+    char date[..]
+    char where[..]
+    defer delete(date)
+    defer delete(where)
+    os.today(date)
+    machine(where)
+    append(into, "# ", title, "\n\n", "Written by `", command, "` on ", string(date),
+           "; running it again replaces this file.\n", "Measured on ", string(where),
+           ". Each time is ", timing, ".")
+}
+
+// Writes a results file, and says so.
+export void write(string path, string contents) {
+    if (os.write_file(path, contents)) {
+        cout << "wrote " << path << "\n"
+    } else {
+        cerr << "cannot write " << path << "\n"
+    }
+}

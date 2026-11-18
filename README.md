@@ -1251,18 +1251,20 @@ Those files come from the Python version, the reference, which is written
 for clarity rather than speed.
 
 ```sh
-python3 bench/problems/run.py                     # check everything at test size
-python3 bench/problems/run.py --size bench        # check, time, write RESULTS.md
-python3 bench/problems/run.py --only wind knapsack sudoku
-python3 bench/problems/run.py --expected two_sum  # rewrite the answers from Python
+wind run bench/problems/run.wind                     # check everything at test size
+wind run bench/problems/run.wind --size bench        # check, time, write RESULTS.md
+wind run bench/problems/run.wind --only wind knapsack sudoku
+wind run bench/problems/run.wind --expected two_sum  # rewrite the answers from Python
 ```
 
-`make test` runs the Wind version of every problem at test size, with and
+The runner is itself a Wind program, built on `::os` and `::text`; run it
+from the repository root. `make test` runs the Wind version of every
+problem at test size, with and
 without bounds checks, so the set doubles as a body of real programs that
 each change to the compiler must still get right.
 
 The latest timings are in
-[bench/problems/RESULTS.md](bench/problems/RESULTS.md), which `run.py`
+[bench/problems/RESULTS.md](bench/problems/RESULTS.md), which `run.wind`
 writes whenever it checks and times every problem at bench size with every
 answer right. The programs are written plainly in every language, with no
 unchecked reads in Rust and no tuning beyond sensible types, so the numbers

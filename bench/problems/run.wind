@@ -1,0 +1,428 @@
+// Builds, checks and times the problem set in bench/problems.
+//
+// Run from the repository root:
+//
+//     wind run bench/problems/run.wind                   check every problem at test size
+//     wind run bench/problems/run.wind --size bench      check and time at bench size
+//     wind run bench/problems/run.wind --only wind       one language
+//     wind run bench/problems/run.wind --skip python edit_distance union_find
+//     wind run bench/problems/run.wind --expected        write the expected answers
+//
+// Each problem is a folder holding the same program in several languages
+// (main.wind, main.c, main.rs, main.go, main.js, main.py), which takes
+// "test" or "bench" as its argument, generates its input with the shared
+// generator (seed = seed * 48271 % 2147483647, from 42) and prints its
+// answer. Every program's output must equal the folder's expected-test.txt
+// or expected-bench.txt, which --expected writes from the Python version,
+// the reference. A language whose toolchain is missing is left out.
+//
+// At bench size a run of every problem in which every answer is right also
+// writes bench/problems/RESULTS.md, the tables that the README links to.
+//
+// The exit status is 1 if any program fails to build, fails to run, or
+// gives a different answer.
+
+import ::os
+import ::text
+import ../results
+
+const string HERE = "bench/problems"
+const string OUT = "build/problems"
+const string REFERENCE = "python"
+// A program that takes longer than this, in seconds, is not run again: its
+// time is far from the noise that repeating is there to remove.
+const float SLOW = 1.0
+
+// One language: what it is called, the file its version is in, the tool
+// it needs, and the commands that build it (none for an interpreted one),
+// run it, and ask its toolchain's version. A command is words with
+// "{wind}", "{src}" and "{exe}" in them for the compiler, the source and
+// the program built.
+struct Language {
+    string name
+    string label
+    string toolchain
+    string file
+    string tool
+    string build[..]
+    string run[..]
+    string version[..]
+}
+
+Language languages[..]
+string wind = "wind"
+
+void add(string name, string label, string toolchain, string file, string tool, string build,
+         string run, string version) {
+    append(languages, {name, label, toolchain, file, tool})
+    int at = len(languages) - 1
+    text.split(build, "", languages[at].build)
+    text.split(run, "", languages[at].run)
+    text.split(version, "", languages[at].version)
+}
+
+void add_languages() {
+    if (os.is_file("build/wind")) wind = "build/wind"
+    add("wind", "Wind", "wind", "main.wind", wind, "{wind} build {src} -o {exe}", "{exe}",
+        "{wind} --version")
+    add("wind-unchecked", "Wind, no bounds checks", "wind", "main.wind", wind,
+        "{wind} build --no-bounds-check {src} -o {exe}", "{exe}", "{wind} --version")
+    add("c", "C", c_compiler_name(), "main.c", "cc", "cc -std=c11 -O2 -o {exe} {src} -lm", "{exe}",
+        "cc --version")
+    add("rust", "Rust", "rustc", "main.rs", "rustc",
+        "rustc -C opt-level=3 -C panic=abort -o {exe} {src}", "{exe}", "rustc --version")
+    add("go", "Go", "Go", "main.go", "go", "go build -o {exe} {src}", "{exe}", "go version")
+    add("js", "JavaScript (Node.js)", "Node.js", "main.js", "node", "", "node {src}",
+        "node --version")
+    add("python", "Python", "CPython", "main.py", "python3", "", "python3 {src}",
+        "python3 --version")
+}
+
+string c_compiler_name() {
+    string command[2] = {"cc", "--version"}
+    char out[..]
+    char err[..]
+    os.capture(command, "", out, err)
+    string said = string(out)
+    for (int i = 0; i + 5 <= len(said); i++) {
+        bool clang = true
+        string word = "clang"
+        for (int j = 0; j < 5; j++) clang = clang && text.to_lower(said[i + j]) == word[j]
+        if (clang) return "Clang"
+    }
+    return "GCC"
+}
+
+// Appends command to into, with its placeholders filled in.
+void fill(string into[..], string command[], string src, string exe) {
+    for (string word in command) {
+        if (word == "{wind}") {
+            append(into, wind)
+        } else if (word == "{src}") {
+            append(into, src)
+        } else if (word == "{exe}") {
+            append(into, exe)
+        } else {
+            append(into, word)
+        }
+    }
+}
+
+// What the command line asks for.
+struct Options {
+    string size
+    int runs
+    bool expected
+    string only[..]
+    string skip[..]
+    string problems[..]
+}
+
+void usage(string problem) {
+    cerr << problem << "\n"
+    cerr << "usage: wind run bench/problems/run.wind [--size test|bench] [--runs n] "
+         << "[--only language] [--skip language] [--expected] [problem ...]\n"
+    exit(2)
+}
+
+bool listed(string names[], string name) {
+    for (string n in names) {
+        if (n == name) return true
+    }
+    return false
+}
+
+int main(int argc, string argv[]) {
+    Options options = {"test", 3, false}
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i]
+        bool takes = arg == "--size" || arg == "--runs" || arg == "--only" || arg == "--skip"
+        if (takes && i + 1 >= argc) {
+            char problem[..]
+            append(problem, "missing a value after ", arg)
+            usage(string(problem))
+        }
+        if (arg == "--size") {
+            i++
+            options.size = argv[i]
+            if (options.size != "test" && options.size != "bench") usage("--size is test or bench")
+        } else if (arg == "--runs") {
+            i++
+            int runs = 0
+            if (!text.parse_int(argv[i], &runs) || runs < 1) usage("--runs takes a count")
+            options.runs = runs
+        } else if (arg == "--only") {
+            i++
+            append(options.only, argv[i])
+        } else if (arg == "--skip") {
+            i++
+            append(options.skip, argv[i])
+        } else if (arg == "--expected") {
+            options.expected = true
+        } else if (len(arg) > 0 && arg[0] == '-') {
+            usage(arg)
+        } else {
+            append(options.problems, arg)
+        }
+    }
+    if (!os.is_dir(HERE)) {
+        cerr << "run this from the repository root, where " << HERE << " is\n"
+        exit(2)
+    }
+
+    string known[..]
+    string entries[..]
+    os.list_dir(HERE, entries)
+    for (string entry in entries) {
+        char path[..]
+        os.join(path, HERE, entry)
+        if (entry[0] != '.' && os.is_dir(string(path))) append(known, entry)
+        delete(path)
+    }
+    string chosen[..]
+    if (len(options.problems) == 0) {
+        chosen = clone(known)
+    } else {
+        for (string name in options.problems) {
+            if (!listed(known, name)) {
+                char problem[..]
+                append(problem, "unknown problem: ", name)
+                usage(string(problem))
+            }
+            append(chosen, name)
+        }
+    }
+
+    add_languages()
+    // The languages to run, as indexes into languages, in the order they
+    // are shown, and in the order they run: the reference first, since
+    // --expected writes the answers the others are checked against.
+    int langs[..]
+    for (int i, Language lang in languages) {
+        if (len(options.only) > 0 && !listed(options.only, lang.name)) continue
+        if (listed(options.skip, lang.name) || !os.on_path(lang.tool)) continue
+        append(langs, i)
+    }
+    int order[..]
+    for (int pass = 0; pass < 2; pass++) {
+        for (int at in langs) {
+            if ((languages[at].name == REFERENCE) == (pass == 0)) append(order, at)
+        }
+    }
+    if (options.expected && (len(order) == 0 || languages[order[0]].name != REFERENCE)) {
+        usage("--expected needs the reference language, python")
+    }
+    int runs = options.size == "bench" ? options.runs : 1
+
+    int failures = 0
+    float times[string]
+    for (string problem in chosen) {
+        char folder[..]
+        os.join(folder, HERE, problem)
+        char expected_path[..]
+        append(expected_path, string(folder), "/expected-", options.size, ".txt")
+        char expected[..]
+        bool have_expected = !options.expected && os.read_file(string(expected_path), expected)
+        for (int at in order) {
+            char src[..]
+            os.join(src, string(folder), languages[at].file)
+            if (!os.is_file(string(src))) continue
+            char exe[..]
+            append(exe, OUT, "/", problem, "/", languages[at].name)
+            char out[..]
+            char err[..]
+            if (len(languages[at].build) > 0) {
+                os.make_dirs(os.dir_name(string(exe)))
+                string command[..]
+                fill(command, languages[at].build, string(src), string(exe))
+                if (os.capture(command, "", out, err) != 0) {
+                    failures++
+                    cout << "FAIL " << problem << " " << languages[at].name << ": build\n"
+                         << text.trim(string(out)) << text.trim(string(err)) << "\n"
+                    continue
+                }
+            }
+            string command[..]
+            fill(command, languages[at].run, string(src), string(exe))
+            append(command, options.size)
+            float best = -1
+            int status = 0
+            for (int run = 0; run < runs; run++) {
+                clear(out)
+                clear(err)
+                float start = float(os.clock())
+                status = os.capture(command, "", out, err)
+                float elapsed = float(os.clock()) - start
+                if (status != 0) break
+                if (best < 0 || elapsed < best) best = elapsed
+                if (elapsed > SLOW) break
+            }
+            if (status != 0) {
+                failures++
+                cout << "FAIL " << problem << " " << languages[at].name << ": exit " << status << "\n"
+                     << text.trim(string(out)) << text.trim(string(err)) << "\n"
+                continue
+            }
+            if (options.expected && languages[at].name == REFERENCE) {
+                os.write_file(string(expected_path), string(out))
+                clear(expected)
+                append(expected, string(out))
+                have_expected = true
+            }
+            if (!have_expected) {
+                failures++
+                cout << "FAIL " << problem << ": no " << os.base_name(string(expected_path))
+                     << "; write it with --expected\n"
+                break
+            }
+            if (string(out) != string(expected)) {
+                failures++
+                cout << "FAIL " << problem << " " << languages[at].name << ": wrong answer\n--- expected\n"
+                     << string(expected) << "--- printed\n" << string(out)
+                continue
+            }
+            char key[..]
+            append(key, problem, "/", languages[at].name)
+            times[string(key)] = best
+        }
+    }
+
+    cout << len(times) << " checked, " << failures << " failed\n"
+    if (options.size == "bench" && len(times) > 0) {
+        print_table(chosen, langs, times, runs)
+    }
+    bool every = len(options.problems) == 0
+    if (options.size == "bench" && every && failures == 0 && has_c(langs)) {
+        cout << "\n"
+        write_results(chosen, langs, times, runs)
+    }
+    return failures > 0 ? 1 : 0
+}
+
+bool has_c(int langs[]) {
+    for (int at in langs) {
+        if (languages[at].name == "c") return true
+    }
+    return false
+}
+
+// The time a language took on a problem, or -1 if there is none.
+float time_of(float times[string], string problem, string name) {
+    char key[..]
+    append(key, problem, "/", name)
+    float t = has(times, string(key)) ? times[string(key)] : -1
+    delete(key)
+    return t
+}
+
+void print_table(string chosen[], int langs[], float times[string], int runs) {
+    string base = has_c(langs) ? "c" : languages[langs[0]].name
+    cout << "\nseconds, best of " << runs << "; the mean is the geometric mean of the ratios to "
+         << base << "\n\n"
+    int width = 0
+    for (string problem in chosen) width = len(problem) > width ? len(problem) : width
+    width += 2
+    cout << left("", width)
+    for (int at in langs) cout << right(languages[at].name, 16)
+    cout << "\n"
+    for (string problem in chosen) {
+        cout << left(problem, width)
+        for (int at in langs) {
+            float t = time_of(times, problem, languages[at].name)
+            if (t < 0) {
+                cout << right("-", 16)
+            } else {
+                cout << right(fixed(t, 3), 16)
+            }
+        }
+        cout << "\n"
+    }
+    cout << left("mean", width)
+    for (int at in langs) {
+        float ratios[..]
+        for (string problem in chosen) {
+            float t = time_of(times, problem, languages[at].name)
+            float b = time_of(times, problem, base)
+            if (t >= 0 && b > 0) append(ratios, t / b)
+        }
+        if (len(ratios) == 0) {
+            cout << right("-", 16)
+        } else {
+            char mean[..]
+            append(mean, fixed(results.geometric_mean(ratios), 2), "x")
+            cout << right(string(mean), 16)
+            delete(mean)
+        }
+        delete(ratios)
+    }
+    cout << "\n"
+}
+
+// Writes bench/problems/RESULTS.md from a run of every problem.
+void write_results(string chosen[], int langs[], float times[string], int runs) {
+    char page[..]
+    char timing[..]
+    append(timing, "the best of up to ", runs, " runs")
+    results.heading(page, "Problem set results", "wind run bench/problems/run.wind --size bench",
+                    string(timing))
+    append(page, "\n\nTime at bench size as a multiple of C's, and C's own time in seconds. ",
+           "Every program's answer was checked first.\n\n| Problem |")
+    for (int at in langs) {
+        if (languages[at].name != "c") append(page, " ", languages[at].label, " |")
+    }
+    append(page, " C, seconds |\n| --- |")
+    for (int at in langs) append(page, " ---: |")
+    append(page, "\n")
+    for (string problem in chosen) {
+        float base = time_of(times, problem, "c")
+        append(page, "| `", problem, "` |")
+        for (int at in langs) {
+            if (languages[at].name == "c") continue
+            float t = time_of(times, problem, languages[at].name)
+            append(page, " ")
+            if (t < 0 || base <= 0) {
+                append(page, "-")
+            } else {
+                results.ratio_text(page, t / base)
+            }
+            append(page, " |")
+        }
+        append(page, " ")
+        if (base > 0) {
+            append(page, fixed(base, 3))
+        } else {
+            append(page, "-")
+        }
+        append(page, " |\n")
+    }
+    append(page, "| **mean** |")
+    for (int at in langs) {
+        if (languages[at].name == "c") continue
+        float ratios[..]
+        for (string problem in chosen) {
+            float t = time_of(times, problem, languages[at].name)
+            float b = time_of(times, problem, "c")
+            if (t >= 0 && b > 0) append(ratios, t / b)
+        }
+        append(page, " ")
+        if (len(ratios) == 0) {
+            append(page, "-")
+        } else {
+            append(page, "**")
+            results.ratio_text(page, results.geometric_mean(ratios))
+            append(page, "**")
+        }
+        append(page, " |")
+        delete(ratios)
+    }
+    append(page, " |\n\nThe mean is the geometric mean of the ratios.\n\n| | Toolchain |\n| --- | --- |\n")
+    for (int at in langs) {
+        append(page, "| ", languages[at].label, " | ", languages[at].toolchain)
+        string command[..]
+        fill(command, languages[at].version, "", "")
+        char version[..]
+        if (results.tool_version(command, "", version)) append(page, " ", string(version))
+        append(page, " |\n")
+    }
+    results.write("bench/problems/RESULTS.md", string(page))
+}

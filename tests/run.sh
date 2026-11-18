@@ -98,6 +98,16 @@ for src in tests/std/*.wind; do
     fi
 done
 
+# The scripts in bench/ that are written in Wind must check cleanly.
+for src in bench/results.wind bench/problems/run.wind; do
+    total=$((total + 1))
+    actual=$("$WIND" check "$src" 2>&1; echo "[exit $?]")
+    if [ "$actual" != "[exit 0]" ]; then
+        failed=$((failed + 1))
+        printf 'FAIL %s\n%s\n' "$src" "$actual"
+    fi
+done
+
 # bench/problems/*/main.wind, at test size, must print expected-test.txt,
 # with bounds checks and without them.
 for src in bench/problems/*/main.wind; do
