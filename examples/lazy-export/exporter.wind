@@ -1,0 +1,6 @@
+export {
+	const string animal = "Cat"
+	const u8 f  = 6
+}
+
+export const char *milkshake = "Vanilla"

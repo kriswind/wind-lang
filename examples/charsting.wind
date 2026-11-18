@@ -1,0 +1,11 @@
+char *i = "animal"
+string j = "animal"
+
+int k
+loop:
+if (i[k] != '\0') {
+	k++
+	goto loop
+}
+
+cout << k == len(j)
