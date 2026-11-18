@@ -1,0 +1,32 @@
+// What maps, and loops over them, do not allow.
+struct Point { int x; int y }
+
+int ages[string]
+f64 weights[f64]
+int corners[Point]
+const int FIXED[string] = {"a": 1}
+int listed[3] = {"a": 1, "b": 2}
+
+void needs(int counts[string]) {}
+extern void c_side(int counts[string])
+
+int main() {
+    ages[3] = 1
+    string who = ages
+    int *at = &ages["ada"]
+    ages = ages
+    needs(weights)
+    append(ages, 1)
+    cin >> ages["bo"]
+    cout << has(ages) << has(ages, 1) << "\n"
+    remove(listed, 1)
+    int digits[int] = {1, 2}
+    for (int age in ages) cout << age
+    for (string name, string age in ages) cout << name << age
+    for (int n in 42) cout << n
+    for (string name in ages) {
+        name = "changed"
+    }
+    cout << who << at << digits << "\n"
+    return 0
+}

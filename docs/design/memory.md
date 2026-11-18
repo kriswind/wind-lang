@@ -9,7 +9,11 @@ This note records what was chosen and why, and what is still to come.
 | | Choice | Why |
 | --- | --- | --- |
 | Growable array | `int xs[..]` | C's array syntax, extended; reads like `int xs[5]` and `int xs[]` |
-| Map | `int counts[string]` (to come) | the same shape, as in the D language |
+| Map | `int counts[string]` | the same shape, as in the D language |
+| Map keys | integers, `char`, `bool`, enums, pointers, strings; a string key is copied into the map | keys compare byte for byte, or as text; floats and structs have no exact equality in Wind |
+| Missing key | reads as zero and adds nothing; assigning puts it in, and `m[k] += 1` starts from zero | as in Go and Odin; `has(m, k)` tells the two apart without multiple return values |
+| Map order | the order keys were first put | a program's output is the same on every run, as in Python; Go's random order is a source of flaky output |
+| Going through | `for (T x in a)`, `for (int i, T x in a)`, `for (K k, V v in m)` | the types are written, as everywhere in Wind; one name is the element or key, two add the index or value |
 | Empty value | a growable array starts empty and allocates nothing | the zero value is always valid, as everywhere in Wind |
 | Built-ins | `append(xs, v...)`, `pop(xs)`, `clear(xs)`, `reserve(xs, n)`, `delete(xs)`, `clone(a)` | arrays are passed by reference, so the array is named, not `&xs` |
 | Passing | a growable array goes to a `T name[]` parameter as a view of its elements; a `T name[..]` parameter is the caller's own array, to grow | functions written for fixed arrays work unchanged |
@@ -36,19 +40,22 @@ it leaves written out before it, innermost first. A `return` with a value
 works the value out first. A function with a `defer` cannot use `goto`,
 which could jump past it.
 
+A map is one C type, `wind_map`, whatever its keys and values: its entries
+are kept in arrays in the order they were put, with a hash table of where
+they are, and the generated code tells the map functions the sizes of a key
+and a value. A removed entry stays in place, marked as gone, until the table
+is rebuilt, which keeps the order of the others. Writing `m[k] = v` works
+out the key and the value first, and then finds or puts the entry, so the
+value never refers to a place the insertion has moved.
+
 ## To come
 
-1. **Maps**: `int counts[string]`, with `has(m, key)`, `remove(m, key)`,
-   `delete(m)`, and reading a missing key giving the zero value. Iterating
-   over keys needs a `for` over a map.
-2. **`for` over an array**: `for (int x in xs)`, and over a map's keys and
-   values.
-3. **Building strings**: `append(text, "more")` on a `char[..]` to add a
+1. **Building strings**: `append(text, "more")` on a `char[..]` to add a
    string's bytes, `string(text)` for a view of them, and formatting into
    one, which gives string concatenation and padded, fixed-precision output.
-4. **Scratch memory**: `#temp { ... }`, where everything allocated inside is
+2. **Scratch memory**: `#temp { ... }`, where everything allocated inside is
    freed as the block ends; it could later name an allocator to use there.
-5. **Leak reports**: an optional report, at exit, of growable arrays never
+3. **Leak reports**: an optional report, at exit, of growable arrays never
    deleted, for programs that should clean up.
-6. **Boards**: a warning, or an opt-in, for growable arrays on boards with a
+4. **Boards**: a warning, or an opt-in, for growable arrays on boards with a
    few kilobytes of memory, where the heap fragments quickly.

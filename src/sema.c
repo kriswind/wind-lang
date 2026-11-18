@@ -545,7 +545,19 @@ static TypeKind check_init(Checker *c, Expr *expr, TypeKind hint) {
 /* If expr is the name of an array, resolves it and returns its symbol, with
    expr->type set to the element type. Returns NULL, having done nothing, for
    any other expression. */
+static const Symbol *named_operand(Checker *c, Expr *expr, bool map);
+
 static const Symbol *array_operand(Checker *c, Expr *expr) {
+    return named_operand(c, expr, false);
+}
+
+/* As array_operand, for the name of a map; expr->type is set to the
+   values' type. */
+static const Symbol *map_operand(Checker *c, Expr *expr) {
+    return named_operand(c, expr, true);
+}
+
+static const Symbol *named_operand(Checker *c, Expr *expr, bool map) {
     if (expr->kind != EXPR_IDENT) return NULL;
     Str module = expr->as.ident.module;
     Symbol *symbol;
@@ -557,7 +569,7 @@ static const Symbol *array_operand(Checker *c, Expr *expr) {
     } else {
         symbol = lookup(c, expr->as.ident.name);
     }
-    if (!symbol || !any_array(symbol)) return NULL;
+    if (!symbol || (map ? !symbol->is_map : !any_array(symbol))) return NULL;
     if (module.len) {
         resolve_member(c, module, expr->as.ident.module_loc, expr->as.ident.name,
                        expr->as.ident.name_loc);
@@ -636,6 +648,16 @@ static void check_index_value(Checker *c, Expr *index, Indexed of) {
 
 static TypeKind check_index(Checker *c, Expr *expr) {
     Expr *base = expr->as.index.base;
+    const Symbol *map = map_operand(c, base);
+    if (map) {
+        Expr *key = expr->as.index.index;
+        TypeKind found = check_expr(c, key, map->key_type);
+        if (map->key_type != TYPE_INVALID && found != TYPE_INVALID && found != map->key_type) {
+            error(c, key->loc, "a key of map '%.*s' must be '%s', found '%s'",
+                  NAME(map->name), type_name(map->key_type), type_name(found));
+        }
+        return map->type;
+    }
     const Symbol *array = array_operand(c, base);
     TypeKind result = TYPE_INVALID;
     if (array) {
@@ -722,10 +744,10 @@ static TypeKind check_len(Checker *c, Expr *expr) {
         return TYPE_INT;
     }
     Expr *operand = expr->as.call.args[0];
-    if (!array_operand(c, operand)) {
+    if (!array_operand(c, operand) && !map_operand(c, operand)) {
         TypeKind type = check_expr(c, operand, TYPE_INVALID);
         if (type != TYPE_STRING && type != TYPE_INVALID) {
-            error(c, operand->loc, "'len' needs an array or a string, found '%s'",
+            error(c, operand->loc, "'len' needs an array, a map or a string, found '%s'",
                   type_name(type));
         }
     }
@@ -845,6 +867,15 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         const Expr *root = operand;
         while ((root->kind == EXPR_FIELD && !root->as.field.through_pointer) ||
                root->kind == EXPR_INDEX) {
+            if (root->kind == EXPR_INDEX && root->as.index.base->kind == EXPR_IDENT &&
+                root->as.index.base->as.ident.symbol &&
+                root->as.index.base->as.ident.symbol->is_map) {
+                error(c, operand->loc,
+                      "a value in map '%.*s' moves when the map grows, so it cannot be "
+                      "pointed to; keep its key instead",
+                      NAME(root->as.index.base->as.ident.symbol->name));
+                return TYPE_INVALID;
+            }
             if (root->kind == EXPR_INDEX && root->as.index.base->kind == EXPR_IDENT &&
                 root->as.index.base->as.ident.symbol &&
                 root->as.index.base->as.ident.symbol->is_growable) {
@@ -1070,6 +1101,24 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         Expr *arg = expr->as.call.args[i];
         bool has_param = func && i < func->as.func.param_count;
         TypeKind expected = has_param ? func->as.func.params[i].type : TYPE_INVALID;
+        if (has_param && func->as.func.params[i].is_map) {
+            const Param *param = &func->as.func.params[i];
+            const Symbol *map = map_operand(c, arg);
+            TypeKind found = map ? TYPE_INVALID : check_expr(c, arg, TYPE_INVALID);
+            if (map && (map->type != param->type || map->key_type != param->key_type)) {
+                error(c, arg->loc,
+                      "argument %zu of '%.*s' must be a map from '%s' to '%s', found one "
+                      "from '%s' to '%s'",
+                      i + 1, NAME(name), type_name(param->key_type), type_name(param->type),
+                      type_name(map->key_type), type_name(map->type));
+            } else if (!map && found != TYPE_INVALID) {
+                error(c, arg->loc, "argument %zu of '%.*s' must be a map from '%s' to '%s', "
+                                   "found '%s'",
+                      i + 1, NAME(name), type_name(param->key_type), type_name(param->type),
+                      type_name(found));
+            }
+            continue;
+        }
         if (has_param && func->as.func.params[i].is_growable) {
             const Symbol *array = array_operand(c, arg);
             TypeKind found = array ? array->type : check_expr(c, arg, TYPE_INVALID);
@@ -1134,6 +1183,7 @@ static const struct {
 } builtin_names[] = {
     {"append", BUILTIN_APPEND}, {"pop", BUILTIN_POP},       {"clear", BUILTIN_CLEAR},
     {"reserve", BUILTIN_RESERVE}, {"delete", BUILTIN_DELETE}, {"clone", BUILTIN_CLONE},
+    {"has", BUILTIN_HAS},         {"remove", BUILTIN_REMOVE},
 };
 
 /* Which built-in function on growable arrays a call is of, if any. */
@@ -1164,6 +1214,12 @@ static const Symbol *growable_operand(Checker *c, Expr *expr, const char *name) 
     Expr *arg = expr->as.call.args[0];
     const Symbol *array = array_operand(c, arg);
     if (array && array->is_growable) return array;
+    const Symbol *map = array ? NULL : map_operand(c, arg);
+    if (map) {
+        error(c, arg->loc, "'%s' needs a growable array, and '%.*s' is a map", name,
+              NAME(map->name));
+        return NULL;
+    }
     if (array) {
         error(c, arg->loc, "'%s' needs a growable array, and '%.*s' %s", name,
               NAME(array->name),
@@ -1177,6 +1233,41 @@ static const Symbol *growable_operand(Checker *c, Expr *expr, const char *name) 
         error(c, arg->loc, "'%s' needs a growable array, found '%s'", name, type_name(found));
     }
     return NULL;
+}
+
+/* Checks a call of a built-in function on a map: has, remove, clear or
+   delete. */
+static TypeKind check_map_builtin(Checker *c, Expr *expr, Builtin which, const char *name) {
+    size_t count = expr->as.call.count;
+    Expr *first = count ? expr->as.call.args[0] : NULL;
+    const Symbol *map = first ? map_operand(c, first) : NULL;
+    if (!map && first) {
+        const Symbol *array = array_operand(c, first);
+        TypeKind found = array ? TYPE_INVALID : check_expr(c, first, TYPE_INVALID);
+        if (array) {
+            error(c, first->loc, "'%s' needs a map, and '%.*s' is an array", name,
+                  NAME(array->name));
+        } else if (found != TYPE_INVALID) {
+            error(c, first->loc, "'%s' needs a map, found '%s'", name, type_name(found));
+        }
+    } else if (!first) {
+        error(c, expr->loc, "'%s' needs a map", name);
+    }
+    size_t wanted = which == BUILTIN_HAS || which == BUILTIN_REMOVE ? 2 : 1;
+    if (count != wanted) {
+        error(c, expr->loc, "'%s' takes %zu argument%s, but %zu %s given", name, wanted,
+              wanted == 1 ? "" : "s", count, count == 1 ? "was" : "were");
+        check_args_anyway(c, expr, 1);
+    } else if (wanted == 2) {
+        Expr *key = expr->as.call.args[1];
+        TypeKind want = map ? map->key_type : TYPE_INVALID;
+        TypeKind found = check_expr(c, key, want);
+        if (want != TYPE_INVALID && found != TYPE_INVALID && found != want) {
+            error(c, key->loc, "a key of map '%.*s' must be '%s', found '%s'",
+                  NAME(map->name), type_name(want), type_name(found));
+        }
+    }
+    return which == BUILTIN_HAS ? TYPE_BOOL : TYPE_VOID;
 }
 
 /* Checks a call of a built-in function on growable arrays other than
@@ -1193,6 +1284,11 @@ static TypeKind check_builtin(Checker *c, Expr *expr, Builtin which) {
                             "replace one: 'int copy[..] = clone(values)'");
         check_args_anyway(c, expr, 0);
         return TYPE_INVALID;
+    }
+    if (which == BUILTIN_HAS || which == BUILTIN_REMOVE ||
+        ((which == BUILTIN_CLEAR || which == BUILTIN_DELETE) && count &&
+         map_operand(c, expr->as.call.args[0]))) {
+        return check_map_builtin(c, expr, which, name);
     }
     const Symbol *array = growable_operand(c, expr, name);
     TypeKind elem = array ? array->type : TYPE_INVALID;
@@ -1374,6 +1470,14 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
             return TYPE_INVALID;
         }
         symbol->used = true;
+        if (symbol->is_map) {
+            symbol->used = true;
+            error(c, expr->loc,
+                  "map '%.*s' cannot be used as a value; look up a key with '%.*s[key]', "
+                  "or pass it to a map parameter",
+                  NAME(expr->as.ident.name), NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
         if (symbol->is_growable) {
             symbol->used = true;
             error(c, expr->loc,
@@ -1705,6 +1809,52 @@ static Expr *settle_constant(Expr *expr) {
 /* Keeps a mistyped length from asking for an absurd amount of memory. */
 #define MAX_ARRAY_LENGTH (1LL << 28)
 
+/* True for a type a map's keys can have: one whose values compare equal
+   exactly when they are the same, byte for byte, or a string. */
+static bool valid_key(TypeKind type) {
+    return type_is_integer(type) || type == TYPE_CHAR || type == TYPE_BOOL ||
+           type_is_enum(type) || type_is_pointer(type) || type == TYPE_STRING;
+}
+
+static void check_key_type(Checker *c, TypeKind key, SrcLoc loc) {
+    if (key != TYPE_INVALID && !valid_key(key)) {
+        error(c, loc, "a map's keys cannot be '%s'; they can be integers, 'char', 'bool', "
+                      "enums, pointers or strings",
+              type_name(key));
+    }
+}
+
+/* Checks "V name[K]", with "= { key: value, ... }" if given. */
+static void check_map_decl(Checker *c, Stmt *stmt) {
+    TypeKind type = stmt->as.decl.type;
+    TypeKind key = stmt->as.decl.key_type;
+    check_key_type(c, key, stmt->loc);
+    if (stmt->kind == STMT_CONST) {
+        error(c, stmt->loc, "a map cannot be constant; declare it as a variable");
+    }
+    if (stmt->as.decl.elem_count && !stmt->as.decl.pairs) {
+        error(c, stmt->as.decl.elems[0]->loc,
+              "a map's entries are written 'key: value'");
+    } else {
+        for (size_t i = 0; i < stmt->as.decl.elem_count; i++) {
+            Expr *elem = stmt->as.decl.elems[i];
+            TypeKind want = i % 2 ? type : key;
+            TypeKind found = check_expr(c, elem, want);
+            if (want != TYPE_INVALID && found != TYPE_INVALID && found != want) {
+                error(c, elem->loc, "a %s of this map must be '%s', found '%s'",
+                      i % 2 ? "value" : "key", type_name(want), type_name(found));
+            }
+        }
+    }
+    Symbol *symbol = new_symbol(c, SYM_VAR, stmt->as.decl.name, stmt->loc, type);
+    symbol->decl = stmt;
+    symbol->is_map = true;
+    symbol->key_type = key;
+    stmt->as.decl.symbol = symbol;
+    declare(c, symbol);
+    list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+}
+
 /* Checks "T name[..]", with "= { ... }" or "= clone(other)" if given. */
 static void check_growable_decl(Checker *c, Stmt *stmt) {
     TypeKind type = stmt->as.decl.type;
@@ -1735,6 +1885,27 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
     if (stmt->as.decl.is_growable) {
         check_growable_decl(c, stmt);
         return;
+    }
+    /* "V name[K]" with K a type's name, which parsed as a length. */
+    Symbol *keyed = stmt->as.decl.length ? type_named_by(c, stmt->as.decl.length) : NULL;
+    if (keyed) {
+        use_type_name(c, stmt->as.decl.length, keyed);
+        stmt->as.decl.is_map = true;
+        stmt->as.decl.key_type = keyed->type;
+    } else if (stmt->as.decl.is_map) {
+        stmt->as.decl.key_type = declared_type(c, stmt->as.decl.key_type,
+                                               stmt->as.decl.key_ref, stmt->loc,
+                                               stmt->as.decl.name);
+    }
+    if (stmt->as.decl.is_map) {
+        check_map_decl(c, stmt);
+        return;
+    }
+    if (stmt->as.decl.pairs) {
+        /* Reported, and declared without them, so that its uses are not. */
+        error(c, stmt->as.decl.elems[0]->loc,
+              "only a map's entries are written 'key: value'; an array lists its elements");
+        stmt->as.decl.elem_count = 0;
     }
     TypeKind type = stmt->as.decl.type;
     bool is_const = stmt->kind == STMT_CONST;
@@ -1907,6 +2078,9 @@ static bool require_place(Checker *c, const Expr *expr, bool assigning) {
             return false;
         }
         if (names_array(base) || type_is_pointer(base->type)) return true;
+        if (base->kind == EXPR_IDENT && base->as.ident.symbol && base->as.ident.symbol->is_map) {
+            return true;
+        }
         const char *limit = assigning ? "changed" : "pointed to";
         if (base->type == TYPE_STRING && base->kind == EXPR_IDENT) {
             error(c, base->loc, "'%.*s' is a string, and a string's characters cannot be %s",
@@ -1945,6 +2119,11 @@ static TypeKind check_place(Checker *c, Expr *expr, bool assigning) {
         Symbol *symbol = resolve(c, name, expr->loc);
         if (!symbol) return TYPE_INVALID;
         if (!assigning) symbol->used = true;
+        if (symbol->is_map) {
+            error(c, expr->loc, "cannot %s map '%.*s' as a whole; %s", what, NAME(name),
+                  assigning ? "assign to its keys" : "keep its keys instead");
+            return TYPE_INVALID;
+        }
         if (any_array(symbol)) {
             if (assigning && symbol->is_growable) {
                 error(c, expr->loc, "cannot assign to growable array '%.*s' as a whole, "
@@ -1959,6 +2138,12 @@ static TypeKind check_place(Checker *c, Expr *expr, bool assigning) {
                                     "'&%.*s[0]' points to its first element",
                       NAME(name), NAME(name));
             }
+            return TYPE_INVALID;
+        }
+        if (symbol->loop_bound && assigning) {
+            error(c, expr->loc, "cannot assign to loop variable '%.*s'; it is a copy, and "
+                                "changing it would change nothing it came from",
+                  NAME(name));
             return TYPE_INVALID;
         }
         if (symbol->kind != SYM_VAR) {
@@ -2022,6 +2207,11 @@ static void check_assign(Checker *c, Stmt *stmt) {
     /* With no place to say which pointer type it is, a NULL has nothing
        more to report than the place's own problem. */
     if (expected == TYPE_INVALID && stmt->as.assign.value->kind == EXPR_NULL) return;
+    /* Nor has a whole array or map, which was the place's own problem. */
+    if (expected == TYPE_INVALID &&
+        (map_operand(c, stmt->as.assign.value) || array_operand(c, stmt->as.assign.value))) {
+        return;
+    }
     TypeKind found = check_expr(c, stmt->as.assign.value, expected);
     if (expected == TYPE_INVALID) return;
 
@@ -2121,7 +2311,7 @@ static void collect_labels(Checker *c, Block *block) {
             collect_labels(c, &stmt->as.if_.then_block);
             if (stmt->as.if_.has_else) collect_labels(c, &stmt->as.if_.else_block);
         } else if (stmt->kind == STMT_WHILE || stmt->kind == STMT_DO_WHILE ||
-                   stmt->kind == STMT_FOR) {
+                   stmt->kind == STMT_FOR || stmt->kind == STMT_FOR_IN) {
             collect_labels(c, &stmt->as.loop.body);
         } else if (stmt->kind == STMT_LABEL) {
             Str name = stmt->as.label.name;
@@ -2231,6 +2421,8 @@ static void check_func(Checker *c, Stmt *stmt) {
         Symbol *symbol = new_symbol(c, SYM_PARAM, param->name, param->loc, param->type);
         symbol->is_slice = param->is_slice;
         symbol->is_growable = param->is_growable;
+        symbol->is_map = param->is_map;
+        symbol->key_type = param->key_type;
         symbol->visible_from = body->open.offset;
         param->symbol = symbol;
         declare(c, symbol);
@@ -2274,6 +2466,7 @@ static bool stmt_has_label(const Stmt *stmt) {
     case STMT_WHILE:
     case STMT_DO_WHILE:
     case STMT_FOR:
+    case STMT_FOR_IN:
         return block_has_label(&stmt->as.loop.body);
     default:
         return false;
@@ -2392,6 +2585,63 @@ static void check_loop(Checker *c, Stmt *stmt) {
     pop_scope(c);
 }
 
+/* Checks "for (T x in over)" and its two-variable forms. Over an array or a
+   string, one variable takes each element and two take its index and the
+   element; over a map, they take each key, and its value. */
+static void check_for_in(Checker *c, Stmt *stmt) {
+    const Stmt *outer_loop = c->loop;
+    Block *body = &stmt->as.loop.body;
+    stmt->as.loop.id = c->next_id++;
+    Expr *over = stmt->as.loop.over;
+    size_t count = stmt->as.loop.each_count;
+
+    /* What each loop variable takes, and what that is called. */
+    TypeKind takes[2] = {TYPE_INVALID, TYPE_INVALID};
+    const char *what[2] = {"", ""};
+    const Symbol *map = map_operand(c, over);
+    const Symbol *array = map ? NULL : array_operand(c, over);
+    TypeKind found = map || array ? TYPE_INVALID : check_expr(c, over, TYPE_INVALID);
+    TypeKind element = array ? array->type : found == TYPE_STRING ? TYPE_CHAR : TYPE_INVALID;
+    if (map) {
+        takes[0] = map->key_type;
+        takes[1] = map->type;
+        what[0] = "each key";
+        what[1] = "each value";
+    } else if (element != TYPE_INVALID) {
+        takes[count - 1] = element;
+        what[count - 1] = array ? "each element" : "each character";
+        if (count == 2) {
+            takes[0] = TYPE_INT;
+            what[0] = "the index";
+        }
+    } else if (found != TYPE_INVALID) {
+        error(c, over->loc, "'for ... in' goes through an array, a map or a string, found "
+                            "'%s'",
+              type_name(found));
+    }
+
+    Scope scope;
+    push_scope(c, &scope, body->close.offset);
+    for (size_t i = 0; i < count; i++) {
+        Param *each = &stmt->as.loop.each[i];
+        each->type = declared_type(c, each->type, each->type_ref, each->loc, each->name);
+        if (takes[i] != TYPE_INVALID && each->type != TYPE_INVALID && each->type != takes[i]) {
+            error(c, each->loc, "'%.*s' takes %s, which is '%s', not '%s'", NAME(each->name),
+                  what[i], type_name(takes[i]), type_name(each->type));
+        }
+        Symbol *symbol = new_symbol(c, SYM_VAR, each->name, each->loc, each->type);
+        symbol->loop_bound = true;
+        symbol->visible_from = body->open.offset;
+        each->symbol = symbol;
+        declare(c, symbol);
+        list_push(c, c->locals, symbol);
+    }
+    c->loop = stmt;
+    check_block(c, body);
+    c->loop = outer_loop;
+    pop_scope(c);
+}
+
 /* Settles what a read into a variable, or one of its elements, stores: the
    place its ".field" steps lead to, which must be of a type that input can
    be converted to. */
@@ -2413,6 +2663,9 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_DO_WHILE:
     case STMT_FOR:
         check_loop(c, stmt);
+        break;
+    case STMT_FOR_IN:
+        check_for_in(c, stmt);
         break;
     case STMT_DEFER: {
         if (!c->defer_seen) c->defer_seen = stmt;
@@ -2450,8 +2703,8 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_COUT:
         for (size_t i = 0; i < stmt->as.cout.count; i++) {
             Expr *arg = stmt->as.cout.args[i];
-            /* An array's name can be printed whole. */
-            if (array_operand(c, arg)) continue;
+            /* An array's or a map's name can be printed whole. */
+            if (array_operand(c, arg) || map_operand(c, arg)) continue;
             if (check_expr(c, arg, TYPE_INVALID) == TYPE_VOID) {
                 error(c, arg->loc, "cannot print a 'void' value");
             }
@@ -2482,6 +2735,13 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                 continue;
             }
             bool is_array = any_array(symbol);
+            if (symbol->is_map) {
+                if (target->index) check_expr(c, target->index, symbol->key_type);
+                error(c, target->loc, "cannot read into map '%.*s'; read into a variable, "
+                                      "then store it under its key",
+                      NAME(target->name));
+                continue;
+            }
             if (target->index) {
                 Indexed of = {.what = "an array", .length_known = symbol->is_array,
                               .length = symbol->length, .name = target->name,
@@ -2566,8 +2826,9 @@ static void warn_unused(Checker *c) {
     if (c->diags->error_count) return;
     for (size_t i = 0; i < c->unit->symbols.count; i++) {
         const Symbol *symbol = c->unit->symbols.items[i];
+        /* A loop variable may be named only to reach the one after it. */
         if (symbol->kind == SYM_PARAM || symbol->kind == SYM_TYPE ||
-            symbol->kind == SYM_ENUM_VALUE) {
+            symbol->kind == SYM_ENUM_VALUE || symbol->loop_bound) {
             continue;
         }
         /* main is called by the runtime, and what a file exports is there
@@ -3110,8 +3371,15 @@ void check_program(Unit *unit) {
             Param *param = &stmt->as.func.params[j];
             param->type = declared_type(&c, param->type, param->type_ref, param->loc,
                                         param->name);
+            if (param->is_map) {
+                param->key_type = declared_type(&c, param->key_type, param->key_ref,
+                                                param->loc, param->name);
+                check_key_type(&c, param->key_type, param->loc);
+            }
             if (!stmt->external) continue;
-            if (param->is_slice || param->is_growable) {
+            if (param->is_map) {
+                error(&c, param->loc, "an external function cannot take a map");
+            } else if (param->is_slice || param->is_growable) {
                 error(&c, param->loc, "an external function cannot take an array; take a "
                                       "pointer to its elements");
             } else {

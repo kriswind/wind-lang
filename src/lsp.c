@@ -428,6 +428,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
         if (symbol->is_slice) buf_puts(buf, "[]");
         if (symbol->is_growable) buf_puts(buf, "[..]");
+        if (symbol->is_map) buf_printf(buf, "[%s]", type_name(symbol->key_type));
         break;
     case SYM_LABEL:
         buf_printf(buf, "%.*s:", len, name);
@@ -441,6 +442,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
             buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(param->type),
                        type_gap(param->type), (int)param->name.len, param->name.data,
                        param->is_slice ? "[]" : param->is_growable ? "[..]" : "");
+            if (param->is_map) buf_printf(buf, "[%s]", type_name(param->key_type));
         }
         buf_puts(buf, ")");
         break;

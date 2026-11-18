@@ -74,4 +74,4 @@ tests/err/pointers.wind:96:25: error: a constant's value must be known at compil
 tests/err/pointers.wind:98:8: error: operator '==' would compare where the two arrays are, not what they hold; compare their elements in a loop
 tests/err/pointers.wind:99:8: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/pointers.wind:100:21: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
-tests/err/pointers.wind:101:21: error: 'len' needs an array or a string, found 'int *'
+tests/err/pointers.wind:101:21: error: 'len' needs an array, a map or a string, found 'int *'

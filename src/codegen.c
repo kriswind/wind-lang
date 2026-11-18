@@ -311,6 +311,156 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    wind_stop();\n"
         "}\n",
         HEADER_STDDEF, {HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_MAP] = {
+        "/* A map: its entries in the order they were first put, and a hash table\n"
+        "   of where they are. A removed entry stays where it was, marked as no\n"
+        "   longer live, until the table is rebuilt. A string key's characters\n"
+        "   are copied, so that the map never holds a view of text that is gone. */\n"
+        "typedef struct {\n"
+        "    void *keys;\n"
+        "    void *values;\n"
+        "    unsigned char *live;\n"
+        "    size_t used;       /* entries used, removed ones included */\n"
+        "    size_t cap;        /* entries there is room for */\n"
+        "    size_t len;        /* entries live */\n"
+        "    size_t *slots;     /* the table: an entry's position + 1, or 0 */\n"
+        "    size_t slot_count; /* a power of two, or 0 */\n"
+        "} wind_map;\n",
+        HEADER_STDDEF, {0}, {TYPE_STRING}},
+    [HELPER_MAP_FIND] = {
+        "static size_t wind_map_hash(const void *key, size_t size, int is_string) {\n"
+        "    const unsigned char *bytes = key;\n"
+        "    size_t count = size;\n"
+        "    if (is_string) {\n"
+        "        const wind_string *s = key;\n"
+        "        bytes = (const unsigned char *)s->data;\n"
+        "        count = s->len;\n"
+        "    }\n"
+        "    unsigned long hash = 2166136261UL;\n"
+        "    for (size_t i = 0; i < count; i++) hash = (hash ^ bytes[i]) * 16777619UL;\n"
+        "    return (size_t)hash;\n"
+        "}\n"
+        "\n"
+        "static int wind_map_equal(const void *a, const void *b, size_t size, int is_string) {\n"
+        "    if (!is_string) return memcmp(a, b, size) == 0;\n"
+        "    const wind_string *x = a, *y = b;\n"
+        "    return x->len == y->len && (!x->len || memcmp(x->data, y->data, x->len) == 0);\n"
+        "}\n"
+        "\n"
+        "/* The position of the live entry with this key, or (size_t)-1. */\n"
+        "static size_t wind_map_find(const wind_map *m, const void *key, size_t key_size, int is_string) {\n"
+        "    if (!m->slot_count) return (size_t)-1;\n"
+        "    size_t mask = m->slot_count - 1;\n"
+        "    for (size_t at = wind_map_hash(key, key_size, is_string) & mask;; at = (at + 1) & mask) {\n"
+        "        size_t entry = m->slots[at];\n"
+        "        if (!entry) return (size_t)-1;\n"
+        "        entry--;\n"
+        "        if (m->live[entry] &&\n"
+        "            wind_map_equal((const char *)m->keys + entry * key_size, key, key_size, is_string)) {\n"
+        "            return entry;\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STRING, {HELPER_MAP}, {0}},
+    [HELPER_MAP_PUT] = {
+        "static void wind_map_slot(wind_map *m, size_t entry, size_t key_size, int is_string) {\n"
+        "    size_t mask = m->slot_count - 1;\n"
+        "    size_t at = wind_map_hash((char *)m->keys + entry * key_size, key_size, is_string) & mask;\n"
+        "    while (m->slots[at]) at = (at + 1) & mask;\n"
+        "    m->slots[at] = entry + 1;\n"
+        "}\n"
+        "\n"
+        "/* Moves the live entries together, in order, and makes the table anew\n"
+        "   with room for twice as many again, so that at most half of it is in use. */\n"
+        "static void wind_map_rebuild(wind_map *m, size_t key_size, size_t value_size, int is_string, int line) {\n"
+        "    size_t kept = 0;\n"
+        "    for (size_t i = 0; i < m->used; i++) {\n"
+        "        if (!m->live[i]) continue;\n"
+        "        if (kept != i) {\n"
+        "            memcpy((char *)m->keys + kept * key_size, (char *)m->keys + i * key_size, key_size);\n"
+        "            memcpy((char *)m->values + kept * value_size, (char *)m->values + i * value_size, value_size);\n"
+        "            m->live[kept] = 1;\n"
+        "        }\n"
+        "        kept++;\n"
+        "    }\n"
+        "    m->used = kept;\n"
+        "    size_t count = 8;\n"
+        "    while (count < (kept + 1) * 4) count *= 2;\n"
+        "    free(m->slots);\n"
+        "    m->slots = calloc(count, sizeof *m->slots);\n"
+        "    if (!m->slots) wind_out_of_memory(line);\n"
+        "    m->slot_count = count;\n"
+        "    for (size_t i = 0; i < kept; i++) wind_map_slot(m, i, key_size, is_string);\n"
+        "}\n"
+        "\n"
+        "/* The value stored under key, put there as zero if the key is new. */\n"
+        "static void *wind_map_put(wind_map *m, const void *key, size_t key_size, size_t value_size,\n"
+        "                          int is_string, int line) {\n"
+        "    size_t found = wind_map_find(m, key, key_size, is_string);\n"
+        "    if (found != (size_t)-1) return (char *)m->values + found * value_size;\n"
+        "    if ((m->used + 1) * 2 > m->slot_count) wind_map_rebuild(m, key_size, value_size, is_string, line);\n"
+        "    if (m->used == m->cap) {\n"
+        "        size_t cap = m->cap ? m->cap * 2 : 8;\n"
+        "        void *keys = realloc(m->keys, cap * key_size);\n"
+        "        if (!keys) wind_out_of_memory(line);\n"
+        "        m->keys = keys;\n"
+        "        void *values = realloc(m->values, cap * value_size);\n"
+        "        if (!values) wind_out_of_memory(line);\n"
+        "        m->values = values;\n"
+        "        unsigned char *live = realloc(m->live, cap);\n"
+        "        if (!live) wind_out_of_memory(line);\n"
+        "        m->live = live;\n"
+        "        m->cap = cap;\n"
+        "    }\n"
+        "    size_t entry = m->used++;\n"
+        "    char *stored = (char *)m->keys + entry * key_size;\n"
+        "    memcpy(stored, key, key_size);\n"
+        "    if (is_string) {\n"
+        "        wind_string *s = (wind_string *)stored;\n"
+        "        char *copy = NULL;\n"
+        "        if (s->len) {\n"
+        "            copy = malloc(s->len);\n"
+        "            if (!copy) wind_out_of_memory(line);\n"
+        "            memcpy(copy, s->data, s->len);\n"
+        "        }\n"
+        "        s->data = copy;\n"
+        "    }\n"
+        "    memset((char *)m->values + entry * value_size, 0, value_size);\n"
+        "    m->live[entry] = 1;\n"
+        "    m->len++;\n"
+        "    wind_map_slot(m, entry, key_size, is_string);\n"
+        "    return (char *)m->values + entry * value_size;\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB | HEADER_STRING, {HELPER_MAP_FIND, HELPER_OUT_OF_MEMORY}, {0}},
+    [HELPER_MAP_REMOVE] = {
+        "static void wind_map_remove(wind_map *m, const void *key, size_t key_size, int is_string) {\n"
+        "    size_t found = wind_map_find(m, key, key_size, is_string);\n"
+        "    if (found == (size_t)-1) return;\n"
+        "    m->live[found] = 0;\n"
+        "    m->len--;\n"
+        "    if (is_string) free((void *)((wind_string *)((char *)m->keys + found * key_size))->data);\n"
+        "}\n",
+        HEADER_STDLIB, {HELPER_MAP_FIND}, {0}},
+    [HELPER_MAP_CLEAR] = {
+        "/* Removes every entry, keeping the room. */\n"
+        "static void wind_map_clear(wind_map *m, size_t key_size, int is_string) {\n"
+        "    for (size_t i = 0; is_string && i < m->used; i++) {\n"
+        "        if (m->live[i]) free((void *)((wind_string *)((char *)m->keys + i * key_size))->data);\n"
+        "    }\n"
+        "    m->used = m->len = 0;\n"
+        "    if (m->slot_count) memset(m->slots, 0, m->slot_count * sizeof *m->slots);\n"
+        "}\n",
+        HEADER_STDLIB | HEADER_STRING, {HELPER_MAP}, {0}},
+    [HELPER_MAP_DELETE] = {
+        "static void wind_map_delete(wind_map *m, size_t key_size, int is_string) {\n"
+        "    wind_map_clear(m, key_size, is_string);\n"
+        "    free(m->keys);\n"
+        "    free(m->values);\n"
+        "    free(m->live);\n"
+        "    free(m->slots);\n"
+        "    memset(m, 0, sizeof *m);\n"
+        "}\n",
+        HEADER_STDLIB | HEADER_STRING, {HELPER_MAP_CLEAR}, {0}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -731,7 +881,7 @@ static void emit_symbol_name(const Symbol *symbol, FILE *out) {
 /* A symbol as it is used. A growable array parameter is a pointer to the
    caller's array, used here as the array itself. */
 static void emit_symbol(const Symbol *symbol, FILE *out) {
-    bool through = symbol->kind == SYM_PARAM && symbol->is_growable;
+    bool through = symbol->kind == SYM_PARAM && (symbol->is_growable || symbol->is_map);
     if (through) fputs("(*", out);
     emit_symbol_name(symbol, out);
     if (through) fputs(")", out);
@@ -916,10 +1066,25 @@ static void emit_shift_end(const Expr *amount, FILE *out) {
 static struct {
     const Expr **items;
     int *ids;
+    bool *through; /* written "(*wind_pN)": a pointer to the place */
     size_t count;
     size_t cap;
     int next_id;
 } held;
+
+/* Has expr written as a temporary from here on, until held.count is set
+   back: "wind_tN", or "(*wind_pN)" if through. */
+static void hold(const Expr *expr, int id, bool through) {
+    if (held.count == held.cap) {
+        held.cap = held.cap ? held.cap * 2 : 16;
+        held.items = xrealloc(held.items, held.cap * sizeof *held.items);
+        held.ids = xrealloc(held.ids, held.cap * sizeof *held.ids);
+        held.through = xrealloc(held.through, held.cap * sizeof *held.through);
+    }
+    held.items[held.count] = expr;
+    held.ids[held.count] = id;
+    held.through[held.count++] = through;
+}
 
 static bool has_call(const Expr *expr) {
     switch (expr->kind) {
@@ -966,7 +1131,7 @@ static bool is_stable(const Expr *expr) {
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
         if (symbol->kind != SYM_VAR && symbol->kind != SYM_PARAM) return true;
-        if (any_array(symbol)) return true;
+        if (any_array(symbol) || symbol->is_map) return true;
         return !symbol->global && !symbol->address_taken;
     }
     case EXPR_LEN:
@@ -1011,13 +1176,7 @@ static size_t hold_operands(const Expr *const *operands, size_t count, FILE *out
         fprintf(out, "%s wind_t%d = ", c_type(operand->type), id);
         emit_expr(operand, out);
         fputs("; ", out);
-        if (held.count == held.cap) {
-            held.cap = held.cap ? held.cap * 2 : 16;
-            held.items = xrealloc(held.items, held.cap * sizeof *held.items);
-            held.ids = xrealloc(held.ids, held.cap * sizeof *held.ids);
-        }
-        held.items[held.count] = operand;
-        held.ids[held.count++] = id;
+        hold(operand, id, false);
     }
     return mark;
 }
@@ -1123,9 +1282,75 @@ static void emit_clone(const Expr *source, TypeKind elem, int line, FILE *out) {
     }
 }
 
+/* The map an expression names, if it is a map's name. */
+static const Symbol *map_named(const Expr *expr) {
+    return expr->kind == EXPR_IDENT && expr->as.ident.symbol && expr->as.ident.symbol->is_map
+               ? expr->as.ident.symbol
+               : NULL;
+}
+
+/* "sizeof(K), is_string", what the map functions are told of a key. */
+static void emit_key_facts(const Symbol *map, FILE *out) {
+    fprintf(out, "sizeof(%s), %d", c_type(map->key_type), map->key_type == TYPE_STRING);
+}
+
+/* Declares "K wind_kN = key; " for a map's key. */
+static void emit_key_temp(const Symbol *map, const Expr *key, int id, FILE *out) {
+    fprintf(out, "%s wind_k%d = ", c_type(map->key_type), id);
+    emit_expr(key, out);
+    fputs("; ", out);
+}
+
+/* Looking up a key: the value stored under it, or zero. */
+static void emit_map_read(const Symbol *map, const Expr *key, FILE *out) {
+    used.helpers[HELPER_MAP_FIND] = true;
+    int id = ++held.next_id;
+    fputs("__extension__ ({ ", out);
+    emit_key_temp(map, key, id, out);
+    fprintf(out, "size_t wind_i%d = wind_map_find(&", id);
+    emit_symbol(map, out);
+    fprintf(out, ", &wind_k%d, ", id);
+    emit_key_facts(map, out);
+    fprintf(out, "); wind_i%d == (size_t)-1 ? (%s){0} : ((%s *)", id, c_type(map->type),
+            c_type(map->type));
+    emit_symbol(map, out);
+    fprintf(out, ".values)[wind_i%d]; })", id);
+}
+
+/* has, remove, clear and delete on a map. */
+static void emit_map_builtin(const Expr *expr, const Symbol *map, FILE *out) {
+    int id = ++held.next_id;
+    Builtin which = expr->as.call.builtin;
+    used.helpers[which == BUILTIN_HAS      ? HELPER_MAP_FIND
+                 : which == BUILTIN_REMOVE ? HELPER_MAP_REMOVE
+                 : which == BUILTIN_CLEAR  ? HELPER_MAP_CLEAR
+                                           : HELPER_MAP_DELETE] = true;
+    fputs("__extension__ ({ ", out);
+    if (which == BUILTIN_HAS || which == BUILTIN_REMOVE) {
+        emit_key_temp(map, expr->as.call.args[1], id, out);
+        fprintf(out, which == BUILTIN_HAS ? "(%s)(wind_map_find(&" : "wind_map_remove(&",
+                c_type(TYPE_BOOL));
+        emit_symbol(map, out);
+        fprintf(out, ", &wind_k%d, ", id);
+        emit_key_facts(map, out);
+        fputs(which == BUILTIN_HAS ? ") != (size_t)-1); })" : "); (void)0; })", out);
+        return;
+    }
+    fputs(which == BUILTIN_CLEAR ? "wind_map_clear(&" : "wind_map_delete(&", out);
+    emit_symbol(map, out);
+    fputs(", ", out);
+    emit_key_facts(map, out);
+    fputs("); (void)0; })", out);
+}
+
 /* A call of one of the built-in functions on growable arrays. Those that
    give no value are statement expressions ending in "(void)0". */
 static void emit_builtin(const Expr *expr, FILE *out) {
+    const Symbol *map = map_named(expr->as.call.args[0]);
+    if (map) {
+        emit_map_builtin(expr, map, out);
+        return;
+    }
     const Symbol *array = expr->as.call.args[0]->as.ident.symbol;
     int line = expr->loc.line;
     int id = ++held.next_id;
@@ -1191,6 +1416,10 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
     switch (expr->kind) {
     case EXPR_INDEX: {
         const Expr *base = expr->as.index.base;
+        if (map_named(base)) {
+            emit_map_read(map_named(base), expr->as.index.index, out);
+            break;
+        }
         if (is_array_name(base)) {
             emit_element(base->as.ident.symbol, expr->as.index.index, out);
             break;
@@ -1361,6 +1590,10 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             if (external && type_is_pointer(arg->type)) {
                 fputs("(void *)", out);
                 emit_expr(arg, out);
+            } else if (func->as.func.params[i].is_map) {
+                /* The function is given the caller's own map. */
+                fputs("&", out);
+                emit_symbol(arg->as.ident.symbol, out);
             } else if (!is_array_name(arg)) {
                 emit_expr(arg, out);
             } else if (func->as.func.params[i].is_growable) {
@@ -1432,7 +1665,7 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
 static void emit_expr(const Expr *expr, FILE *out) {
     for (size_t i = held.count; i-- > 0;) {
         if (held.items[i] == expr) {
-            fprintf(out, "wind_t%d", held.ids[i]);
+            fprintf(out, held.through[i] ? "(*wind_p%d)" : "wind_t%d", held.ids[i]);
             return;
         }
     }
@@ -1510,6 +1743,33 @@ static const char *value_writer(TypeKind type, bool in_array, const char **cast)
 }
 
 static void emit_write(const Expr *arg, FILE *out) {
+    const Symbol *map = map_named(arg);
+    if (map) {
+        /* A whole map prints as "{key: value, ...}", in the order its keys
+           were first put. */
+        used.helpers[HELPER_MAP] = true;
+        used.helpers[HELPER_PUT] = true;
+        int id = ++held.next_id;
+        const char *key_cast;
+        const char *value_cast;
+        const char *key_writer = value_writer(map->key_type, true, &key_cast);
+        const char *value_writer_name = value_writer(map->type, true, &value_cast);
+        fprintf(out, "{ int wind_first%d = 1; wind_put(\"{\", 1); "
+                     "for (size_t wind_i%d = 0; wind_i%d < ",
+                id, id, id);
+        emit_symbol(map, out);
+        fprintf(out, ".used; wind_i%d++) { if (!", id);
+        emit_symbol(map, out);
+        fprintf(out, ".live[wind_i%d]) continue; if (!wind_first%d) wind_put(\", \", 2); "
+                     "wind_first%d = 0; %s(%s((%s *)",
+                id, id, id, key_writer, key_cast, c_type(map->key_type));
+        emit_symbol(map, out);
+        fprintf(out, ".keys)[wind_i%d]); wind_put(\": \", 2); %s(%s((%s *)", id,
+                value_writer_name, value_cast, c_type(map->type));
+        emit_symbol(map, out);
+        fprintf(out, ".values)[wind_i%d]); } wind_put(\"}\", 1); }\n", id);
+        return;
+    }
     if (is_array_name(arg)) {
         /* A whole array prints as "[a, b, c]". */
         const Symbol *array = arg->as.ident.symbol;
@@ -1619,6 +1879,57 @@ static void indent(int depth, FILE *out) {
     for (int i = 0; i < depth; i++) fputs("    ", out);
 }
 
+/* The "m[key]" that a place is reached through, as in "m[key]" itself or
+   "m[key].field"; NULL if it is not reached through a map. */
+static const Expr *map_entry_of(const Expr *place) {
+    while (place->kind == EXPR_FIELD && !place->as.field.through_pointer) {
+        place = place->as.field.base;
+    }
+    return place->kind == EXPR_INDEX && map_named(place->as.index.base) ? place : NULL;
+}
+
+/* Writes into a map: the key, then the value, are worked out first, and
+   then the entry is found or put there, and assigned. */
+static void emit_map_assign(const Stmt *stmt, const Expr *entry, int depth, FILE *out) {
+    const Symbol *map = map_named(entry->as.index.base);
+    const Expr *target = stmt->as.assign.target;
+    const Expr *value = stmt->as.assign.value;
+    TypeKind type = target->type;
+    Op op = stmt->as.assign.op;
+    used.helpers[HELPER_MAP_PUT] = true;
+    int id = ++held.next_id;
+    size_t mark = held.count;
+    indent(depth, out);
+    fputs("{ ", out);
+    emit_key_temp(map, entry->as.index.index, id, out);
+    fprintf(out, "%s wind_t%d = ", c_type(value->type), id);
+    emit_expr(value, out);
+    fprintf(out, "; %s *wind_p%d = (%s *)wind_map_put(&", c_type(map->type), id,
+            c_type(map->type));
+    emit_symbol(map, out);
+    fprintf(out, ", &wind_k%d, sizeof(%s), sizeof(%s), %d, %d); ", id, c_type(map->key_type),
+            c_type(map->type), map->key_type == TYPE_STRING, stmt->loc.line);
+    hold(entry, id, true);
+    hold(value, id, false);
+    emit_expr(target, out);
+    fputs(" = ", out);
+    if (!stmt->as.assign.compound) {
+        emit_expr(value, out);
+    } else if (op_is_shift(op)) {
+        emit_shift_start(op, type, out);
+        emit_expr(target, out);
+        emit_shift_end(value, out);
+    } else {
+        fprintf(out, "((%s)(", c_type(type));
+        emit_expr(target, out);
+        fprintf(out, " %s ", op_text(op));
+        emit_expr(value, out);
+        fputs("))", out);
+    }
+    fputs("; }\n", out);
+    held.count = mark;
+}
+
 static void emit_block(const Block *block, int depth, FILE *out);
 
 /* True if a file's top-level code can run a statement more than once: it
@@ -1651,6 +1962,7 @@ static bool continues(const Block *block, const Stmt *loop) {
             break;
         case STMT_WHILE:
         case STMT_FOR:
+        case STMT_FOR_IN:
         case STMT_DO_WHILE:
             if (continues(&stmt->as.loop.body, loop)) return true;
             break;
@@ -1736,6 +2048,27 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         break;
     case STMT_VAR:
         indent(depth, out);
+        if (stmt->as.decl.is_map) {
+            /* Empty, and then the entries given, in order. */
+            const Symbol *map = stmt->as.decl.symbol;
+            used.helpers[stmt->as.decl.elem_count ? HELPER_MAP_PUT : HELPER_MAP] = true;
+            emit_symbol(map, out);
+            fputs(" = (wind_map){0};\n", out);
+            for (size_t i = 0; i + 1 < stmt->as.decl.elem_count; i += 2) {
+                int id = ++held.next_id;
+                indent(depth, out);
+                fputs("{ ", out);
+                emit_key_temp(map, stmt->as.decl.elems[i], id, out);
+                fprintf(out, "%s wind_t%d = ", c_type(map->type), id);
+                emit_expr(stmt->as.decl.elems[i + 1], out);
+                fprintf(out, "; *(%s *)wind_map_put(&", c_type(map->type));
+                emit_symbol(map, out);
+                fprintf(out, ", &wind_k%d, sizeof(%s), sizeof(%s), %d, %d) = wind_t%d; }\n", id,
+                        c_type(map->key_type), c_type(map->type),
+                        map->key_type == TYPE_STRING, stmt->loc.line, id);
+            }
+            break;
+        }
         if (stmt->as.decl.is_growable) {
             /* Empty, or a copy, and then the elements given, in order. */
             const Symbol *array = stmt->as.decl.symbol;
@@ -1811,6 +2144,10 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     case STMT_ASSIGN: {
         const Expr *target = stmt->as.assign.target;
         const Expr *value = stmt->as.assign.value;
+        if (map_entry_of(target)) {
+            emit_map_assign(stmt, map_entry_of(target), depth, out);
+            break;
+        }
         if (value->kind == EXPR_CALL && value->as.call.builtin == BUILTIN_CLONE) {
             /* The copy is made before the old elements are freed, since it
                may be a copy of them. */
@@ -1941,6 +2278,76 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         indent(depth, out);
         fputs("}\n", out);
         break;
+    case STMT_FOR_IN: {
+        /* A C for loop, so that "continue" goes on to the next one. The
+           length is read on each pass, since the body may change it. */
+        const Expr *over = stmt->as.loop.over;
+        const Param *each = stmt->as.loop.each;
+        size_t count = stmt->as.loop.each_count;
+        int id = ++held.next_id;
+        const Symbol *map = map_named(over);
+        const Symbol *array = !map && is_array_name(over) ? over->as.ident.symbol : NULL;
+        indent(depth, out);
+        fputs("{\n", out);
+        if (!map && !array) {
+            indent(depth + 1, out);
+            fprintf(out, "%s wind_s%d = ", c_type(TYPE_STRING), id);
+            emit_expr(over, out);
+            fputs(";\n", out);
+        }
+        indent(depth + 1, out);
+        fprintf(out, "for (size_t wind_i%d = 0; wind_i%d < ", id, id);
+        if (map) {
+            used.helpers[HELPER_MAP] = true;
+            emit_symbol(map, out);
+            fputs(".used", out);
+        } else if (array && runtime_length(array)) {
+            emit_symbol(array, out);
+            fputs(".len", out);
+        } else if (array) {
+            fprintf(out, "%zu", array->length);
+        } else {
+            fprintf(out, "wind_s%d.len", id);
+        }
+        fprintf(out, "; wind_i%d++) {\n", id);
+        if (map) {
+            indent(depth + 2, out);
+            fputs("if (!", out);
+            emit_symbol(map, out);
+            fprintf(out, ".live[wind_i%d]) continue;\n", id);
+        }
+        for (size_t i = 0; i < count; i++) {
+            indent(depth + 2, out);
+            emit_symbol(each[i].symbol, out);
+            fputs(" = ", out);
+            bool is_index = !map && count == 2 && i == 0;
+            if (is_index) {
+                fprintf(out, "(%s)wind_i%d;\n", c_type(TYPE_INT), id);
+            } else if (map) {
+                fprintf(out, "((%s *)", c_type(i == 0 ? map->key_type : map->type));
+                emit_symbol(map, out);
+                fprintf(out, ".%s)[wind_i%d];\n", i == 0 ? "keys" : "values", id);
+            } else if (array) {
+                emit_symbol(array, out);
+                fprintf(out, "%s[wind_i%d];\n", runtime_length(array) ? ".data" : "", id);
+            } else {
+                fprintf(out, "(%s)wind_s%d.data[wind_i%d];\n", c_type(TYPE_CHAR), id, id);
+            }
+            /* A loop variable may be named only to reach the one after it. */
+            indent(depth + 2, out);
+            fputs("(void)", out);
+            emit_symbol(each[i].symbol, out);
+            fputs(";\n", out);
+        }
+        push_loop(stmt);
+        emit_block(&stmt->as.loop.body, depth + 2, out);
+        loop_marks.count--;
+        indent(depth + 1, out);
+        fputs("}\n", out);
+        indent(depth, out);
+        fputs("}\n", out);
+        break;
+    }
     case STMT_DO_WHILE:
         indent(depth, out);
         fputs("do {\n", out);
@@ -2027,6 +2434,9 @@ static void emit_variables(const SymbolList *variables, const char *prefix, FILE
         if (variable->is_growable) {
             emit_list_type(variable->type, out);
             fputs(" ", out);
+        } else if (variable->is_map) {
+            used.helpers[HELPER_MAP] = true;
+            fputs("wind_map ", out);
         } else {
             fprintf(out, "%s ", c_type(variable->type));
         }
@@ -2050,6 +2460,9 @@ static void emit_signature(const Stmt *func, FILE *out) {
         } else if (param->is_growable) {
             emit_list_type(param->type, out);
             fputs(" *", out);
+        } else if (param->is_map) {
+            used.helpers[HELPER_MAP] = true;
+            fputs("wind_map *", out);
         } else {
             fprintf(out, "%s ", c_type(param->type));
         }

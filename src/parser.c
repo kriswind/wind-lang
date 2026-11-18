@@ -901,6 +901,9 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
         next(p);
         next(p);
         stmt->as.decl.is_growable = true;
+    } else if (at_type(p)) {
+        if (!parse_type(p, &stmt->as.decl.key_type, &stmt->as.decl.key_ref)) return NULL;
+        stmt->as.decl.is_map = true;
     } else if (!at(p, TOK_RBRACKET)) {
         stmt->as.decl.length = parse_expr(p);
         if (!stmt->as.decl.length) return NULL;
@@ -916,16 +919,36 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
         }
         if (!expect(p, TOK_LBRACE, NULL)) return NULL;
         skip_newlines(p);
+        /* The entries of a map are "key: value"; the key type of a map
+           whose key type is a name is not known yet, so a ":" after the
+           first element is what tells. */
+        bool pairs = stmt->as.decl.is_map;
         while (!at(p, TOK_RBRACE)) {
             Expr *elem = parse_expr(p);
             if (!elem) return NULL;
+            if (stmt->as.decl.elem_count == 0) pairs = at(p, TOK_COLON);
             ARENA_PUSH(p->arena, stmt->as.decl.elems, stmt->as.decl.elem_count, cap, elem);
+            /* Every element is written as the first one was, with a value
+               or without; the checker says what a map or an array needs. */
+            if (pairs) {
+                if (!expect(p, TOK_COLON, NULL)) return NULL;
+                skip_newlines(p);
+                Expr *value = parse_expr(p);
+                if (!value) return NULL;
+                ARENA_PUSH(p->arena, stmt->as.decl.elems, stmt->as.decl.elem_count, cap, value);
+            } else if (at(p, TOK_COLON)) {
+                diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                         "the first element has no ': value', so neither can the others");
+                return NULL;
+            }
             skip_newlines(p);
             if (!accept(p, TOK_COMMA)) break;
             skip_newlines(p);
         }
         if (!expect(p, TOK_RBRACE, NULL)) return NULL;
-    } else if (kind == STMT_CONST || (!stmt->as.decl.length && !stmt->as.decl.is_growable)) {
+        stmt->as.decl.pairs = pairs;
+    } else if (kind == STMT_CONST ||
+               (!stmt->as.decl.length && !stmt->as.decl.is_growable && !stmt->as.decl.is_map)) {
         diag_add(p->diags, SEV_ERROR, name.loc,
                  kind == STMT_CONST ? "a constant array needs its elements: '= { ... }'"
                                     : "an array needs a length or its elements");
@@ -1005,6 +1028,9 @@ static bool parse_params(Parser *p, Stmt *stmt) {
                     next(p);
                     next(p);
                     param.is_growable = true;
+                } else if (at_type(p) || at(p, TOK_IDENT)) {
+                    if (!parse_type(p, &param.key_type, &param.key_ref)) return false;
+                    param.is_map = true;
                 } else {
                     param.is_slice = true;
                 }
@@ -1296,11 +1322,68 @@ static Stmt *abandon_for(Parser *p) {
     return NULL;
 }
 
+/* True if the header of the for loop starting here, after "for" and any
+   "(", goes through something with "in" before any ";". Looks ahead
+   without consuming anything. */
+static bool at_for_in(Parser *p) {
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    bool found = false;
+    for (Token tok = p->tok;; tok = lexer_next(&lexer)) {
+        if (tok.kind == TOK_SEMI || tok.kind == TOK_LBRACE || tok.kind == TOK_NEWLINE ||
+            tok.kind == TOK_EOF || tok.kind == TOK_ASSIGN) {
+            break;
+        }
+        if (tok.kind == TOK_IDENT && str_eq_cstr(tok.text, "in")) {
+            found = true;
+            break;
+        }
+    }
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    return found;
+}
+
+/* Parses the rest of "for (T x in over)", "for (A a, B b in over)", after
+   the "for" and any "(". */
+static Stmt *parse_for_in(Parser *p, Stmt *stmt, bool parenthesized) {
+    stmt->kind = STMT_FOR_IN;
+    for (;;) {
+        Param *each = &stmt->as.loop.each[stmt->as.loop.each_count];
+        Token name;
+        if (!parse_type(p, &each->type, &each->type_ref)) return abandon_for(p);
+        if (!expect(p, TOK_IDENT, &name)) return abandon_for(p);
+        each->name = name.text;
+        each->loc = name.loc;
+        stmt->as.loop.each_count++;
+        if (stmt->as.loop.each_count == 2 || !accept(p, TOK_COMMA)) break;
+        skip_newlines(p);
+    }
+    if (!at(p, TOK_IDENT) || !str_eq_cstr(p->tok.text, "in")) {
+        error_expected(p, stmt->as.loop.each_count == 2
+                              ? "'in' after the two loop variables"
+                              : "'in', or ',' and a second loop variable");
+        return abandon_for(p);
+    }
+    next(p);
+    skip_newlines(p);
+    stmt->as.loop.over = parenthesized ? parse_enclosed_expr(p) : parse_expr(p);
+    if (!stmt->as.loop.over) return abandon_for(p);
+    if (parenthesized) {
+        skip_newlines(p);
+        if (!expect(p, TOK_RPAREN, NULL)) return abandon_for(p);
+    }
+    if (!parse_body(p, &stmt->as.loop.body, parenthesized)) return NULL;
+    return stmt;
+}
+
 static Stmt *parse_for(Parser *p) {
     Stmt *stmt = new_stmt(p, STMT_FOR, p->tok.loc);
     next(p);
     bool parenthesized = accept(p, TOK_LPAREN);
     if (parenthesized) skip_newlines(p);
+    if (at_for_in(p)) return parse_for_in(p, stmt, parenthesized);
 
     if (!at(p, TOK_SEMI)) {
         stmt->as.loop.init = parse_for_clause(p, true);

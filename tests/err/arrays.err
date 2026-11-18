@@ -22,7 +22,7 @@ tests/err/arrays.wind:28:7: error: argument 1 of 'takes' must be an array of 'in
 tests/err/arrays.wind:30:7: error: argument 1 of 'takes' must be an array of 'int', found an array of 'u8'
 tests/err/arrays.wind:31:8: error: cannot read into array 'a' as a whole; read its elements
 tests/err/arrays.wind:32:8: error: cannot read into an element of constant array 'C'
-tests/err/arrays.wind:33:13: error: 'len' needs an array or a string, found 'int'
+tests/err/arrays.wind:33:13: error: 'len' needs an array, a map or a string, found 'int'
 tests/err/arrays.wind:34:9: error: 'len' takes 1 argument, but 2 were given
 tests/err/arrays.wind:38:9: warning: array 'table' takes 8000000 bytes of the stack, which may be more than it has; declare it at the top level, outside any function
 tests/err/arrays.wind:44:19: error: index -1 counts back from the end, which needs a length known at compile time, and an array parameter's length is known only when the program runs; write 'values[len(values) - 1]'

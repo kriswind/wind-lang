@@ -18,6 +18,8 @@ typedef enum {
     BUILTIN_RESERVE, /* reserve(xs, n): makes room for n elements */
     BUILTIN_DELETE,  /* delete(xs): frees the elements, leaving it empty */
     BUILTIN_CLONE,   /* clone(a): a new growable array with a copy of a's elements */
+    BUILTIN_HAS,     /* has(m, k): whether a map holds a key */
+    BUILTIN_REMOVE,  /* remove(m, k): takes a key out of a map */
 } Builtin;
 
 /* ---- Symbols ---- */
@@ -54,6 +56,12 @@ struct Symbol {
        it grows as they are appended. As a parameter, it is the caller's
        own array, which the function may grow. */
     bool is_growable;
+    /* A map, "V name[K]": type is the values' type and key_type the keys'.
+       As a parameter, it is the caller's own map. */
+    bool is_map;
+    TypeKind key_type;
+    /* A loop variable of "for (... in ...)", which cannot be assigned. */
+    bool loop_bound;
     size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
@@ -289,6 +297,8 @@ typedef enum {
     STMT_BREAK,
     STMT_CONTINUE,
     STMT_GOTO,
+    /* "for (T x in a)", "for (int i, T x in a)", "for (K k, V v in m)" */
+    STMT_FOR_IN,
     /* "defer statement": runs the statement when the enclosing block is
        left, by its end, a return, a break or a continue. */
     STMT_DEFER,
@@ -354,6 +364,9 @@ typedef struct {
     SrcLoc loc;
     bool is_slice;  /* declared as "T name[]" */
     bool is_growable; /* declared as "T name[..]" */
+    bool is_map;      /* declared as "V name[K]" */
+    TypeKind key_type;
+    TypeRef *key_ref; /* NULL for a built-in type; resolved into key_type */
     Symbol *symbol; /* set by unit_analyze */
 } Param;
 
@@ -410,6 +423,13 @@ struct Stmt {
             /* "T name[..]", growable; its starting elements are elems, or
                the copy that init makes with clone(). */
             bool is_growable;
+            /* "V name[K]", a map; its starting entries are elems taken in
+               pairs, a key and then its value. A key type written as a name
+               is parsed as length, and found to be a type by the checker. */
+            bool is_map;
+            TypeKind key_type;
+            TypeRef *key_ref;
+            bool pairs; /* elems were written "key: value" */
             Expr *length; /* NULL when the length comes from the element count */
             Expr **elems;
             size_t elem_count;
@@ -455,13 +475,18 @@ struct Stmt {
             Block else_block;
             bool has_else;
         } if_;
-        /* STMT_WHILE, STMT_DO_WHILE, STMT_FOR */
+        /* STMT_WHILE, STMT_DO_WHILE, STMT_FOR, STMT_FOR_IN */
         struct {
             Stmt *init; /* for only; NULL if left out */
             Expr *cond; /* NULL in a for loop without one: loop forever */
             Stmt *step; /* for only; NULL if left out */
             Block body;
             int id; /* set by unit_analyze; unique among the unit's loops */
+            /* STMT_FOR_IN: the one or two variables named, and what is gone
+               through: an array, a string or a map. */
+            Param each[2];
+            size_t each_count;
+            Expr *over;
         } loop;
         /* STMT_BREAK, STMT_CONTINUE: the loop it applies to; set by
            unit_analyze, NULL if it is not inside one. */

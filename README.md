@@ -387,8 +387,37 @@ defer delete(names)             // frees them when the block is left
   of range does, unless bounds checks are off. Running out of memory always
   stops it with a message.
 
-How this was chosen, and what is to come (maps, `for` over an array,
-building strings), is in [docs/design/memory.md](docs/design/memory.md).
+**Maps**
+
+`V name[K]` is a map from keys of type `K` to values of type `V`. It starts
+empty, or with the entries given, and grows as keys are put in. Its entries
+stay in the order their keys were first put, so going through a map, or
+printing it, gives the same order every time.
+
+```wind
+int ages[string] = {"ada": 36, "bo": 7}
+ages["cy"] = 51                 // puts a key in, or changes its value
+ages["bo"]++                    // a key that is not there starts at zero
+cout << ages["dee"]             // 0: reading a missing key gives zero
+if (has(ages, "ada")) remove(ages, "ada")
+cout << len(ages) << " " << ages << "\n"   // 2 {"bo": 8, "cy": 51}
+clear(ages)                     // removes every entry, keeping the room
+delete(ages)                    // frees it; the map is empty again
+```
+
+- Keys can be integers, `char`, `bool`, enums, pointers and strings. A
+  string key is copied into the map, so the map never holds text that is
+  gone.
+- Values can be of any type, structs included: `stock["tea"].count -= 1`
+  changes one field of the value stored under `"tea"`.
+- A parameter declared `V name[K]` is given the caller's own map, which the
+  function can change.
+- A value in a map moves as the map grows, so none can be pointed to, and a
+  map is not assigned to another or used as a value. A map cannot be read
+  into with `cin`; read into a variable, then store it.
+
+How this was chosen, and what is to come, is in
+[docs/design/memory.md](docs/design/memory.md).
 
 ### Operators
 
@@ -478,6 +507,20 @@ for (int i = 0; i < count; i++) {
   can be left out; without a condition the loop runs until something leaves
   it. The parentheses are optional. A variable declared in `first` belongs to
   the loop.
+- `for (T x in a)` goes through an array, a string or a map: one name takes
+  each element, character or key; two names take each index and element,
+  or each key and value.
+
+  ```wind
+  for (int score in scores) total += score
+  for (int i, string name in names) cout << i << ": " << name << "\n"
+  for (string name, int age in ages) cout << name << " is " << age << "\n"
+  ```
+
+  The types are written out, as everywhere in Wind. A loop variable is a
+  copy and cannot be assigned. The length is read on each pass, so a body
+  that appends to the array also goes through what it appended; keys put
+  into a map during the loop may or may not be reached.
 - `break` leaves the innermost loop. `continue` skips to its next pass: to
   the condition of a `while` or `do`, or to the last clause of a `for`.
 - `name:` declares a label and `goto name` jumps to it. Labels work as in C:
@@ -977,8 +1020,8 @@ cout << name << " is " << age << "\n"
 - A struct field cannot be an array, and a struct or an enum cannot be read
   with `cin`; read into the fields.
 - There is no `void *` and no pointer to a function, and memory is
-  allocated only by growable arrays: a pointer points to a variable, an
-  element or a field. `cin` reads into a variable, not through a pointer.
+  allocated only by growable arrays and maps: a pointer points to a
+  variable, an element or a field. `cin` reads into a variable, not through a pointer.
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.

@@ -18,5 +18,5 @@ tests/err/externs.wind:23:22: error: expected the name of a C library, as in 'li
 tests/err/externs.wind:25:5: error: 'extern' can only be used at the top level of a file
 tests/err/externs.wind:26:15: error: an array's length must be an integer known at compile time
 tests/err/externs.wind:27:5: error: cannot assign to constant 'LIMIT'
-tests/err/externs.wind:29:20: error: 'len' needs an array or a string, found 'int'
+tests/err/externs.wind:29:20: error: 'len' needs an array, a map or a string, found 'int'
 tests/err/externs.wind:31:17: error: this '{' is never closed

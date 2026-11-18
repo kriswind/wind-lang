@@ -1,0 +1,89 @@
+// Maps, "V name[K]": reading a missing key gives zero, assigning puts the
+// key in, and the entries stay in the order they were first put.
+
+enum Color { RED, GREEN, BLUE }
+
+struct Stock {
+    int count
+    f64 price
+}
+
+int tally[string]
+
+void count_words(int into[string], string words[]) {
+    for (string word in words) into[word]++
+}
+
+int total(int counts[string]) {
+    int sum = 0
+    for (string key, int n in counts) sum += n
+    return sum
+}
+
+int main() {
+    string words[7] = {"the", "cat", "sat", "on", "the", "mat", "the"}
+    count_words(tally, words)
+    cout << tally << "\n"
+    cout << tally["the"] << " " << tally["dog"] << " " << len(tally) << "\n"
+    cout << has(tally, "cat") << " " << has(tally, "dog") << " " << total(tally) << "\n"
+
+    remove(tally, "cat")
+    remove(tally, "cat")
+    tally["dog"] = 4
+    tally["cat"] += 2
+    cout << tally << " " << len(tally) << "\n"
+
+    int squares[int] = {1: 1, 2: 4, 3: 9}
+    for (int i = 4; i <= 100; i++) squares[i] = i * i
+    cout << len(squares) << " " << squares[100] << " " << squares[101] << "\n"
+    for (int i = 1; i <= 100; i += 2) remove(squares, i)
+    int sum = 0
+    for (int key, int value in squares) sum += value - key * key
+    cout << len(squares) << " " << sum << " " << squares[2] << " " << squares[3] << "\n"
+
+    string names[Color] = {RED: "red", BLUE: "blue"}
+    names[GREEN] = "green"
+    cout << names << "\n"
+
+    Stock shelf[string]
+    shelf["jam"].count = 3
+    shelf["jam"].price = 2.5
+    shelf["tea"] = {10, 4.25}
+    shelf["tea"].count -= 1
+    cout << shelf["jam"].count << " " << shelf["tea"].count << " " << shelf["tea"].price
+         << " " << shelf["none"].count << "\n"
+
+    // Over arrays and strings: one name takes each element, two take the
+    // index too.
+    int primes[..] = {2, 3, 5, 7}
+    for (int i, int p in primes) cout << i << ":" << p << " "
+    cout << "\n"
+    for (char c in "abc") cout << c << "."
+    cout << "\n"
+    for (int n in primes) {
+        if (n == 3) continue
+        if (n == 7) break
+        defer cout << "(" << n << ")"
+        cout << n
+    }
+    cout << "\n"
+
+    string key = "temporary"
+    int owned[string]
+    owned[key] = 1
+    key = "changed"
+    cout << owned << "\n"
+
+    clear(squares)
+    cout << len(squares) << " " << squares[2] << "\n"
+    squares[7] = 49
+    cout << squares << "\n"
+
+    delete(tally)
+    delete(squares)
+    delete(names)
+    delete(shelf)
+    delete(owned)
+    delete(primes)
+    return 0
+}

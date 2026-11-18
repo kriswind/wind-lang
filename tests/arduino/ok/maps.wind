@@ -1,0 +1,14 @@
+#target arduino
+#board arduino:avr:uno
+
+// A map on a board, kept small: its entries come from the board's heap.
+enum Pin { LED, BUTTON, BUZZER }
+
+int main() {
+    u8 numbers[Pin] = {LED: 13, BUTTON: 2}
+    numbers[BUZZER] = 8
+    for (Pin pin, u8 number in numbers) cout << pin << "=" << number << " "
+    cout << len(numbers) << " " << has(numbers, LED) << "\n"
+    delete(numbers)
+    return 0
+}

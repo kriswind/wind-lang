@@ -94,6 +94,12 @@ typedef enum {
     HELPER_GROW,
     HELPER_CLONE,
     HELPER_POP_CHECK,
+    HELPER_MAP,        /* the wind_map type */
+    HELPER_MAP_FIND,
+    HELPER_MAP_PUT,
+    HELPER_MAP_REMOVE,
+    HELPER_MAP_CLEAR,
+    HELPER_MAP_DELETE,
     HELPER_COUNT,
 } Helper;
 
