@@ -1,3 +1,5 @@
+#target arduino
+
 // A program for a board: its top level runs once, loop runs after it over
 // and over, and output, input and errors go through the serial port.
 import ::vendor/arduino

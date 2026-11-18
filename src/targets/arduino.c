@@ -1,12 +1,24 @@
-/* The target for Arduino boards. The generated C is one file of a sketch;
-   the other is arduino_sketch, a fixed C++ file that starts the program from
-   setup() and loop() and lends it the board's serial port. Output, input and
-   error messages all go through that port, and a program that stops after an
-   error waits there for the board to be reset.
+/* The target for boards programmed with the Arduino toolchain: those that
+   have an Arduino core, which arduino-cli or the Arduino IDE builds for,
+   such as an Arduino Uno or a Raspberry Pi Pico. The generated C is one
+   file of a sketch; the other is arduino_sketch, a fixed C++ file that
+   starts the program from setup() and loop() and lends it the board's
+   serial port. Output, input and error messages all go through that port,
+   and a program that stops after an error waits there for the board to be
+   reset.
 
    Sizes are those of the AVR boards (the Uno, Nano and Mega), on which a
    pointer is 16 bits and a double is the same as a float. */
 
+#define _DEFAULT_SOURCE /* usleep */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <unistd.h>
+
+#include "../json.h"
 #include "target.h"
 
 /* The float writer that the ones below share. It works digit by digit, so
@@ -162,6 +174,152 @@ static const HelperInfo arduino_helpers[HELPER_COUNT] = {
         0, {HELPER_FLOAT_SUPPORT}, {TYPE_F128}},
 };
 
+/* The serial port's speed, which arduino_sketch starts it at. */
+#define BAUD "9600"
+
+/* Runs arduino-cli with the given arguments. Returns false, with the
+   problem reported, if it fails. */
+static bool arduino_cli(char *const argv[], const char *what) {
+    int code = run_program("arduino-cli", argv);
+    if (code == 0) return true;
+    fprintf(stderr, "wind: error: arduino-cli could not %s the sketch (exit code %d)\n", what,
+            code);
+    return false;
+}
+
+/* The port that the one connected board arduino-cli recognizes as `board`
+   is on, from malloc. Returns NULL, with the problem reported, if there is
+   no such board or more than one. */
+static char *find_port(const char *board) {
+    char *list[] = {"arduino-cli", "board", "list", "--format", "json", NULL};
+    int status;
+    char *text = program_output("arduino-cli", list, &status);
+    Arena arena = {0};
+    const Json *found = status == 0 ? json_parse(&arena, (Str){text, strlen(text)}) : NULL;
+    const Json *ports = json_get(found, "detected_ports");
+    char *port = NULL;
+    size_t matches = 0;
+    for (size_t i = 0; i < json_count(ports); i++) {
+        const Json *detected = json_at(ports, i);
+        const Json *boards = json_get(detected, "matching_boards");
+        Str address;
+        if (!json_string(json_get(json_get(detected, "port"), "address"), &address)) continue;
+        for (size_t j = 0; j < json_count(boards); j++) {
+            Str fqbn;
+            if (!json_string(json_get(json_at(boards, j), "fqbn"), &fqbn)) continue;
+            if (!str_eq_cstr(fqbn, board)) continue;
+            if (matches++ == 0) {
+                port = xmalloc(address.len + 1);
+                memcpy(port, address.data, address.len);
+                port[address.len] = '\0';
+            }
+            break;
+        }
+    }
+    arena_release(&arena);
+    free(text);
+    if (status != 0 || !found) {
+        fprintf(stderr, "wind: error: arduino-cli could not list the connected boards; give the "
+                        "port with -p\n");
+    } else if (matches == 0) {
+        fprintf(stderr,
+                "wind: error: no board '%s' is connected; connect one, or give its port with "
+                "-p ('arduino-cli board list' shows what is connected)\n",
+                board);
+    } else if (matches > 1) {
+        fprintf(stderr, "wind: error: %zu boards '%s' are connected; choose one with -p\n",
+                matches, board);
+    }
+    if (status != 0 || !found || matches != 1) {
+        free(port);
+        return NULL;
+    }
+    return port;
+}
+
+/* Finds a program other than this one that has the port open, where the
+   system shows that in /proc. Returns its process id and writes its name
+   to name, or returns 0 if there is none or it cannot be told. */
+static long port_holder(const char *port, char *name, size_t size) {
+    char *device = path_canonical(port);
+    DIR *processes = device ? opendir("/proc") : NULL;
+    long found = 0;
+    for (struct dirent *entry; processes && !found && (entry = readdir(processes));) {
+        char *end;
+        long pid = strtol(entry->d_name, &end, 10);
+        if (*end || pid <= 0 || pid == (long)getpid()) continue;
+        char dir_path[64];
+        snprintf(dir_path, sizeof dir_path, "/proc/%ld/fd", pid);
+        DIR *files = opendir(dir_path);
+        for (struct dirent *file; files && !found && (file = readdir(files));) {
+            char link[400], target[4096];
+            snprintf(link, sizeof link, "%s/%s", dir_path, file->d_name);
+            ssize_t len = readlink(link, target, sizeof target - 1);
+            if (len <= 0) continue;
+            target[len] = '\0';
+            if (strcmp(target, device) == 0) found = pid;
+        }
+        if (files) closedir(files);
+    }
+    if (processes) closedir(processes);
+    free(device);
+    name[0] = '\0';
+    if (found) {
+        char comm_path[64];
+        snprintf(comm_path, sizeof comm_path, "/proc/%ld/comm", found);
+        FILE *comm = fopen(comm_path, "r");
+        if (comm && fgets(name, (int)size, comm)) name[strcspn(name, "\n")] = '\0';
+        if (comm) fclose(comm);
+    }
+    return found;
+}
+
+static int arduino_run(const char *folder, const char *board, const char *given_port) {
+    if (!program_on_path("arduino-cli")) {
+        fprintf(stderr,
+                "wind: error: running a program for this target uses arduino-cli, which is "
+                "not in PATH; install it from https://arduino.github.io/arduino-cli/, then "
+                "the core for the board with 'arduino-cli core install'\n");
+        return 1;
+    }
+    char *found_port = given_port ? NULL : find_port(board);
+    if (!given_port && !found_port) return 1;
+    const char *port = given_port ? given_port : found_port;
+
+    /* A board that is restarted for an upload through its port, as one that
+       talks over USB is, cannot be while another program holds the port. */
+    char holder[64];
+    long pid = port_holder(port, holder, sizeof holder);
+    if (pid) {
+        fprintf(stderr,
+                "wind: error: %s is open in another program (%s, process %ld), so the board "
+                "cannot be restarted to take the upload; close it, such as the Serial "
+                "Monitor of the Arduino IDE, and run again\n",
+                port, holder[0] ? holder : "unknown", pid);
+        free(found_port);
+        return 1;
+    }
+    char *compile[] = {"arduino-cli", "compile", "--fqbn", (char *)board, (char *)folder,
+                       NULL};
+    char *upload[] = {"arduino-cli", "upload", "--fqbn", (char *)board, "-p", (char *)port,
+                      (char *)folder, NULL};
+    if (!arduino_cli(compile, "compile") || !arduino_cli(upload, "upload")) {
+        free(found_port);
+        return 1;
+    }
+
+    /* A board that talks over USB restarts after an upload and its port
+       goes away for a moment, so it is given a second and then waited for,
+       for up to ten more. */
+    usleep(1000000);
+    for (int tries = 0; tries < 100 && access(port, R_OK | W_OK) != 0; tries++) usleep(100000);
+    char *monitor[] = {"arduino-cli", "monitor", "-p", (char *)port, "--config",
+                       "baudrate=" BAUD, NULL};
+    int code = run_program("arduino-cli", monitor);
+    free(found_port);
+    return code;
+}
+
 const Target target_arduino = {
     .platform = {
         .name = "arduino",
@@ -182,13 +340,58 @@ const Target target_arduino = {
        make C agree, so the file asks for them itself. */
     .prologue = "#pragma GCC optimize (\"wrapv\")\n"
                 "#pragma GCC optimize (\"no-strict-aliasing\")\n\n",
+    .help =
+        "Target arduino: a program for a board programmed with the Arduino\n"
+        "toolchain, which is any board that has an Arduino core, such as an\n"
+        "Arduino Uno or a Raspberry Pi Pico.\n"
+        "\n"
+        "  wind build -t arduino <file.wind> [-o <folder>]\n"
+        "      write a sketch folder holding <folder>.ino and wind_program.c; the\n"
+        "      folder is named after the file unless -o names another\n"
+        "  wind run -t arduino [--fqbn <board>] [-p <port>] <file.wind>\n"
+        "      build the sketch, compile and upload it with arduino-cli, and show\n"
+        "      what the program prints until Ctrl-C\n"
+        "  wind check -t arduino <file.wind>...\n"
+        "      report errors and warnings, with the board's sizes and rules\n"
+        "  wind emit -t arduino <file.wind>\n"
+        "      print the C in wind_program.c\n"
+        "\n"
+        "A file can say all this at its top, so that the options are not needed:\n"
+        "  #target arduino\n"
+        "  #board rp2040:rp2040:rpipico2w\n"
+        "\n"
+        "For run, the board is named as arduino-cli names it, with #board or\n"
+        "--fqbn, and is looked for among the connected boards. -p (or --port)\n"
+        "gives its port, such as /dev/ttyACM0, when it is not found or when\n"
+        "several are; 'arduino-cli board list' shows both. arduino-cli must be\n"
+        "installed, with the core for the board.\n"
+        "\n"
+        "The program:\n"
+        "  - Its top level, or its main, runs once when the board starts.\n"
+        "  - A function 'void loop()' then runs over and over.\n"
+        "  - cout, cin and error messages use the serial port, at 9600 baud.\n"
+        "  - An index out of range or a NULL pointer that is used prints its\n"
+        "    message and stops the program until the board is reset.\n"
+        "  - main takes no arguments.\n"
+        "\n"
+        "Sizes are those of the AVR boards (Uno, Nano, Mega): int, uint, uintptr\n"
+        "and pointers are 16 bits, float and f64 are 32 bits, and i128 and u128\n"
+        "are not available.\n"
+        "\n"
+        "Libraries:\n"
+        "  import ::vendor/arduino    pins, time and the board's constants\n"
+        "\n"
+        "Running a program on an Arduino Uno:\n"
+        "  wind run -t arduino --fqbn arduino:avr:uno blink.wind\n",
+    .run = arduino_run,
 };
 
 const char arduino_sketch[] =
     "// Starts a Wind program on the board. The program itself is in\n"
-    "// wind_program.c, written by \"wind emit-arduino\"; this file runs its top\n"
-    "// level once from setup() and its loop function from loop(), and lends it\n"
-    "// the serial port for output, input and error messages.\n"
+    "// wind_program.c, written by \"wind build -t arduino\"; this file runs\n"
+    "// the program's top level once from setup() and its loop function from\n"
+    "// loop(), and lends it the serial port for output, input and error\n"
+    "// messages.\n"
     "\n"
     "#include <Arduino.h>\n"
     "\n"
@@ -215,7 +418,7 @@ const char arduino_sketch[] =
     "}\n"
     "\n"
     "void setup() {\n"
-    "    Serial.begin(9600);\n"
+    "    Serial.begin(" BAUD ");\n"
     "    wind_setup();\n"
     "}\n"
     "\n"

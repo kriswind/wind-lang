@@ -30,8 +30,9 @@ build/wind run examples/hello.wind          # the same, spelled out
 build/wind build examples/hello.wind -o hi  # compile to an executable
 build/wind build --no-bounds-check examples/hello.wind   # without index checks
 build/wind check examples/hello.wind        # report errors and warnings only
-build/wind emit-c examples/hello.wind       # print the generated C
-build/wind emit-arduino examples/arduino/blink.wind      # an Arduino sketch
+build/wind emit examples/hello.wind         # print the generated C
+build/wind build -t arduino examples/arduino/blink.wind  # an Arduino sketch
+build/wind emit -t arduino examples/arduino/blink.wind   # print the sketch's C
 build/wind lsp                              # language server on stdio
 
 make install    # installs wind to ~/.local/bin and its libraries to
@@ -53,7 +54,7 @@ itself: `libs` in a build of the source, `share/wind/libs` once installed.
 
 | Library | What it holds |
 | --- | --- |
-| `::vendor/arduino` | The Arduino core: pins, time and the board's constants; see [Arduino](#arduino) |
+| `::vendor/arduino` | The Arduino core: pins, time and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
 
 ## Tooling
 
@@ -65,7 +66,9 @@ build would.
   `file:line:col: severity: message` and exits with status 1 if there are
   errors. Warnings do not fail a check or a build. They cover an unused
   constant, variable, function, label or import, and unreachable code.
-  Problems in an imported file are listed under that file's own name.
+  Problems in an imported file are listed under that file's own name. A
+  program for a board, by its `#target` or `-t arduino`, is checked with
+  the board's sizes and rules, in the editor too.
 - `wind lsp` provides diagnostics as you type, hover, go-to-definition and
   completion for constants, variables, functions, parameters, labels and
   modules. Go-to-definition follows a name into the file that exports it, and
@@ -620,6 +623,28 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
 - The program is compiled as a whole: `wind build main.wind` follows the
   imports and produces one executable.
 
+### Settings
+
+A file can say what it is compiled for at its very top, above everything
+else:
+
+```wind
+#target arduino
+#board arduino:avr:uno
+```
+
+- `#target` names the target: `c`, the machine `wind` runs on, or
+  `arduino`; see [The Arduino toolchain](#the-arduino-toolchain). Without
+  it, a program is for `c`.
+- `#board` names the board, for a target whose programs run on one, as
+  `arduino-cli` spells it. The name runs up to the first space; it may
+  also be written in quotes.
+- `run`, `build`, `check`, `emit` and the language server all read them;
+  `-t` and `--fqbn` on the command line override them.
+- Only the program's own file chooses. A file it imports can state the
+  target it is written for, as `::vendor/arduino` does, and importing it
+  into a program for another target is then an error.
+
 ### External functions and constants
 
 `extern` declares a function or a constant that C defines, so that Wind can
@@ -664,13 +689,20 @@ putchar(i32('!'))
   `::vendor/arduino` is written. `export` goes only before the block, not
   on the lines inside it.
 
-### Arduino
+### The Arduino toolchain
 
-`wind emit-arduino` writes a program as an Arduino sketch, which the Arduino
-IDE or `arduino-cli` builds and uploads:
+The `arduino` target is for boards programmed with the Arduino toolchain:
+any board that has an Arduino core, which `arduino-cli` and the Arduino IDE
+build for. That takes in Arduino's own boards and many others, such as the
+Raspberry Pi Pico. `wind run` builds a program, compiles and uploads it
+with `arduino-cli`, and shows what it prints; `wind build` writes it as a
+sketch for building yourself. The file says what it is for at its top:
 
 ```wind
 // blink.wind
+#target arduino
+#board rp2040:rp2040:rpipico2w
+
 import ::vendor/arduino
 
 int blinks = 0
@@ -687,11 +719,31 @@ void loop() {
 ```
 
 ```sh
-wind emit-arduino blink.wind           # writes blink/blink.ino and blink/wind_program.c
-wind emit-arduino blink.wind -o sketches/blinker
-arduino-cli compile --fqbn arduino:avr:uno blink
-arduino-cli upload --fqbn arduino:avr:uno -p /dev/ttyACM0 blink
+wind run blink.wind                    # compile, upload, show the output until Ctrl-C
+wind run --fqbn arduino:avr:uno blink.wind          # on another board
+wind run -p /dev/ttyACM1 blink.wind    # on the board at that port
+
+wind build blink.wind                  # writes blink/blink.ino and blink/wind_program.c
+wind build blink.wind -o sketches/blinker
+wind check blink.wind                  # checked with the board's sizes and rules
+wind emit blink.wind                   # prints the C the sketch holds
 ```
+
+- **Settings.** `#target arduino` makes `run`, `build`, `check`, `emit`
+  and the language server treat the file as a program for a board, and
+  `#board` names the board, as `arduino-cli` spells it. They go at the very
+  top of the program's file. On the command line, `-t` and `--fqbn`
+  override them; without the settings a file is for the `c` target, and
+  `-t arduino` makes it one for a board.
+- **Running.** `wind run` needs `arduino-cli`, with the core for the board
+  installed (`arduino-cli core install arduino:avr`). It looks for the
+  board among the connected ones, by its name; `-p` (or `--port`) gives
+  the port instead, which is needed when it is not recognized (a board in
+  its bootloader, for one) or when two of them are connected. `arduino-cli
+  board list` shows the names and ports. The sketch is built in a
+  temporary folder, which is removed when the run ends. The output is
+  shown from the moment the port can be opened after the upload, so what a
+  program prints in its first seconds may be missed.
 
 - **Start and repeat.** The top level, or `main` in a file laid out as a C
   program, runs once when the board starts, as Arduino's `setup()`. A
@@ -705,7 +757,7 @@ arduino-cli upload --fqbn arduino:avr:uno -p /dev/ttyACM0 blink
 - **The library.** `import ::vendor/arduino` brings in the pin, analog,
   time, pulse and shift functions and the board's constants (`HIGH`,
   `OUTPUT`, `LED_BUILTIN`, `A0` to `A5` and so on), all taken from the
-  board's own Arduino library.
+  board's own Arduino core.
 - **Sizes.** Checking assumes an AVR board (the Uno, Nano or Mega): `int`,
   `uint` and pointers are 16 bits, so `int x = 40000` is an error; use
   `i32`. A `double`, and so `float` and `f64`, is 32 bits there. `i128` and
@@ -954,7 +1006,7 @@ numbers; the script is there to run it again.
 | `src/parser.c` | Tokens to AST (grammar is documented at the top of the file) |
 | `src/sema.c` | Name resolution, type checking and lint warnings |
 | `src/codegen.c` | Checked AST to C |
-| `src/targets/` | What differs between targets: `host.c` for the machine the compiler runs on, `arduino.c` for Arduino boards |
+| `src/targets/` | What differs between targets: `host.c` for the machine the compiler runs on, `arduino.c` for boards programmed with the Arduino toolchain |
 | `src/lsp.c` | Language server |
 | `src/json.c` | JSON reading and writing for the language server |
 | `src/main.c` | Command-line driver |

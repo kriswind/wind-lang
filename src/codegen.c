@@ -1264,6 +1264,7 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     case STMT_IMPORT:
     case STMT_TYPE:
     case STMT_EXTERN_GROUP:
+    case STMT_SETTING:
         break;
     case STMT_VAR:
         indent(depth, out);

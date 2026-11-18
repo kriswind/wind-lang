@@ -123,10 +123,25 @@ typedef struct Target {
     const char *repeat;
     /* Text the generated C starts with, or NULL. */
     const char *prologue;
+    /* What "wind help -t name" prints about the target. */
+    const char *help;
+    /* For a target whose programs run on a board: compiles the sketch in
+       folder for the board named by board, uploads it through port, and
+       then shows what the program prints until it is interrupted. A NULL
+       port is the one the board is found on. Returns what "wind run" exits
+       with, having reported any problem itself. NULL for a target whose
+       programs run here. */
+    int (*run)(const char *folder, const char *board, const char *port);
 } Target;
 
 extern const Target target_host;
 extern const Target target_arduino;
+
+/* The names of the targets, as messages list them. */
+#define TARGET_NAMES "c and arduino"
+
+/* The target of the given name, or NULL if there is none. */
+const Target *target_find(Str name);
 
 /* The Arduino sketch file that goes beside the generated C and connects it
    to the board. */

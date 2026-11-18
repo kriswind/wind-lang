@@ -46,7 +46,7 @@ static const struct {
 static TypeTable *table;
 
 const Platform platform_host = {
-    .name = "host",
+    .name = "c",
     .pointer_size = sizeof(void *),
     .double_size = 8,
     .long_double_size = 16,

@@ -8,10 +8,12 @@
 # tests/err/*.wind must fail `wind check` with exactly the matching .err output.
 # Both find "::" imports in tests/libs.
 #
-# tests/arduino/ok/*.wind are made into sketches with `wind emit-arduino`, and
+# tests/arduino/ok/*.wind say "#target arduino", and are made into sketches with
+#                  `wind build`, and
 #                  the sketch's C is built with tests/arduino/board.c, which
 #                  stands in for the board, and must print the .out file.
-# tests/arduino/err/*.wind must fail `wind emit-arduino` with the .err output.
+# tests/arduino/err/*.wind say "#target arduino", and must fail `wind check` with
+#                  the .err output, and `wind build` the same way, writing nothing.
 # These import the libraries that come with wind.
 
 WIND=build/wind
@@ -63,7 +65,7 @@ for src in tests/arduino/ok/*.wind; do
     input="${src%.wind}.in"
     [ -f "$input" ] || input=/dev/null
     rm -rf "$scratch/sketch"
-    actual=$("$WIND" emit-arduino "$src" -o "$scratch/sketch" >/dev/null &&
+    actual=$("$WIND" build "$src" -o "$scratch/sketch" >/dev/null &&
         "$CC" -std=c11 -w -fwrapv -I tests/arduino -o "$scratch/board" \
             "$scratch/sketch/wind_program.c" tests/arduino/board.c &&
         "$scratch/board" <"$input" 2>&1; echo "[exit $?]")
@@ -77,9 +79,10 @@ done
 
 for src in tests/arduino/err/*.wind; do
     total=$((total + 1))
-    actual=$("$WIND" emit-arduino "$src" -o "$scratch/failed" 2>&1; echo "[exit $?]")
+    actual=$("$WIND" check "$src" 2>&1; echo "[exit $?]")
+    built=$("$WIND" build "$src" -o "$scratch/failed" 2>&1; echo "[exit $?]")
     expected=$(cat "${src%.wind}.err"; echo "[exit 1]")
-    if [ "$actual" != "$expected" ] || [ -e "$scratch/failed" ]; then
+    if [ "$actual" != "$expected" ] || [ "$built" != "$expected" ] || [ -e "$scratch/failed" ]; then
         failed=$((failed + 1))
         printf 'FAIL %s\n--- expected\n%s\n--- actual\n%s\n' \
             "$src" "$expected" "$actual"

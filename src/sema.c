@@ -6,6 +6,7 @@
 
 #include "ast.h"
 #include "lexer.h"
+#include "targets/target.h"
 
 /*
  * Typing rules:
@@ -89,6 +90,14 @@
  *   body or value here, and keeps its own name in the generated C. Only
  *   types that C has a matching form for can cross: numbers, bool, char,
  *   enums and pointers.
+ *
+ * Settings:
+ *
+ * - "#target name" and "#board name" say what a file is compiled for,
+ *   above everything else in it. The program's own file chooses its target
+ *   and board, unless the command line names others. An imported file can
+ *   only state the target it is written for, which the program must then
+ *   be built for.
  *
  * The platform (see types.h) decides the sizes of types and which exist,
  * whether main can take the program's arguments, and which function, if
@@ -2136,6 +2145,8 @@ static void check_stmt(Checker *c, Stmt *stmt) {
         break; /* handled before anything else is checked */
     case STMT_EXTERN_GROUP:
         break; /* the parser leaves its declarations in its place */
+    case STMT_SETTING:
+        break; /* see check_settings */
     }
 }
 
@@ -2166,7 +2177,54 @@ static void warn_unused(Checker *c) {
 static bool is_declaration(const Stmt *stmt) {
     return stmt->kind == STMT_CONST || stmt->kind == STMT_VAR ||
            stmt->kind == STMT_FUNC || stmt->kind == STMT_IMPORT ||
-           stmt->kind == STMT_TYPE;
+           stmt->kind == STMT_TYPE || stmt->kind == STMT_SETTING;
+}
+
+/* Checks the settings at the top of a file. */
+static void check_settings(Checker *c) {
+    const Block *top = &c->unit->program.top;
+    bool is_program = c->unit->root == c->unit;
+    const char *building = types_platform()->name;
+    const Stmt *seen_target = NULL, *seen_board = NULL;
+    for (size_t i = 0; i < top->count; i++) {
+        const Stmt *stmt = top->stmts[i];
+        if (stmt->kind != STMT_SETTING) continue;
+        Str name = stmt->as.setting.name;
+        Str value = stmt->as.setting.value;
+        bool is_target = str_eq_cstr(name, "target");
+        const Stmt **seen = is_target ? &seen_target : &seen_board;
+        if (!stmt->as.setting.leading) {
+            error(c, stmt->loc, "'#%.*s' goes at the top of the file, above everything but "
+                                "other settings",
+                  NAME(name));
+        } else if (*seen) {
+            error(c, stmt->loc, "'#%.*s' is already given at line %d", NAME(name),
+                  (*seen)->loc.line);
+        } else {
+            *seen = stmt;
+        }
+        if (*seen != stmt) continue;
+        if (is_target && !target_find(value)) {
+            error(c, stmt->as.setting.value_loc,
+                  "unknown target '%.*s'; the targets are " TARGET_NAMES, NAME(value));
+        } else if (is_target && !is_program && !str_eq_cstr(value, building)) {
+            /* A file written for one target, imported by a program for
+               another. */
+            error(c, stmt->as.setting.value_loc,
+                  "this file is for target '%.*s', and the program is being built for "
+                  "'%s'; give the program '#target %.*s'",
+                  NAME(value), building, NAME(value));
+        } else if (!is_target && !is_program) {
+            error(c, stmt->loc, "'#board' belongs in the program's own file, not in one it "
+                                "imports");
+        } else if (!is_target && !target_find((Str){building, strlen(building)})->run) {
+            error(c, stmt->loc, "'#board' names a board, which a program for %s does not run "
+                                "on",
+                  building);
+        } else if (!is_target && value.len == 0) {
+            error(c, stmt->as.setting.value_loc, "'#board' needs the board's name");
+        }
+    }
 }
 
 /* A file that defines main is laid out like a C program: declarations at the
@@ -2489,6 +2547,8 @@ void check_program(Unit *unit) {
     Scope global;
     push_scope(&c, &global, unit->src.len);
     c.global = &global;
+
+    check_settings(&c);
 
     /* Imports, types and functions are declared before anything is checked,
        so they can be used from code above them, and functions from each

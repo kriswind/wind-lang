@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include "lsp.h"
+#include "targets/target.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -253,6 +254,20 @@ static void publish_diagnostics(Arena *arena, Str uri, const Unit *unit) {
     send_message(&buf);
 }
 
+
+/* Analyzes a document for the target its "#target" names, so that it is
+   checked with that target's sizes and rules. */
+static void analyze_document(Doc *doc) {
+    Str text = {doc->text, doc->text_len};
+    FileSettings settings = file_settings(text);
+    const Target *target = settings.target
+                               ? target_find((Str){settings.target, strlen(settings.target)})
+                               : NULL;
+    types_use_platform(target ? &target->platform : &target_host.platform);
+    file_settings_release(&settings);
+    unit_analyze(&doc->unit, text, doc->path);
+}
+
 static void set_document(Server *server, Arena *arena, Str uri, Str text) {
     Doc *doc = find_doc(server, uri);
     if (doc) {
@@ -269,7 +284,7 @@ static void set_document(Server *server, Arena *arena, Str uri, Str text) {
     }
     doc->text = copy_cstr(text);
     doc->text_len = text.len;
-    unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
+    analyze_document(doc);
     publish_diagnostics(arena, uri, &doc->unit);
 }
 
@@ -279,7 +294,7 @@ static void refresh_documents(Server *server, Arena *arena) {
     for (size_t i = 0; i < server->doc_count; i++) {
         Doc *doc = &server->docs[i];
         unit_release(&doc->unit);
-        unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
+        analyze_document(doc);
         publish_diagnostics(arena, (Str){doc->uri, strlen(doc->uri)}, &doc->unit);
     }
 }

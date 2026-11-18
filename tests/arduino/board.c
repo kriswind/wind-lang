@@ -1,5 +1,5 @@
-/* Stands in for an Arduino board, so that the C a sketch is made of can be
-   run on the machine running the tests. The serial port is stdin and
+/* Stands in for a board, so that the C a sketch is made of can be run on
+   the machine running the tests. The serial port is stdin and
    stdout; what the program does to its pins is written out as it happens;
    time passes only in delay. setup() runs the program's top level, and then
    loop() is called LOOPS times. A program that stops after an error ends

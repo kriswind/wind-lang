@@ -7,7 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 bool str_eq(Str a, Str b) {
@@ -167,6 +169,99 @@ char *path_beside(const char *from, Str written) {
 
 char *path_canonical(const char *path) {
     return realpath(path, NULL);
+}
+
+/* The program run_program is waiting for, which signals are passed to. */
+static volatile pid_t waited_for;
+
+static void pass_on(int signal) {
+    if (waited_for > 0) kill(waited_for, signal);
+}
+
+int run_program(const char *path, char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) fatal("fork failed: %s", strerror(errno));
+    if (pid == 0) {
+        execvp(path, argv);
+        fprintf(stderr, "wind: error: cannot execute '%s': %s\n", path, strerror(errno));
+        _exit(127);
+    }
+    /* Installed only after the fork, so that the program itself keeps the
+       usual response to these signals. */
+    static const int passed[] = {SIGINT, SIGHUP, SIGTERM, SIGQUIT};
+    struct sigaction pass = {0}, before[sizeof passed / sizeof passed[0]];
+    pass.sa_handler = pass_on;
+    waited_for = pid;
+    for (size_t i = 0; i < sizeof passed / sizeof passed[0]; i++) {
+        sigaction(passed[i], &pass, &before[i]);
+    }
+    int status;
+    pid_t waited;
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    for (size_t i = 0; i < sizeof passed / sizeof passed[0]; i++) {
+        sigaction(passed[i], &before[i], NULL);
+    }
+    waited_for = 0;
+    if (waited < 0) fatal("waitpid failed: %s", strerror(errno));
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 128 + WTERMSIG(status);
+}
+
+char *program_output(const char *path, char *const argv[], int *status) {
+    int pipe_ends[2];
+    if (pipe(pipe_ends) != 0) fatal("cannot create a pipe: %s", strerror(errno));
+    pid_t pid = fork();
+    if (pid < 0) fatal("fork failed: %s", strerror(errno));
+    if (pid == 0) {
+        dup2(pipe_ends[1], STDOUT_FILENO);
+        close(pipe_ends[0]);
+        close(pipe_ends[1]);
+        execvp(path, argv);
+        fprintf(stderr, "wind: error: cannot execute '%s': %s\n", path, strerror(errno));
+        _exit(127);
+    }
+    close(pipe_ends[1]);
+    size_t len = 0, cap = 4096;
+    char *text = xmalloc(cap);
+    for (;;) {
+        if (len + 1 == cap) text = xrealloc(text, cap *= 2);
+        ssize_t got = read(pipe_ends[0], text + len, cap - len - 1);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        len += (size_t)got;
+    }
+    text[len] = '\0';
+    close(pipe_ends[0]);
+    int wait_status;
+    while (waitpid(pid, &wait_status, 0) < 0) {
+        if (errno != EINTR) fatal("waitpid failed: %s", strerror(errno));
+    }
+    *status = WIFEXITED(wait_status) ? WEXITSTATUS(wait_status) : 128 + WTERMSIG(wait_status);
+    return text;
+}
+
+bool program_on_path(const char *name) {
+    const char *path = getenv("PATH");
+    if (!path) return false;
+    while (*path) {
+        size_t len = strcspn(path, ":");
+        char *candidate = xmalloc(len + strlen(name) + 2);
+        /* An empty entry in PATH is the current directory. */
+        sprintf(candidate, "%.*s/%s", len ? (int)len : 1, len ? path : ".", name);
+        bool found = access(candidate, X_OK) == 0;
+        free(candidate);
+        if (found) return true;
+        path += len;
+        if (*path == ':') path++;
+    }
+    return false;
+}
+
+const char *temp_dir(void) {
+    const char *dir = getenv("TMPDIR");
+    return (dir && *dir) ? dir : "/tmp";
 }
 
 static char *libs;

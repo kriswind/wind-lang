@@ -1,0 +1,2 @@
+tests/err/targets.wind:1:9: error: unknown target 'avr'; the targets are c and arduino
+tests/err/targets.wind:2:1: error: '#board' names a board, which a program for c does not run on

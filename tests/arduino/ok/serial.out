@@ -6,5 +6,5 @@ read 42 wind 1.5 true
 [pin 13 = 1] round 1 at 0
 [pin 13 = 0] round 2 at 250
 [pin 13 = 1] round 3 at 500
-wind: line 35: index 3 is out of range for length 2
+wind: line 37: index 3 is out of range for length 2
 [halted]

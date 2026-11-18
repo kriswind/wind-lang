@@ -70,7 +70,7 @@ static const HelperInfo host_helpers[HELPER_COUNT] = {
 
 const Target target_host = {
     .platform = {
-        .name = "host",
+        .name = "c",
         .pointer_size = sizeof(void *),
         .double_size = 8,
         .long_double_size = 16,
@@ -83,4 +83,22 @@ const Target target_host = {
     .start_with_arguments = "int main(int argc, char **argv)",
     .start_returns_status = true,
     .repeat = NULL,
+    .help =
+        "Target c: a program for the machine wind runs on. This is the target\n"
+        "when neither -t nor the file's #target names another.\n"
+        "\n"
+        "  wind build [-t c] <file.wind> [-o <output>]   compile to an executable\n"
+        "  wind run [-t c] <file.wind> [args...]          compile and run\n"
+        "  wind check [-t c] <file.wind>...               report errors and warnings\n"
+        "  wind emit [-t c] <file.wind>                   print the generated C\n"
+        "\n"
+        "The program reads stdin and writes stdout. An error such as an index out\n"
+        "of range is reported on stderr and ends the program with status 1. main\n"
+        "may take the program's arguments as '(int argc, string argv[])', and the\n"
+        "status an int main returns is the program's exit status.\n"
+        "\n"
+        "Sizes are this machine's: int, uint, uintptr and pointers are as wide as\n"
+        "its pointers, and every type, i128 and u128 included, is available.\n"
+        "\n"
+        "The C compiler is taken from $CC (default: cc).\n",
 };

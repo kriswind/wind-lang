@@ -1,12 +1,16 @@
-// The Arduino core library: pins, time and the board's own constants, for
-// programs built with "wind emit-arduino". Import it as
+#target arduino
+
+// The Arduino core: pins, time and the board's own constants, for programs
+// built with "wind build -t arduino" for any board that has one. Import it as
 //
 //     import ::vendor/arduino
 //
 // and reach what it holds as arduino.pinMode, arduino.HIGH and so on.
 //
 // Everything here is the Arduino library's own, declared through "extern",
-// so the constants have the values of the board being built for.
+// so the constants have the values of the board being built for. The
+// "#target" above makes a program that imports this one for any other
+// target an error.
 
 export extern "Arduino.h" {
     // Pin levels and modes.

@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "ast.h"
@@ -8,13 +9,14 @@
  *
  *   program    = { statement } EOF
  *   block      = "{" { statement } "}"
- *   statement  = directive ( statement | block )
+ *   statement  = directive ( statement | block ) | setting terminator
  *              | ( const_decl | var_decl | assign | call | cout | cin | goto
  *                | return | do_while | "break" | "continue" | import
  *                | "export" const_decl | [ "export" ] type_decl
  *                | [ "export" ] extern ) terminator
  *              | if | while | for | [ "export" ] func | label
  *   directive  = "#no_bounds_check" | "#bounds_check"
+ *   setting    = "#target" IDENT | "#board" ( STRING | name up to a space )
  *   import     = "import" ( STRING | path ) [ "as" IDENT ]
  *   path       = the characters up to the next space, as in a/b or ::x/y
  *   extern     = "extern" [ STRING ] ( external
@@ -106,6 +108,11 @@
  * written before the block; the block itself leaves no trace in the program,
  * which holds its declarations in its place.
  *
+ * A setting says what the file is compiled for, and belongs above every
+ * statement of the file that is not one; see file_settings. A board's name
+ * holds colons, as in arduino:avr:uno, so it is read the way an import's
+ * path is: as the tokens up to the first space, or in quotes.
+ *
  * A directive covers the statement, block or function after it, which may
  * start on the next line. A block can only stand on its own after one.
  *
@@ -132,6 +139,8 @@ typedef struct {
     /* Where a "*" sits that starts the body of the if or while being
        parsed, and so is not a multiplication; NO_OFFSET if there is none. */
     size_t body_star;
+    /* A statement of the file that is not a setting has been read. */
+    bool past_settings;
     Arena *arena;
     Diags *diags;
 } Parser;
@@ -1475,16 +1484,56 @@ static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
 
 /* Called at a directive: parses it and the statement, block or function it
    covers. */
+static bool is_setting(Str name) {
+    return str_eq_cstr(name, "target") || str_eq_cstr(name, "board");
+}
+
+/* Called at "#target" or "#board": parses the setting and its value. */
+static Stmt *parse_setting(Parser *p, bool top_level) {
+    Token directive = p->tok;
+    bool is_target = str_eq_cstr(directive.text, "target");
+    next(p);
+    Stmt *stmt = new_stmt(p, STMT_SETTING, directive.loc);
+    stmt->as.setting.name = directive.text;
+    stmt->as.setting.value = p->tok.text;
+    stmt->as.setting.value_loc = p->tok.loc;
+    if (is_target) {
+        if (!expect(p, TOK_IDENT, NULL)) return NULL;
+    } else if (at(p, TOK_STRING)) {
+        next(p);
+    } else if (at_terminator(p)) {
+        error_expected(p, "the board's name, as in '#board arduino:avr:uno'");
+        return NULL;
+    } else {
+        SrcLoc first = p->tok.loc;
+        size_t end = first.offset;
+        while (!at_terminator(p) && !at(p, TOK_STRING) && p->tok.loc.offset == end) {
+            end = p->tok.loc.offset + p->tok.loc.len;
+            next(p);
+        }
+        stmt->as.setting.value = (Str){p->lexer.src.data + first.offset, end - first.offset};
+        stmt->as.setting.value_loc = span(first, p->prev);
+    }
+    if (!top_level) {
+        diag_add(p->diags, SEV_ERROR, directive.loc,
+                 "'#%.*s' goes at the top of the file, not inside a block",
+                 (int)directive.text.len, directive.text.data);
+        return NULL;
+    }
+    return stmt;
+}
+
 static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) {
     Token directive = p->tok;
+    if (is_setting(directive.text)) return parse_setting(p, top_level);
     BoundsMode bounds = BOUNDS_INHERIT;
     if (str_eq_cstr(directive.text, "no_bounds_check")) bounds = BOUNDS_UNCHECKED;
     if (str_eq_cstr(directive.text, "bounds_check")) bounds = BOUNDS_CHECKED;
     next(p);
     if (bounds == BOUNDS_INHERIT) {
         diag_add(p->diags, SEV_ERROR, directive.loc,
-                 "unknown directive '#%.*s'; there are '#no_bounds_check' and "
-                 "'#bounds_check'",
+                 "unknown directive '#%.*s'; there are '#no_bounds_check', "
+                 "'#bounds_check', '#target' and '#board'",
                  (int)directive.text.len, directive.text.data);
         return NULL;
     }
@@ -1874,6 +1923,11 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
             error_expected(p, "end of statement");
             synchronize(p);
         }
+        if (top_level && stmt->kind == STMT_SETTING) {
+            stmt->as.setting.leading = !p->past_settings;
+        } else if (top_level) {
+            p->past_settings = true;
+        }
         if (stmt->kind == STMT_EXTERN_GROUP) {
             for (size_t i = 0; i < stmt->as.block.count; i++) {
                 ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt->as.block.stmts[i]);
@@ -1910,4 +1964,52 @@ Program parse_program(Str src, Arena *arena, Diags *diags) {
     parse_statements(&p, &program.top, true);
     program.top.close = p.tok.loc;
     return program;
+}
+
+static char *copy_text(Str text) {
+    char *copy = xmalloc(text.len + 1);
+    memcpy(copy, text.data, text.len);
+    copy[text.len] = '\0';
+    return copy;
+}
+
+FileSettings file_settings(Str src) {
+    FileSettings settings = {0};
+    Arena arena = {0};
+    Diags diags = {.arena = &arena};
+    Lexer lexer;
+    lexer_init(&lexer, src, &arena, &diags);
+    Token tok = lexer_next(&lexer);
+    for (;;) {
+        while (tok.kind == TOK_NEWLINE || tok.kind == TOK_SEMI) tok = lexer_next(&lexer);
+        if (tok.kind != TOK_DIRECTIVE || !is_setting(tok.text)) break;
+        bool is_target = str_eq_cstr(tok.text, "target");
+        Token value = lexer_next(&lexer);
+        tok = lexer_next(&lexer);
+        Str text = value.text;
+        if (!is_target && value.kind != TOK_STRING) {
+            /* A name without quotes: the tokens up to the first space. */
+            size_t end = value.loc.offset + value.loc.len;
+            while (tok.kind != TOK_NEWLINE && tok.kind != TOK_SEMI && tok.kind != TOK_EOF &&
+                   tok.kind != TOK_STRING && tok.loc.offset == end) {
+                end = tok.loc.offset + tok.loc.len;
+                tok = lexer_next(&lexer);
+            }
+            text = (Str){src.data + value.loc.offset, end - value.loc.offset};
+            if (value.kind == TOK_NEWLINE || value.kind == TOK_SEMI || value.kind == TOK_EOF) break;
+        } else if (value.kind != (is_target ? TOK_IDENT : TOK_STRING)) {
+            break;
+        }
+        char **slot = is_target ? &settings.target : &settings.board;
+        /* The first of two is the one checking reports the second against. */
+        if (!*slot) *slot = copy_text(text);
+    }
+    arena_release(&arena);
+    return settings;
+}
+
+void file_settings_release(FileSettings *settings) {
+    free(settings->target);
+    free(settings->board);
+    memset(settings, 0, sizeof *settings);
 }

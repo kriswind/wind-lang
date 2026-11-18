@@ -1,3 +1,4 @@
+#target arduino
 i128 big = 1
 u128 wide
 int small = 40000

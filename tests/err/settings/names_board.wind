@@ -1,0 +1,2 @@
+#board arduino:avr:uno
+export int one() { return 1 }

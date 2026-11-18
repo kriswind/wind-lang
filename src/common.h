@@ -116,6 +116,22 @@ char *path_of_import(const char *from, Str written);
    with errno set, if there is no such file. */
 char *path_canonical(const char *path);
 
+/* Runs the program at path, searched for in PATH if it has no slash, with
+   the given NULL-terminated argument vector, and waits for it. Returns its
+   exit code, or 128 + the signal number if a signal ended it. A signal
+   that would end wind while it waits (an interrupt, a hangup, a request to
+   terminate) is passed on to the program instead, so that wind outlives it
+   and can clean up after it. */
+int run_program(const char *path, char *const argv[]);
+/* Runs a program as run_program does, with its standard output captured.
+   Returns what it wrote there, from malloc and NUL-terminated, and sets
+   *status to what run_program would return. */
+char *program_output(const char *path, char *const argv[], int *status);
+/* True if a program of this name can be found in PATH. */
+bool program_on_path(const char *name);
+/* The directory for temporary files: $TMPDIR, or /tmp. */
+const char *temp_dir(void);
+
 /* For failures of the tool itself (I/O, memory), not of the program being
    compiled; those go through diag_add. */
 _Noreturn void fatal(const char *fmt, ...);

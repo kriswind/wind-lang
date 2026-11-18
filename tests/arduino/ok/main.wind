@@ -1,3 +1,6 @@
+#target arduino
+#board arduino:avr:uno
+
 // A board program laid out as a C program: main runs once at the start, and
 // a pointer that is NULL stops the program when it is used.
 struct Node { int value; Node *next }

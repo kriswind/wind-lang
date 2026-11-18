@@ -265,6 +265,8 @@ typedef enum {
        header. Only the parser sees one; the program holds its declarations
        in its place. */
     STMT_EXTERN_GROUP,
+    /* "#target name" or "#board name": what the file is compiled for. */
+    STMT_SETTING,
 } StmtKind;
 
 /* Whether indexes are tested against the length when the program runs. */
@@ -376,6 +378,15 @@ struct Stmt {
         Expr *expr;
         /* STMT_BLOCK; STMT_EXTERN_GROUP, holding the declarations */
         Block block;
+        /* STMT_SETTING */
+        struct {
+            Str name;  /* "target" or "board" */
+            Str value; /* the target's name, or the board's */
+            SrcLoc value_loc;
+            /* Comes before every statement of the file that is not a
+               setting. */
+            bool leading;
+        } setting;
         /* STMT_COUT */
         struct {
             Expr **args;
@@ -510,6 +521,18 @@ const char *op_text(Op op);
 bool op_is_shift(Op op);
 
 Program parse_program(Str src, Arena *arena, Diags *diags);
+
+/* What a file says it is compiled for, in the settings at its top: the
+   target's name and the board's, from malloc, or NULL where it says
+   nothing. Read before the file is analyzed, since checking it depends on
+   the target; mistakes in the settings are reported when it is. */
+typedef struct {
+    char *target;
+    char *board;
+} FileSettings;
+
+FileSettings file_settings(Str src);
+void file_settings_release(FileSettings *settings);
 void check_program(Unit *unit);
 
 #endif

@@ -1,0 +1,2 @@
+#target arduino
+export int pin() { return 13 }

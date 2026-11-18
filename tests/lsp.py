@@ -289,6 +289,14 @@ check("definition of a pointer's type", request("textDocument/definition", at(5,
 check("NULL is offered", "NULL" in [item["label"] for item in request("textDocument/completion", at(7, 0))["result"]],
       True)
 
+BOARD = "#target arduino\nint big = 40000\nint small = 400\ncout << big + small\n"
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 10}, "contentChanges": [{"text": BOARD}]})
+check("a document is checked for the target its #target names",
+      [d["message"] for d in read()["params"]["diagnostics"]], ["integer literal does not fit in 'int'"])
+notify("textDocument/didChange", {"textDocument": {"uri": URI, "version": 11},
+                                  "contentChanges": [{"text": BOARD.replace("#target arduino", "#target c")}]})
+check("and for c when it says so", read()["params"]["diagnostics"], [])
+
 notify("$/setTrace", {"value": "off"})
 check("unknown request", request("textDocument/formatting", {})["error"]["code"], -32601)
 
