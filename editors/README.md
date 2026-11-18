@@ -29,6 +29,32 @@ Without a plugin manager:
 vim.opt.runtimepath:prepend("/path/to/wind/editors/nvim")
 ```
 
+### Running a program
+
+In a `.wind` file:
+
+| Key | Does |
+| --- | --- |
+| F5 | Saves the file and runs it with `wind run` in a terminal along the bottom of the screen (`:WindRun`); if a program is running already, runs afresh in its place |
+| Shift-F5 | Stops the program and leaves what it printed in view (`:WindStop`) |
+| `:q` in the terminal | Closes it, stopping the program if it is still running |
+
+`:WindRun file.wind` runs another file.
+
+The cursor stays in the code, and the terminal follows what the program
+prints. To read earlier output, or to type input for a program that reads
+it, move into the terminal with `Ctrl-W j`; while the cursor is there the
+terminal stays where it is. `i` there sends what is typed to the program,
+and `Ctrl-\ Ctrl-N` gives the keys back to Neovim. To have F5 put the
+cursor in the terminal, set:
+
+```lua
+vim.g.wind_run_focus = "terminal"
+```
+
+There is one run terminal, so a program for a board never holds the board's
+serial port while another is uploaded: F5 and `:q` both stop it first.
+
 Neovim marks diagnostics in the sign column only by default. To also show the
 message at the end of the line:
 
