@@ -12,6 +12,7 @@
 // after it.
 
 #target arduino
+#board rp2040:rp2040:rpipico2w
 
 import ::vendor/arduino
 
@@ -26,5 +27,5 @@ void loop() {
     arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
     arduino.delay(500)
     blinks++
-    cout << "blinks: " << blinks << "\n"
+    cout << "Number of blinks: " << blinks << "\n"
 }
