@@ -7,5 +7,4 @@ tests/err/imports.wind:3:8: error: 'here' is already defined at line 2
 tests/err/imports.wind:4:8: error: 'modules/broken' has errors
 tests/err/imports.wind:5:26: error: expected a name, found end of line
 tests/err/imports.wind:6:7: error: expected the path of a file to import, found end of line
-tests/err/imports.wind:8:8: warning: module 'good' is never used
 tests/err/imports.wind:11:27: error: module 'again' has no 'answer'

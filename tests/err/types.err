@@ -37,7 +37,6 @@ tests/err/types.wind:35:18: error: cannot initialize 'Point' variable with 'shap
 tests/err/types.wind:36:15: error: cannot initialize 'Color' variable with 'shapes.Kind'
 tests/err/types.wind:37:12: error: undefined name 'nothing'
 tests/err/types.wind:38:12: error: 'main' is a function; call it with '()'
-tests/err/types.wind:38:18: warning: variable 'v' is never used
 tests/err/types.wind:39:9: error: 'Point' is a type, not a value
 tests/err/types.wind:40:9: error: a conversion to 'Point' takes one value
 tests/err/types.wind:41:19: error: cannot convert 'Color' to 'string'

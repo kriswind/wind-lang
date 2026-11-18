@@ -33,3 +33,9 @@ cin >> C[0]
 int l = len(n)
 int m = len(a, a)
 cout << x << y << z << l << m << b << small[0]
+
+void big_local() {
+    int table[1000000]
+    table[0] = 1
+    cout << table[0] << "\n"
+}

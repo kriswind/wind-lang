@@ -62,6 +62,8 @@ struct Symbol {
     size_t visible_from;
     size_t visible_to;
     bool used;
+    /* A variable some "&" points into, which a call can therefore change. */
+    bool address_taken;
 };
 
 typedef struct {
@@ -351,6 +353,9 @@ struct Stmt {
        case the generated C declares a function itself. */
     bool external;
     Str header;
+    /* The C library a program that uses it must be linked with, as in
+       'link "m"' for -lm, or empty. */
+    Str link;
     /* Set by a directive in front of the statement; covers all of it. */
     BoundsMode bounds;
     union {
@@ -361,6 +366,9 @@ struct Stmt {
             Str name;
             Expr *init; /* NULL for a variable left at its zero value */
             Symbol *symbol;
+            /* Its value could not be parsed, which has been reported. The
+               name is declared all the same, so that its uses are not. */
+            bool broken;
             /* "T name[length] = { elems }". Elements left out are zero. */
             bool is_array;
             Expr *length; /* NULL when the length comes from the element count */

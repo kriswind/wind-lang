@@ -1,0 +1,3 @@
+ways 885676765
+fewest 2500500150
+unreachable 40

@@ -22,4 +22,9 @@ typedef struct {
    the target. */
 void emit_c(const Unit *unit, FILE *out, EmitOptions options);
 
+/* The C libraries that the C emit_c last wrote must be linked with, named
+   as "-l" takes them: those of the external functions and constants it
+   uses. The names are valid until emit_c is called again. */
+const char *const *emit_c_links(size_t *count);
+
 #endif

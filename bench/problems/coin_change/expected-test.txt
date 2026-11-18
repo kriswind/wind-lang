@@ -1,0 +1,3 @@
+ways 1293833
+fewest 12140
+unreachable 235

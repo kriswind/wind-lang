@@ -89,14 +89,26 @@ static void build(const char *src_path, const char *out_path, EmitOptions option
     /* -fwrapv makes signed overflow wrap, as Wind defines it.
        -fno-strict-aliasing lets a pointer converted to another pointer type
        read the bytes it finds. -w hides C warnings, which would describe
-       generated code the user never wrote. */
+       generated code the user never wrote. Then come the C libraries that
+       the program's external functions say to link. */
     const char *cc = getenv("CC");
     if (!cc || !*cc) cc = "cc";
-    char *argv[] = {
-        (char *)cc,     "-std=c11", "-O2",   "-w", "-fwrapv", "-fno-strict-aliasing",
-        "-o",           (char *)out_path, c_path, NULL,
-    };
+    size_t link_count;
+    const char *const *link_names = emit_c_links(&link_count);
+    char **argv = xmalloc((10 + link_count) * sizeof *argv);
+    size_t argc = 0;
+    const char *fixed[] = {cc, "-std=c11", "-O2", "-w", "-fwrapv", "-fno-strict-aliasing",
+                           "-o", out_path, c_path};
+    for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) argv[argc++] = (char *)fixed[i];
+    for (size_t i = 0; i < link_count; i++) {
+        char *flag = xmalloc(strlen(link_names[i]) + 3);
+        sprintf(flag, "-l%s", link_names[i]);
+        argv[argc++] = flag;
+    }
+    argv[argc] = NULL;
     int code = run_program(cc, argv);
+    for (size_t i = 9; i < argc; i++) free(argv[i]);
+    free(argv);
     unlink(c_path);
     if (code != 0) fatal("C compiler '%s' failed (exit code %d)", cc, code);
 }

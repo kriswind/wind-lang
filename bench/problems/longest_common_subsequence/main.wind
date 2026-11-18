@@ -1,0 +1,52 @@
+// Longest common subsequence: the length of the longest sequence of letters
+// that appears, in order but not necessarily together, in both of two
+// strings, by dynamic programming over two rows that trade places after
+// each letter of the first string. The strings are made of eight letters,
+// from the shared generator; the second is three quarters as long as the
+// first.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 8000
+
+char a[MAX]
+char b[MAX]
+int row_one[MAX + 1]
+int row_two[MAX + 1]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int common(int n, int m) {
+    int *previous = row_one
+    int *current = row_two
+    for (int j = 0; j <= m; j++) previous[j] = 0
+    for (int i = 1; i <= n; i++) {
+        current[0] = 0
+        char letter = a[i - 1]
+        for (int j = 1; j <= m; j++) {
+            if (letter == b[j - 1]) {
+                current[j] = previous[j - 1] + 1
+            } else {
+                current[j] = previous[j] > current[j - 1] ? previous[j] : current[j - 1]
+            }
+        }
+        int *held = previous
+        previous = current
+        current = held
+    }
+    return previous[m]
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 400
+    int m = n * 3 / 4
+    for (int i = 0; i < n; i++) a[i] = char(97 + random() % 8)
+    for (int j = 0; j < m; j++) b[j] = char(97 + random() % 8)
+    cout << common(n, m) << "\n"
+    return 0
+}

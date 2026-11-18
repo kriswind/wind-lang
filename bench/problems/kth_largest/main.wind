@@ -1,0 +1,66 @@
+// Kth largest: the k largest of many random values, kept in a binary
+// min-heap of size k whose root is the smallest of those kept, so a new
+// value replaces the root only when it is larger. Prints the sum of the k
+// largest values and the k-th largest itself.
+//
+//     wind run main.wind test|bench
+
+const int MAX_K = 100000
+
+int heap[MAX_K]
+int size = 0
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+void push(int value) {
+    int at = size
+    heap[at] = value
+    size++
+    while (at > 0) {
+        int parent = (at - 1) / 2
+        if (heap[parent] <= heap[at]) break
+        int held = heap[parent]
+        heap[parent] = heap[at]
+        heap[at] = held
+        at = parent
+    }
+}
+
+// Puts value in place of the root, then sinks it to where it belongs.
+void replace_root(int value) {
+    heap[0] = value
+    int at = 0
+    while (true) {
+        int child = 2 * at + 1
+        if (child >= size) break
+        if (child + 1 < size && heap[child + 1] < heap[child]) child++
+        if (heap[at] <= heap[child]) break
+        int held = heap[child]
+        heap[child] = heap[at]
+        heap[at] = held
+        at = child
+    }
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int n = bench ? 30000000 : 10000
+    int k = bench ? MAX_K : 100
+    for (int i = 0; i < n; i++) {
+        int value = random()
+        if (size < k) {
+            push(value)
+        } else if (value > heap[0]) {
+            replace_root(value)
+        }
+    }
+    int sum = 0
+    for (int i = 0; i < size; i++) sum += heap[i]
+    cout << "sum " << sum << ", k-th largest " << heap[0] << "\n"
+    return 0
+}

@@ -1,8 +1,6 @@
 tests/err/directives.wind:1:1: error: unknown directive '#fast'; there are '#no_bounds_check', '#bounds_check', '#target', '#board' and '#module'
-tests/err/directives.wind:2:5: warning: variable 'a' is never used
 tests/err/directives.wind:3:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
 tests/err/directives.wind:4:1: error: '#bounds_check' goes in front of code: a statement, a block or a function
-tests/err/directives.wind:5:11: warning: constant 'K' is never used
 tests/err/directives.wind:6:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
 tests/err/directives.wind:7:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
 tests/err/directives.wind:7:25: error: cannot open 'tests/err/nowhere.wind': No such file or directory

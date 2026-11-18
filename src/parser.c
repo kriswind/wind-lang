@@ -20,8 +20,8 @@
  *              | "#board" ( STRING | name up to a space )
  *   import     = "import" ( STRING | path ) [ "as" IDENT ]
  *   path       = the characters up to the next space, as in a/b or ::x/y
- *   extern     = "extern" [ STRING ] ( external
- *                                    | "{" { external separator } "}" )
+ *   extern     = "extern" [ STRING ] [ "link" STRING ]
+ *                ( external | "{" { external separator } "}" )
  *   external   = "const" type IDENT | type IDENT "(" [ params ] ")"
  *   type_decl  = "struct" IDENT "{" { type IDENT separator } "}"
  *              | "enum" IDENT "{" { IDENT [ "=" expr ] separator } "}"
@@ -707,9 +707,21 @@ static Expr *parse_postfix(Parser *p) {
     return expr;
 }
 
+/* Reports a "++" or "--" met inside an expression. */
+static Expr *step_in_expression(Parser *p) {
+    diag_add(p->diags, SEV_ERROR, p->tok.loc,
+             "'%s' is a statement in Wind, not part of an expression; write it on its "
+             "own line, before or after the line that uses the value",
+             p->tok.kind == TOK_INC ? "++" : "--");
+    next(p);
+    return NULL;
+}
+
 static Expr *parse_unary(Parser *p) {
     Op op;
     switch (p->tok.kind) {
+    case TOK_INC:
+    case TOK_DEC:   return step_in_expression(p);
     case TOK_MINUS: op = OP_NEG;     break;
     case TOK_NOT:   op = OP_NOT;     break;
     case TOK_TILDE: op = OP_BIT_NOT; break;
@@ -761,6 +773,7 @@ static Expr *parse_binary(Parser *p, int min_precedence) {
     if (!left) return NULL;
     for (;;) {
         Op op;
+        if (at(p, TOK_INC) || at(p, TOK_DEC)) return step_in_expression(p);
         int precedence = binary_precedence(p, &op);
         if (precedence == 0 || precedence < min_precedence) return left;
         next(p);
@@ -872,6 +885,8 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
     return stmt;
 }
 
+static void synchronize(Parser *p);
+
 /* Called after the type and name of a declaration. */
 static Stmt *parse_decl_rest(Parser *p, StmtKind kind, TypeKind type, TypeRef *type_ref,
                              Token name) {
@@ -881,7 +896,17 @@ static Stmt *parse_decl_rest(Parser *p, StmtKind kind, TypeKind type, TypeRef *t
         if (!expect(p, TOK_ASSIGN, NULL)) return NULL;
         skip_newlines(p);
         init = parse_expr(p);
-        if (!init) return NULL;
+        if (!init) {
+            /* The name is declared all the same, so that the lines that use
+               it are not reported as well. */
+            synchronize(p);
+            Stmt *stmt = new_stmt(p, kind, name.loc);
+            stmt->as.decl.type = type;
+            stmt->as.decl.type_ref = type_ref;
+            stmt->as.decl.name = name.text;
+            stmt->as.decl.broken = true;
+            return stmt;
+        }
     }
     if (type == TYPE_VOID) {
         diag_add(p->diags, SEV_ERROR, name.loc, "'%.*s' cannot have type 'void'",
@@ -1571,7 +1596,7 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
 
 /* Parses one external declaration, after its "extern" and header: a
    constant or a function. */
-static Stmt *parse_external(Parser *p, Str header) {
+static Stmt *parse_external(Parser *p, Str header, Str link) {
     if (at(p, TOK_KW_EXPORT) || at(p, TOK_KW_EXTERN)) {
         diag_add(p->diags, SEV_ERROR, p->tok.loc,
                  "'%s' goes before the block's 'extern', where it covers every "
@@ -1622,13 +1647,14 @@ static Stmt *parse_external(Parser *p, Str header) {
     }
     stmt->external = true;
     stmt->header = header;
+    stmt->link = link;
     return stmt;
 }
 
 /* Parses the declarations of an extern block, from its "{" to its "}". A
    declaration that fails is reported and skipped, and the rest are still
    read. */
-static Stmt *parse_extern_group(Parser *p, SrcLoc keyword, Str header) {
+static Stmt *parse_extern_group(Parser *p, SrcLoc keyword, Str header, Str link) {
     Stmt *group = new_stmt(p, STMT_EXTERN_GROUP, keyword);
     Block *block = &group->as.block;
     size_t cap = 0;
@@ -1638,7 +1664,7 @@ static Stmt *parse_extern_group(Parser *p, SrcLoc keyword, Str header) {
         while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
         if (at(p, TOK_RBRACE) || at(p, TOK_EOF)) break;
         SrcLoc start = p->tok.loc;
-        Stmt *stmt = parse_external(p, header);
+        Stmt *stmt = parse_external(p, header, link);
         if (stmt && !at_terminator(p)) {
             error_expected(p, "the end of the declaration");
             stmt = NULL;
@@ -1691,12 +1717,38 @@ static Stmt *parse_extern(Parser *p, bool top_level, bool *needs_terminator) {
         }
         next(p);
     }
+    /* "link" is only special here, after the header. */
+    Str link = {0};
+    if (at(p, TOK_IDENT) && str_eq_cstr(p->tok.text, "link")) {
+        next(p);
+        if (!at(p, TOK_STRING)) {
+            error_expected(p, "the name of a C library, as in 'link \"m\"'");
+            return NULL;
+        }
+        link = p->tok.text;
+        /* The name becomes "-l" and it on the C compiler's command line. */
+        bool usable = link.len > 0 && link.data[0] != '-';
+        for (size_t i = 0; i < link.len; i++) {
+            char c = link.data[i];
+            bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '+' ||
+                           c == '-';
+            if (!allowed) usable = false;
+        }
+        if (!usable) {
+            diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                     "a library's name is made of letters, digits, '_', '.', '+' and '-', "
+                     "and does not start with '-'");
+            return NULL;
+        }
+        next(p);
+    }
     Stmt *stmt;
     if (at(p, TOK_LBRACE)) {
         *needs_terminator = false;
-        stmt = parse_extern_group(p, keyword.loc, header);
+        stmt = parse_extern_group(p, keyword.loc, header, link);
     } else {
-        stmt = parse_external(p, header);
+        stmt = parse_external(p, header, link);
     }
     if (stmt && !top_level) {
         diag_add(p->diags, SEV_ERROR, keyword.loc,
@@ -1877,11 +1929,23 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         target = parse_unary(p);
         return target ? parse_assign_rest(p, tok, target) : NULL;
     }
-    default:
-        error_expected(p, "a statement");
+    default: {
+        /* "&" and "*" can start an expression, and the statement is more
+           likely to be meant as one. */
+        Op op;
+        if (binary_precedence(p, &op) && !at(p, TOK_AMP) && !at(p, TOK_STAR)) {
+            diag_add(p->diags, SEV_ERROR, tok.loc,
+                     "a line cannot start with %s: the line before it ends its "
+                     "statement; to carry a statement on, end the line before with the "
+                     "operator",
+                     token_kind_name(tok.kind));
+        } else {
+            error_expected(p, "a statement");
+        }
         /* Consumed so that resynchronizing always makes progress. */
         next(p);
         return NULL;
+    }
     }
 }
 
@@ -1920,6 +1984,7 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         }
         bool needs_terminator = true;
         SrcLoc start = p->tok.loc;
+        size_t errors_before = p->diags->error_count;
         Stmt *stmt = parse_statement(p, top_level, &needs_terminator);
         if (!stmt) {
             synchronize(p);
@@ -1928,7 +1993,8 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         stmt->start = start;
         stmt->end = p->prev;
         if (needs_terminator && !at_terminator(p)) {
-            error_expected(p, "end of statement");
+            /* A statement that has reported its error has said enough. */
+            if (p->diags->error_count == errors_before) error_expected(p, "end of statement");
             synchronize(p);
         }
         if (top_level && stmt->kind == STMT_SETTING) {

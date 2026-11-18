@@ -1,0 +1,60 @@
+// Union-find: joins random pairs of nodes, then reports how many groups
+// there are and how big the largest is. Union by size, with paths halved
+// on the way to the root.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 2000000
+
+int parent[MAX]
+int size[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int find(int node) {
+    int at = node
+    while (parent[at] != at) {
+        parent[at] = parent[parent[at]]
+        at = parent[at]
+    }
+    return at
+}
+
+// Joins the groups of a and b; true if they were apart.
+bool join(int a, int b) {
+    int x = find(a)
+    int y = find(b)
+    if (x == y) return false
+    if (size[x] < size[y]) {
+        int held = x
+        x = y
+        y = held
+    }
+    parent[y] = x
+    size[x] += size[y]
+    return true
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 1000
+    for (int i = 0; i < n; i++) {
+        parent[i] = i
+        size[i] = 1
+    }
+    int groups = n
+    int joins = n * 9 / 10
+    for (int i = 0; i < joins; i++) {
+        if (join(random() % n, random() % n)) groups--
+    }
+    int largest = 0
+    for (int i = 0; i < n; i++) {
+        if (parent[i] == i && size[i] > largest) largest = size[i]
+    }
+    cout << groups << " groups, the largest of " << largest << "\n"
+    return 0
+}

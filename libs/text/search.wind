@@ -1,0 +1,44 @@
+// Part of ::text: finding things in a string.
+
+// Where part first appears in s, from the start of s, or -1 if it does not.
+export int index_of(string s, string part) {
+    for (int at = 0; at + len(part) <= len(s); at++) {
+        if (matches_at(s, part, at)) return at
+    }
+    return -1
+}
+
+// Where part last appears in s, or -1 if it does not.
+export int last_index_of(string s, string part) {
+    for (int at = len(s) - len(part); at >= 0; at--) {
+        if (matches_at(s, part, at)) return at
+    }
+    return -1
+}
+
+export bool contains(string s, string part) { return index_of(s, part) >= 0 }
+
+export bool starts_with(string s, string part) {
+    return len(part) <= len(s) && matches_at(s, part, 0)
+}
+
+export bool ends_with(string s, string part) {
+    return len(part) <= len(s) && matches_at(s, part, len(s) - len(part))
+}
+
+// How many times a character appears in s.
+export int count(string s, char c) {
+    int found = 0
+    for (int i = 0; i < len(s); i++) {
+        if (s[i] == c) found++
+    }
+    return found
+}
+
+// Whether part appears in s at the given place.
+bool matches_at(string s, string part, int at) {
+    for (int i = 0; i < len(part); i++) {
+        if (s[at + i] != part[i]) return false
+    }
+    return true
+}

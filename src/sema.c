@@ -567,12 +567,19 @@ static const Symbol *array_operand(Checker *c, Expr *expr) {
    the end, so an array of length n accepts -n to n - 1. For a fixed array a
    literal index is range-checked here; everything else is checked when the
    program runs. */
+/* What an error about a 'char' used as a number adds. */
+static const char *char_hint(bool involved) {
+    return involved ? "; a 'char' is a character, not a number: 'int(c)' is its code, and "
+                      "'char(n)' is the character with code n"
+                    : "";
+}
+
 static void check_index_value(Checker *c, Expr *index, bool fixed, size_t length) {
     TypeKind type = check_expr(c, index, TYPE_INT);
     if (type == TYPE_INVALID) return;
     if (!type_is_integer(type) || type == TYPE_I128 || type == TYPE_U128) {
-        error(c, index->loc, "an index must be an integer of at most 64 bits, found '%s'",
-              type_name(type));
+        error(c, index->loc, "an index must be an integer of at most 64 bits, found '%s'%s",
+              type_name(type), char_hint(type == TYPE_CHAR));
     } else if (fixed && index->kind == EXPR_UNARY && index->as.unary.op == OP_NEG &&
                index->as.unary.operand->kind == EXPR_INT_LIT &&
                index->as.unary.operand->as.int_lit > length) {
@@ -776,7 +783,16 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
     Expr *operand = expr->as.unary.operand;
     if (expr->as.unary.op == OP_ADDR) {
         TypeKind type = check_place(c, operand, false);
-        return type == TYPE_INVALID ? TYPE_INVALID : type_pointer_to(type);
+        if (type == TYPE_INVALID) return TYPE_INVALID;
+        const Expr *root = operand;
+        while ((root->kind == EXPR_FIELD && !root->as.field.through_pointer) ||
+               root->kind == EXPR_INDEX) {
+            root = root->kind == EXPR_FIELD ? root->as.field.base : root->as.index.base;
+        }
+        if (root->kind == EXPR_IDENT && root->as.ident.symbol) {
+            ((Symbol *)root->as.ident.symbol)->address_taken = true;
+        }
+        return type_pointer_to(type);
     }
     if (expr->as.unary.op == OP_DEREF) {
         TypeKind type = check_expr(c, operand, TYPE_INVALID);
@@ -896,8 +912,9 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
         return TYPE_INVALID;
     }
     if (left->type != right->type) {
-        error(c, expr->loc, "mismatched types '%s' and '%s' for operator '%s'",
-              type_name(left->type), type_name(right->type), op_text(op));
+        error(c, expr->loc, "mismatched types '%s' and '%s' for operator '%s'%s",
+              type_name(left->type), type_name(right->type), op_text(op),
+              char_hint(arithmetic && (left->type == TYPE_CHAR || right->type == TYPE_CHAR)));
         return arithmetic ? TYPE_INVALID : TYPE_BOOL;
     }
 
@@ -913,8 +930,8 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
                   type_is_pointer(type);
     }
     if (!defined) {
-        error(c, expr->loc, "operator '%s' is not defined for '%s'", op_text(op),
-              type_name(type));
+        error(c, expr->loc, "operator '%s' is not defined for '%s'%s", op_text(op),
+              type_name(type), char_hint(type == TYPE_CHAR));
         return arithmetic ? TYPE_INVALID : TYPE_BOOL;
     }
     return result;
@@ -988,10 +1005,21 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         TypeKind expected = has_param ? func->as.func.params[i].type : TYPE_INVALID;
         if (has_param && func->as.func.params[i].is_slice) {
             const Symbol *array = array_operand(c, arg);
-            if (!array) check_expr(c, arg, TYPE_INVALID);
-            if (!array || array->type != expected) {
-                error(c, arg->loc, "argument %zu of '%.*s' must be an array of '%s'", i + 1,
-                      NAME(name), type_name(expected));
+            TypeKind found = array ? array->type : check_expr(c, arg, TYPE_INVALID);
+            if (array && array->type != expected) {
+                error(c, arg->loc,
+                      "argument %zu of '%.*s' must be an array of '%s', found an array "
+                      "of '%s'",
+                      i + 1, NAME(name), type_name(expected), type_name(found));
+            } else if (!array && found != TYPE_INVALID) {
+                error(c, arg->loc,
+                      "argument %zu of '%.*s' must be an array of '%s', found '%s'%s", i + 1,
+                      NAME(name), type_name(expected), type_name(found),
+                      type_is_pointer(found) ? "; a pointer does not know how many elements "
+                                               "it points to, and an array does"
+                                             : "");
+            } else if (!array) {
+                /* already reported */
             } else if (array->kind == SYM_CONST) {
                 error(c, arg->loc,
                       "constant array '%.*s' cannot be passed to a function, which "
@@ -1212,7 +1240,8 @@ static bool const_len(const Expr *operand, size_t *length) {
             *length = symbol->length;
             return true;
         }
-        if (symbol->kind != SYM_CONST || symbol->is_slice || symbol->decl->external) {
+        if (symbol->kind != SYM_CONST || symbol->is_slice || symbol->decl->external ||
+            symbol->decl->as.decl.broken) {
             return false;
         }
         operand = symbol->decl->as.decl.init;
@@ -1293,7 +1322,7 @@ static bool eval_const_bool(const Expr *expr, bool *out) {
     case EXPR_IDENT: {
         const Symbol *symbol = expr->as.ident.symbol;
         if (!symbol || symbol->kind != SYM_CONST || symbol->is_array ||
-            symbol->decl->external) {
+            symbol->decl->external || symbol->decl->as.decl.broken) {
             return false;
         }
         return eval_const_bool(symbol->decl->as.decl.init, out);
@@ -1363,7 +1392,7 @@ static bool eval_const_int(const Expr *expr, long long *out) {
             return true;
         }
         if (!symbol || symbol->kind != SYM_CONST || symbol->is_array ||
-            symbol->decl->external) {
+            symbol->decl->external || symbol->decl->as.decl.broken) {
             return false;
         }
         return eval_const_int(symbol->decl->as.decl.init, out);
@@ -1487,6 +1516,17 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
     declare(c, symbol);
     if (!is_const) {
         list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+    }
+    /* A local array lives on the stack, which a large one overflows with
+       no message at all: a machine with 64-bit pointers usually gives a
+       program 8 MB of stack, and a small board much less. */
+    size_t stack_limit = types_platform()->pointer_size >= 8 ? (size_t)1 << 20 : 1024;
+    if (!is_const && !symbol->global && length_known && type != TYPE_INVALID &&
+        length > stack_limit / type_size(type)) {
+        diag_add(c->diags, SEV_WARNING, stmt->loc,
+                 "array '%.*s' takes %zu bytes of the stack, which may be more than it "
+                 "has; declare it at the top level, outside any function",
+                 NAME(stmt->as.decl.name), length * type_size(type));
     }
 }
 
@@ -2185,6 +2225,9 @@ static void check_stmt(Checker *c, Stmt *stmt) {
 }
 
 static void warn_unused(Checker *c) {
+    /* A statement with an error in it is checked no further, and what it
+       uses goes uncounted. */
+    if (c->diags->error_count) return;
     for (size_t i = 0; i < c->unit->symbols.count; i++) {
         const Symbol *symbol = c->unit->symbols.items[i];
         if (symbol->kind == SYM_PARAM || symbol->kind == SYM_TYPE ||

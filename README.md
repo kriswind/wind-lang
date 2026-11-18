@@ -54,7 +54,14 @@ source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
 
 | Library | What it holds |
 | --- | --- |
+| `::math` | C's maths functions (`sqrt`, `pow`, `sin`, `atan2`, `floor`, `round`…), `PI` and `E`, and helpers: `min`, `max`, `clamp`, `abs`, `sign`, `gcd`, `lcm`, `is_prime`, `lerp`, `radians`, `degrees` |
+| `::random` | Pseudo-random numbers that a seed makes repeatable on any machine or board: `seed`, `next`, `range`, `unit`, `chance`, `shuffle` |
+| `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`, and `parse_int`. A folder of three files; `::text/chars` and the others can be imported alone |
 | `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
+
+`::math`, `::random` and `::text` work on every target. Examples that use
+them are in `examples/libraries`, and `examples/arduino/dice.wind` uses
+`::random` and `::math` on a board.
 
 ## Tooling
 
@@ -252,6 +259,11 @@ cout << len(scores) << "\n"   // 5
 - `cout << scores` prints the whole array as `[12, 57, 3, 0, 13]`. Inside an
   array, strings and chars are quoted and escaped (`["a", "b"]`, `['x']`) so
   that the elements can be told apart.
+- An array declared inside a function lives on the stack, which is small:
+  usually 8 MB on a computer and a few kilobytes on a board. One over 1 MB
+  (1 KB on a board) gets a warning, since running out of stack ends the
+  program with no message. Declare a large array at the top level, outside
+  any function, where it can be as large as memory allows.
 
 A function takes an array with a parameter written `T name[]`. It receives a
 view of the caller's array, not a copy, together with its length, so it works
@@ -320,6 +332,12 @@ themselves be arrays.
 From tightest to loosest: unary and casts, `* / %`, `+ -`, `<< >>`, `&`, `^`,
 `|`, comparisons, `&&`, `||`, `?:`. Integer arithmetic wraps at the width of
 its type.
+
+Operands are evaluated from left to right, and so are the arguments of a
+call and the values between braces: `show(next(), next())` passes the first
+number drawn, then the second, whatever C compiler builds the program. An
+assignment finds its place before it evaluates its value, so
+`slots[i] = advance()` stores into the element `i` named before the call.
 
 `c ? a : b` is `a` when `c` is true and `b` otherwise; only the chosen one is
 evaluated. Conditionals chain to the right, so `a ? x : b ? y : z` reads as a
@@ -687,6 +705,9 @@ putchar(i32('!'))
 - `extern "header" { ... }` declares several at once: everything in the
   block shares its header. The declarations are written one to a line, or
   separated by `;`.
+- `link "name"` after the header names a C library that the functions are
+  in, as `link "m"` for C's maths library: `extern "math.h" link "m" { ...
+  }`. A program is linked with it (`-lm`) only if it uses one of them.
 - An external function has no body and an external constant no value: both
   are C's. They keep their own names in the generated C. An external
   constant can be used wherever a value can, but not where Wind needs a
@@ -1019,6 +1040,72 @@ numbers; the script is there to run it again.
   C, C++, Rust and Zig (`-O3`, and building for this exact processor). They
   made one kernel faster and others slower, with no gain overall, so those
   four stay at their plain optimized builds.
+
+### Problems
+
+`bench/problems/` holds 22 small problems of the kind set in programming
+interviews and contests, each written the same way in Wind, C, Rust, Go,
+JavaScript and Python. Each folder holds one problem: dynamic programming
+(`edit_distance`, `knapsack`, `coin_change`, `longest_common_subsequence`,
+...), graphs and search (`dijkstra_grid`, `bfs_maze`, `topological_sort`,
+`islands`, `union_find`, `sudoku`), arrays and hashing (`two_sum`,
+`sliding_window_maximum`, `trapping_rain_water`, ...), and sorting, maths
+and simulation (`merge_sort_inversions`, `matrix_fibonacci`, `kth_largest`,
+`game_of_life`, `next_permutation`). The description is at the top of each
+`main.wind`.
+
+Unlike the kernels, every answer is checked against a known one. Each
+program takes `test` or `bench` for the size of its input, makes that input
+with the same small generator in every language, and prints its answer,
+which must equal the folder's `expected-test.txt` or `expected-bench.txt`.
+Those files come from the Python version, the reference, which is written
+for clarity rather than speed.
+
+```sh
+python3 bench/problems/run.py                     # check everything at test size
+python3 bench/problems/run.py --size bench --skip python   # check and time
+python3 bench/problems/run.py --only wind knapsack sudoku
+python3 bench/problems/run.py --expected two_sum  # rewrite the answers from Python
+```
+
+`make test` runs the Wind version of every problem at test size, with and
+without bounds checks, so the set doubles as a body of real programs that
+each change to the compiler must still get right.
+
+Time at bench size relative to C (best of three; C's own time on the right):
+
+| Problem | Wind | Wind, no bounds checks | Rust | Go | JavaScript | C, seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `bfs_maze` | 1.22 | 1.20 | 1.02 | 1.37 | 4.02 | 0.059 |
+| `coin_change` | 1.28 | 1.37 | 1.50 | 1.11 | 5.04 | 0.046 |
+| `dijkstra_grid` | 1.12 | 0.70 | 1.05 | 1.15 | 2.22 | 0.144 |
+| `edit_distance` | 1.00 | 1.00 | 1.66 | 2.56 | 4.28 | 0.050 |
+| `game_of_life` | 0.97 | 0.98 | 1.19 | 1.11 | 1.61 | 0.135 |
+| `islands` | 1.19 | 1.19 | 0.95 | 1.65 | 6.09 | 0.074 |
+| `knapsack` | 1.35 | 1.35 | 2.18 | 1.23 | 2.47 | 0.062 |
+| `kth_largest` | 1.10 | 1.09 | 1.08 | 1.10 | 5.15 | 0.131 |
+| `longest_common_subsequence` | 1.01 | 1.00 | 0.97 | 1.93 | 3.18 | 0.067 |
+| `longest_increasing_subsequence` | 1.03 | 1.03 | 0.91 | 1.03 | 1.53 | 0.144 |
+| `longest_unique_substring` | 0.91 | 0.91 | 0.88 | 1.22 | 4.69 | 0.104 |
+| `matrix_fibonacci` | 1.00 | 1.00 | 1.40 | 1.15 | 12.72 | 0.168 |
+| `max_subarray` | 1.02 | 1.04 | 1.20 | 1.09 | 5.31 | 0.045 |
+| `merge_sort_inversions` | 1.10 | 1.01 | 1.04 | 1.21 | 2.51 | 0.167 |
+| `next_permutation` | 1.14 | 1.08 | 0.99 | 2.10 | 5.17 | 0.077 |
+| `sliding_window_maximum` | 1.03 | 1.06 | 1.01 | 1.05 | 3.59 | 0.106 |
+| `sudoku` | 1.05 | 1.01 | 1.14 | 1.22 | 1.49 | 0.174 |
+| `topological_sort` | 1.11 | 1.05 | 1.12 | 1.24 | 1.84 | 0.266 |
+| `trapping_rain_water` | 1.00 | 0.90 | 1.00 | 1.02 | 9.42 | 0.048 |
+| `two_sum` | 1.33 | 1.00 | 1.12 | 1.20 | 2.98 | 0.060 |
+| `union_find` | 1.47 | 1.21 | 1.07 | 1.66 | 2.49 | 0.080 |
+| `unique_paths_obstacles` | 1.00 | 1.01 | 0.74 | 0.71 | 3.72 | 0.151 |
+| **mean** | **1.10** | **1.04** | **1.11** | **1.27** | **3.54** | |
+
+Here the programs are written plainly in every language, with no unchecked
+reads in Rust and no tuning beyond sensible types. Wind's bounds checks cost
+most where an index is computed in a tight loop (`dijkstra_grid`,
+`two_sum`, `union_find`). On `knapsack` and `coin_change`, the test for a
+negative index stays even without bounds checks, and keeps GCC from
+optimizing the inner loop as it does C's.
 
 ## Compiler layout
 

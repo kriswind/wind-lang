@@ -410,7 +410,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         const Expr *init = symbol->decl->as.decl.init;
         buf_printf(buf, "const %s%s%.*s", type_name(symbol->type), type_gap(symbol->type),
                    len, name);
-        if (symbol->decl->external) break;
+        if (symbol->decl->external || symbol->decl->as.decl.broken) break;
         if (symbol->is_array) {
             buf_printf(buf, "[%zu]", symbol->length);
             break;

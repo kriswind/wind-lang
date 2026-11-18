@@ -1,0 +1,14 @@
+// Part of ::text: what a character is, and its other case. ASCII only.
+
+export bool is_digit(char c) { return c >= '0' && c <= '9' }
+export bool is_lower(char c) { return c >= 'a' && c <= 'z' }
+export bool is_upper(char c) { return c >= 'A' && c <= 'Z' }
+export bool is_letter(char c) { return is_lower(c) || is_upper(c) }
+export bool is_alnum(char c) { return is_letter(c) || is_digit(c) }
+export bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+export char to_upper(char c) { return is_lower(c) ? char(int(c) - 32) : c }
+export char to_lower(char c) { return is_upper(c) ? char(int(c) + 32) : c }
+
+// The value of a digit: 0 to 9, or -1 for a character that is not one.
+export int digit_value(char c) { return is_digit(c) ? int(c) - int('0') : -1 }

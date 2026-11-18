@@ -1,0 +1,8 @@
+tests/warn/unused.wind:4:8: warning: module 'tally' is never used
+tests/warn/unused.wind:7:11: warning: constant 'LIMIT' is never used
+tests/warn/unused.wind:9:5: warning: variable 'written' is never used
+tests/warn/unused.wind:11:5: warning: variable 'table' is never used
+tests/warn/unused.wind:15:6: warning: function 'helper' is never used
+tests/warn/unused.wind:26:9: warning: variable 'spare' is never used
+tests/warn/unused.wind:28:9: warning: variable 'counts' is never used
+tests/warn/unused.wind:34:1: warning: label 'skipped' is never used

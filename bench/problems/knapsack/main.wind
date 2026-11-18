@@ -1,0 +1,46 @@
+// 0/1 knapsack: the best total value of items that fit within a capacity,
+// each item taken at most once. The table holds one row, the best value for
+// every capacity up to the limit, and each item updates it from the top
+// capacity down so that no item is counted twice. Weights and values run
+// from 1 to 1000, from the shared generator, and the capacity is a quarter
+// of the items' expected total weight.
+//
+//     wind run main.wind test|bench
+
+const int MAX_ITEMS = 1000
+const int MAX_CAPACITY = MAX_ITEMS * 125
+
+int weight[MAX_ITEMS]
+int value[MAX_ITEMS]
+int best[MAX_CAPACITY + 1]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int knapsack(int n, int capacity) {
+    for (int c = 0; c <= capacity; c++) best[c] = 0
+    for (int i = 0; i < n; i++) {
+        int w = weight[i]
+        int v = value[i]
+        for (int c = capacity; c >= w; c--) {
+            int taken = best[c - w] + v
+            if (taken > best[c]) best[c] = taken
+        }
+    }
+    return best[capacity]
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX_ITEMS : 60
+    int capacity = n * 125
+    for (int i = 0; i < n; i++) {
+        weight[i] = 1 + random() % 1000
+        value[i] = 1 + random() % 1000
+    }
+    cout << knapsack(n, capacity) << "\n"
+    return 0
+}

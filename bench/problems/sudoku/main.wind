@@ -1,0 +1,99 @@
+// Sudoku: solves a list of well-known hard puzzles (Arto Inkala's, the
+// first of Peter Norvig's hardest, four from the "top95" list, Easter
+// Monster and AI Escargot) by backtracking. Bitmasks hold the digits used in
+// each row, column and box; each step fills the empty cell with the fewest
+// possible digits (the first such cell), trying its digits from 1 up. Test
+// size solves the first three puzzles once; bench size solves all of them
+// ten times. Prints how many were solved, a checksum (the sum of each
+// solution's first row read as a number) and how many digits were tried.
+//
+//     wind run main.wind test|bench
+
+const string PUZZLES[8] = {
+    "8..........36......7..9.2...5...7.......457.....1...3...1....68..85...1..9....4..",
+    "4.....8.5.3..........7......2.....6.....8.4......1.......6.3.7.5..2.....1.4......",
+    "52...6.........7.13...........4..8..6......5...........418.........3..2...87.....",
+    "6.....8.3.4.7.................5.4.7.3..2.....1.6.......2.....5.....8.6......1....",
+    "48.3............71.2.......7.5....6....2..8.............1.76...3.....4......5....",
+    "....14....3....2...7..........9...3.6.1.............8.2.....1.4....5.6.....7.8...",
+    "1.......2.9.4...5...6...7...5.9.3.......7.......85..4.7.....6...3...9.8...2.....1",
+    "1....7.9..3..2...8..96..5....53..9...1..8...26....4...3......1..4......7..7...3..",
+}
+
+// bits[mask] is how many digits mask holds.
+int bits[512]
+int grid[81]
+int rows[9]
+int cols[9]
+int boxes[9]
+int guesses = 0
+
+int box(int cell) {
+    return cell / 27 * 3 + cell % 9 / 3
+}
+
+// Puts digit in cell, or takes it out again.
+void place(int cell, int digit) {
+    int bit = 1 << (digit - 1)
+    grid[cell] = digit
+    rows[cell / 9] ^= bit
+    cols[cell % 9] ^= bit
+    boxes[box(cell)] ^= bit
+}
+
+bool solve() {
+    int best = -1
+    int fewest = 10
+    for (int cell = 0; cell < 81; cell++) {
+        if (grid[cell] == 0) {
+            int free = 9 - bits[rows[cell / 9] | cols[cell % 9] | boxes[box(cell)]]
+            if (free < fewest) {
+                fewest = free
+                best = cell
+            }
+        }
+    }
+    if (best == -1) return true
+    int used = rows[best / 9] | cols[best % 9] | boxes[box(best)]
+    for (int digit = 1; digit <= 9; digit++) {
+        if ((used & (1 << (digit - 1))) == 0) {
+            guesses++
+            place(best, digit)
+            if (solve()) return true
+            place(best, digit)
+            grid[best] = 0
+        }
+    }
+    return false
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int count = bench ? len(PUZZLES) : 3
+    int rounds = bench ? 10 : 1
+    for (int i = 1; i < 512; i++) bits[i] = bits[i >> 1] + (i & 1)
+    int solved = 0
+    int checksum = 0
+    for (int round = 0; round < rounds; round++) {
+        for (int p = 0; p < count; p++) {
+            for (int i = 0; i < 9; i++) {
+                rows[i] = 0
+                cols[i] = 0
+                boxes[i] = 0
+            }
+            for (int cell = 0; cell < 81; cell++) {
+                grid[cell] = 0
+                char ch = PUZZLES[p][cell]
+                if (ch != '.') place(cell, int(ch) - 48)
+            }
+            if (solve()) {
+                solved++
+                int first = 0
+                for (int i = 0; i < 9; i++) first = first * 10 + grid[i]
+                checksum += first
+            }
+        }
+    }
+    cout << solved << " solved, checksum " << checksum << ", " << guesses << " guesses\n"
+    return 0
+}

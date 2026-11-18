@@ -1,2 +1,1 @@
 tests/err/module_name.wind:1:9: error: expected a name, found 'for'
-tests/err/module_name.wind:2:5: warning: variable 'x' is never used

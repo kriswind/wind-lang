@@ -1,0 +1,71 @@
+// Merge sort inversions: counts the pairs of random values that are out of
+// order (a larger value before a smaller one) while sorting them with a
+// bottom-up merge sort through a scratch array. Prints the count and a
+// checksum of the sorted values.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 2000000
+
+int values[MAX]
+int scratch[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+// Merges the sorted runs values[low:middle] and values[middle:high] and
+// returns how many inversions lay between them.
+int merge(int low, int middle, int high) {
+    int i = low
+    int j = middle
+    int k = low
+    int inversions = 0
+    while (i < middle && j < high) {
+        if (values[j] < values[i]) {
+            scratch[k] = values[j]
+            j++
+            inversions += middle - i
+        } else {
+            scratch[k] = values[i]
+            i++
+        }
+        k++
+    }
+    while (i < middle) {
+        scratch[k] = values[i]
+        i++
+        k++
+    }
+    while (j < high) {
+        scratch[k] = values[j]
+        j++
+        k++
+    }
+    for (int m = low; m < high; m++) values[m] = scratch[m]
+    return inversions
+}
+
+int sort(int n) {
+    int inversions = 0
+    for (int width = 1; width < n; width *= 2) {
+        for (int low = 0; low < n - width; low += 2 * width) {
+            int high = low + 2 * width < n ? low + 2 * width : n
+            inversions += merge(low, low + width, high)
+        }
+    }
+    return inversions
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 1000
+    for (int i = 0; i < n; i++) values[i] = random() % n
+    int inversions = sort(n)
+    int checksum = 0
+    for (int i = 0; i < n; i++) checksum = (checksum * 31 + values[i]) % 1000000007
+    cout << inversions << " inversions, checksum " << checksum << "\n"
+    return 0
+}

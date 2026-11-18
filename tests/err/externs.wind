@@ -19,6 +19,8 @@ extern "stdio.h" {
     int body
 }
 #no_bounds_check extern "stdio.h" { i32 fflush(i32 *at) }
+extern "math.h" link "-rf" { float sqrt(float x) }
+extern "math.h" link { float cbrt(float x) }
 int main() {
     extern int inner()
     int sized[LIMIT]

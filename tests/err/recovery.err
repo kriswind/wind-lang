@@ -1,4 +1,3 @@
-tests/err/recovery.wind:2:11: warning: constant 'Bad' is never used
 tests/err/recovery.wind:2:17: error: cannot initialize 'int' constant with 'string'
 tests/err/recovery.wind:3:17: error: unexpected character '@'
 tests/err/recovery.wind:3:21: error: unknown escape sequence '\q'

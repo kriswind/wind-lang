@@ -1,0 +1,38 @@
+// Names that are declared and never used are reported, in a file with no
+// errors. Assigning to a variable does not use it; taking its address does.
+
+import ::tally
+import ::tally as counted
+
+const int LIMIT = 10
+int ROWS[2] = {1, 2}
+int written = 0
+int pointed = 0
+int table[4]
+
+export int shared() { return 1 }
+
+void helper() {}
+
+int area(int width, int height) {
+    return width
+}
+
+void loop() {}
+
+int main() {
+    written = 5
+    int *p = &pointed
+    int spare = 3
+    int kept = 4
+    int counts[3]
+    counts[0] = 1
+    if (p) {
+        cout << kept << "\n"
+    }
+    goto done
+skipped:
+done:
+    cout << area(2, 3) << " " << counted.count(ROWS) << "\n"
+    return 0
+}

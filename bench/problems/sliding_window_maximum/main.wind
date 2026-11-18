@@ -1,0 +1,38 @@
+// Sliding window maximum: the maximum of every window of k consecutive
+// values, out of random values from 0 to 999999, summed into a checksum.
+// A deque of indexes, held in an array, keeps the window's candidates with
+// their values falling from front to back: a new value removes the smaller
+// ones behind it, and the front leaves once it slides out of the window.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 10000000
+
+int values[MAX]
+int deque[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int n = bench ? MAX : 1000
+    int k = bench ? 1000 : 16
+    for (int i = 0; i < n; i++) values[i] = random() % 1000000
+    int head = 0
+    int tail = 0
+    int sum = 0
+    for (int i = 0; i < n; i++) {
+        while (tail > head && values[deque[tail - 1]] <= values[i]) tail--
+        deque[tail] = i
+        tail++
+        if (deque[head] <= i - k) head++
+        if (i >= k - 1) sum += values[deque[head]]
+    }
+    cout << n - k + 1 << " windows of " << k << ", the maxima summing to " << sum << "\n"
+    return 0
+}

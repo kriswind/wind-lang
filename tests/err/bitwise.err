@@ -15,4 +15,3 @@ tests/err/bitwise.wind:20:1: error: operator '|=' is not defined for 'string'
 tests/err/bitwise.wind:21:1: error: operator '^=' is not defined for 'bool'
 tests/err/bitwise.wind:22:11: error: an array's length must be an integer known at compile time
 tests/err/bitwise.wind:24:1: error: expected an expression, found 'cout'
-tests/err/bitwise.wind:24:70: error: undefined name 'r11'

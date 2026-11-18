@@ -1,0 +1,1 @@
+the cheapest path costs 8331; the costs to every cell sum to 10022790479

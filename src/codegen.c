@@ -70,6 +70,34 @@ static struct {
     size_t external_cap;
 } used;
 
+/* The libraries named by the external functions and constants the program
+   uses, each once; kept apart from `used` since they outlast the program. */
+static struct {
+    char **items;
+    size_t count;
+    size_t cap;
+} links;
+
+static void use_link(Str name) {
+    if (!name.len) return;
+    for (size_t i = 0; i < links.count; i++) {
+        if (str_eq_cstr(name, links.items[i])) return;
+    }
+    if (links.count == links.cap) {
+        links.cap = links.cap ? links.cap * 2 : 4;
+        links.items = xrealloc(links.items, links.cap * sizeof *links.items);
+    }
+    char *copy = xmalloc(name.len + 1);
+    memcpy(copy, name.data, name.len);
+    copy[name.len] = '\0';
+    links.items[links.count++] = copy;
+}
+
+const char *const *emit_c_links(size_t *count) {
+    *count = links.count;
+    return (const char *const *)links.items;
+}
+
 /* The C name of a type, noted as needing its definition. */
 static const char *c_type(TypeKind type) {
     /* A declared type or a pointer type is always defined; see
@@ -641,6 +669,7 @@ static void emit_c_string(Str s, FILE *out) {
 /* Notes that the program uses an external function or constant, whose
    header must then be included. */
 static void use_external(const Stmt *decl) {
+    use_link(decl->link);
     Str header = decl->header;
     if (!header.len) return;
     for (size_t i = 0; i < used.external_count; i++) {
@@ -770,13 +799,28 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
     fputs(")]", out);
 }
 
+static void emit_int_value(U128 value, TypeKind type, FILE *out);
+
 static void emit_int_literal(const Expr *expr, FILE *out) {
-    U128 value = expr->as.int_lit;
+    emit_int_value(expr->as.int_lit, expr->type, out);
+}
+
+/* Writes value converted to type. A negative value arrives as its two's
+   complement, which is how the conversion reads it back. */
+static void emit_int_value(U128 value, TypeKind type, FILE *out) {
     uint64_t low = (uint64_t)value;
     uint64_t high = (uint64_t)(value >> 64);
-    fprintf(out, "((%s)", c_type(expr->type));
+    fprintf(out, "((%s)", c_type(type));
     if (high == 0) {
         fprintf(out, "%lluULL)", (unsigned long long)low);
+    } else if (high == UINT64_MAX && low >> 63) {
+        /* A negative value that 64 bits hold, which needs no wider type. */
+        uint64_t magnitude = -low;
+        if (magnitude >> 63) {
+            fputs("(-9223372036854775807LL - 1))", out);
+        } else {
+            fprintf(out, "(-%lldLL))", (long long)magnitude);
+        }
     } else {
         fprintf(out, "(((%s)%lluULL << 64) | %lluULL))", c_type(TYPE_U128),
                 (unsigned long long)high,
@@ -820,6 +864,165 @@ static void emit_shift_end(const Expr *amount, FILE *out) {
     fputs(")))", out);
 }
 
+/* ---- Order of evaluation ----
+
+   Wind evaluates the operands of an operator, the arguments of a call and
+   the values of an initializer from left to right. C leaves that order
+   unspecified, which is seen only when a call changes something another
+   operand reads, or two calls both have effects. Where that can happen,
+   the operands are evaluated one after another into temporaries, inside a
+   GNU statement expression, and the expression is made from those. */
+
+/* Operands held in temporaries, which emit_expr writes as their names. */
+static struct {
+    const Expr **items;
+    int *ids;
+    size_t count;
+    size_t cap;
+    int next_id;
+} held;
+
+static bool has_call(const Expr *expr) {
+    switch (expr->kind) {
+    case EXPR_CALL:
+        return true;
+    case EXPR_INDEX:
+        return has_call(expr->as.index.base) || has_call(expr->as.index.index);
+    case EXPR_LEN:
+        return has_call(expr->as.len.operand);
+    case EXPR_FIELD:
+        return has_call(expr->as.field.base);
+    case EXPR_INIT:
+        for (size_t i = 0; i < expr->as.init.count; i++) {
+            if (has_call(expr->as.init.items[i].value)) return true;
+        }
+        return false;
+    case EXPR_UNARY:
+        return has_call(expr->as.unary.operand);
+    case EXPR_BINARY:
+        return has_call(expr->as.binary.left) || has_call(expr->as.binary.right);
+    case EXPR_CAST:
+        return has_call(expr->as.cast.operand);
+    case EXPR_TERNARY:
+        return has_call(expr->as.ternary.cond) || has_call(expr->as.ternary.then) ||
+               has_call(expr->as.ternary.otherwise);
+    default:
+        return false;
+    }
+}
+
+/* True for an expression whose value no call can change: a constant, a
+   whole array, or a local variable or parameter that nothing points into,
+   and what is computed from those alone. */
+static bool is_stable(const Expr *expr) {
+    switch (expr->kind) {
+    case EXPR_INT_LIT:
+    case EXPR_FLOAT_LIT:
+    case EXPR_CHAR_LIT:
+    case EXPR_STRING_LIT:
+    case EXPR_BOOL_LIT:
+    case EXPR_NULL:
+    case EXPR_SIZEOF:
+        return true;
+    case EXPR_IDENT: {
+        const Symbol *symbol = expr->as.ident.symbol;
+        if (symbol->kind != SYM_VAR && symbol->kind != SYM_PARAM) return true;
+        if (symbol->is_array || symbol->is_slice) return true;
+        return !symbol->global && !symbol->address_taken;
+    }
+    case EXPR_LEN:
+        return is_stable(expr->as.len.operand);
+    case EXPR_UNARY:
+        if (expr->as.unary.op == OP_ADDR) return expr->as.unary.operand->kind == EXPR_IDENT;
+        return expr->as.unary.op != OP_DEREF && is_stable(expr->as.unary.operand);
+    case EXPR_BINARY:
+        return is_stable(expr->as.binary.left) && is_stable(expr->as.binary.right);
+    case EXPR_CAST:
+        return is_stable(expr->as.cast.operand);
+    case EXPR_TERNARY:
+        return is_stable(expr->as.ternary.cond) && is_stable(expr->as.ternary.then) &&
+               is_stable(expr->as.ternary.otherwise);
+    default:
+        return false;
+    }
+}
+
+/* True if evaluating these operands in some other order than the one
+   given could change what they come to. */
+static bool order_matters(const Expr *const *operands, size_t count) {
+    bool call = false;
+    size_t unstable = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (has_call(operands[i])) call = true;
+        if (!is_stable(operands[i])) unstable++;
+    }
+    return call && unstable >= 2;
+}
+
+/* Opens a statement expression that evaluates the operands that are not
+   stable, in order, into temporaries that stand for them until
+   release_operands. Returns what to pass to it. */
+static size_t hold_operands(const Expr *const *operands, size_t count, FILE *out) {
+    size_t mark = held.count;
+    fputs("__extension__ ({ ", out);
+    for (size_t i = 0; i < count; i++) {
+        const Expr *operand = operands[i];
+        if (is_stable(operand)) continue;
+        int id = ++held.next_id;
+        fprintf(out, "%s wind_t%d = ", c_type(operand->type), id);
+        emit_expr(operand, out);
+        fputs("; ", out);
+        if (held.count == held.cap) {
+            held.cap = held.cap ? held.cap * 2 : 16;
+            held.items = xrealloc(held.items, held.cap * sizeof *held.items);
+            held.ids = xrealloc(held.ids, held.cap * sizeof *held.ids);
+        }
+        held.items[held.count] = operand;
+        held.ids[held.count++] = id;
+    }
+    return mark;
+}
+
+static void release_operands(size_t mark, FILE *out) {
+    fputs("; })", out);
+    held.count = mark;
+}
+
+/* The operands of expr whose order C leaves open, from malloc. */
+static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
+    size_t count = 0;
+    *operands = NULL;
+    switch (expr->kind) {
+    case EXPR_CALL:
+        count = expr->as.call.count;
+        *operands = xmalloc((count ? count : 1) * sizeof **operands);
+        for (size_t i = 0; i < count; i++) (*operands)[i] = expr->as.call.args[i];
+        break;
+    case EXPR_INIT:
+        count = expr->as.init.count;
+        *operands = xmalloc((count ? count : 1) * sizeof **operands);
+        for (size_t i = 0; i < count; i++) (*operands)[i] = expr->as.init.items[i].value;
+        break;
+    case EXPR_BINARY:
+        if (expr->as.binary.op == OP_AND || expr->as.binary.op == OP_OR) break;
+        count = 2;
+        *operands = xmalloc(2 * sizeof **operands);
+        (*operands)[0] = expr->as.binary.left;
+        (*operands)[1] = expr->as.binary.right;
+        break;
+    case EXPR_INDEX:
+        if (is_array_name(expr->as.index.base)) break;
+        count = 2;
+        *operands = xmalloc(2 * sizeof **operands);
+        (*operands)[0] = expr->as.index.base;
+        (*operands)[1] = expr->as.index.index;
+        break;
+    default:
+        break;
+    }
+    return count;
+}
+
 static void emit_binary(const Expr *expr, FILE *out) {
     Op op = expr->as.binary.op;
     const Expr *left = expr->as.binary.left;
@@ -847,7 +1050,7 @@ static void emit_binary(const Expr *expr, FILE *out) {
     fputs("))", out);
 }
 
-static void emit_expr(const Expr *expr, FILE *out) {
+static void emit_expr_kind(const Expr *expr, FILE *out) {
     switch (expr->kind) {
     case EXPR_INDEX: {
         const Expr *base = expr->as.index.base;
@@ -979,6 +1182,13 @@ static void emit_expr(const Expr *expr, FILE *out) {
             fputs(")", out);
             break;
         }
+        if (expr->as.unary.op == OP_NEG && expr->as.unary.operand->kind == EXPR_INT_LIT &&
+            type_is_integer(expr->type)) {
+            /* Folded, so that the most negative value is not written as the
+               negation of a number its type cannot hold. */
+            emit_int_value(-expr->as.unary.operand->as.int_lit, expr->type, out);
+            break;
+        }
         fprintf(out, "((%s)(%s", c_type(expr->type), op_text(expr->as.unary.op));
         emit_expr(expr->as.unary.operand, out);
         fputs("))", out);
@@ -1055,6 +1265,25 @@ static void emit_expr(const Expr *expr, FILE *out) {
     case EXPR_SIZEOF:
         break; /* rewritten to an integer literal by unit_analyze */
     }
+}
+
+static void emit_expr(const Expr *expr, FILE *out) {
+    for (size_t i = held.count; i-- > 0;) {
+        if (held.items[i] == expr) {
+            fprintf(out, "wind_t%d", held.ids[i]);
+            return;
+        }
+    }
+    const Expr **operands;
+    size_t count = unordered_operands(expr, &operands);
+    if (count && order_matters(operands, count)) {
+        size_t mark = hold_operands(operands, count, out);
+        emit_expr_kind(expr, out);
+        release_operands(mark, out);
+    } else {
+        emit_expr_kind(expr, out);
+    }
+    free(operands);
 }
 
 /* The helper that prints one value of a type, noted as used. *cast is what
@@ -1240,6 +1469,36 @@ static bool top_level_repeats(const Unit *unit) {
     return false;
 }
 
+/* True if a "continue" in the block, or in a block within it, goes on
+   with loop. */
+static bool continues(const Block *block, const Stmt *loop) {
+    for (size_t i = 0; i < block->count; i++) {
+        const Stmt *stmt = block->stmts[i];
+        switch (stmt->kind) {
+        case STMT_CONTINUE:
+            if (stmt->as.target == loop) return true;
+            break;
+        case STMT_BLOCK:
+            if (continues(&stmt->as.block, loop)) return true;
+            break;
+        case STMT_IF:
+            if (continues(&stmt->as.if_.then_block, loop)) return true;
+            if (stmt->as.if_.has_else && continues(&stmt->as.if_.else_block, loop)) {
+                return true;
+            }
+            break;
+        case STMT_WHILE:
+        case STMT_FOR:
+        case STMT_DO_WHILE:
+            if (continues(&stmt->as.loop.body, loop)) return true;
+            break;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out);
 
 /* Emits a statement under the bounds checking its directive asks for. */
@@ -1314,14 +1573,33 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         /* A target with an index or a pointer in it is written out once, so
            that what it computes is computed once. */
         bool once = !is_plain_place(target);
+        /* The place is found, and read if the assignment is compound, before
+           the value is evaluated. */
+        bool ordered = compound ? (has_call(value) && !is_stable(target)) ||
+                                      (has_call(target) && !is_stable(value))
+                                : once && (has_call(value) ||
+                                           (has_call(target) && !is_stable(value)));
         indent(depth, out);
-        if (compound && op_is_shift(op) && once) {
-            fprintf(out, "{ %s *place = &", c_type(type));
+        if (ordered || (compound && op_is_shift(op) && once)) {
+            fprintf(out, "{ %s *wind_place = &", c_type(type));
             emit_expr(target, out);
-            fputs("; *place = ", out);
-            emit_shift_start(op, type, out);
-            fputs("*place", out);
-            emit_shift_end(value, out);
+            fputs("; ", out);
+            if (!compound) {
+                fputs("*wind_place = ", out);
+                emit_expr(value, out);
+                fputs("; }\n", out);
+                break;
+            }
+            fprintf(out, "%s wind_old = *wind_place; *wind_place = ", c_type(type));
+            if (op_is_shift(op)) {
+                emit_shift_start(op, type, out);
+                fputs("wind_old", out);
+                emit_shift_end(value, out);
+            } else {
+                fprintf(out, "((%s)(wind_old %s ", c_type(type), op_text(op));
+                emit_expr(value, out);
+                fputs("))", out);
+            }
             fputs("; }\n", out);
             break;
         }
@@ -1392,7 +1670,9 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         fputs(") {\n", out);
         emit_block(&stmt->as.loop.body, depth + 1, out);
         if (stmt->as.loop.step) {
-            fprintf(out, "wind_step_%d:;\n", stmt->as.loop.id);
+            if (continues(&stmt->as.loop.body, stmt)) {
+                fprintf(out, "wind_step_%d:;\n", stmt->as.loop.id);
+            }
             emit_stmt(stmt->as.loop.step, depth + 1, out);
         }
         indent(depth, out);
@@ -1897,6 +2177,8 @@ void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
     bounds_checked = !options.no_bounds_check;
     free(used.externals);
     memset(&used, 0, sizeof used);
+    for (size_t i = 0; i < links.count; i++) free(links.items[i]);
+    links.count = 0;
     types_use((TypeTable *)&unit->types);
     for (size_t i = 0; i < types_count(); i++) {
         TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));

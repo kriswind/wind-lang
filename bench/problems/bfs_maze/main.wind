@@ -1,0 +1,59 @@
+// Breadth-first search through a maze: the fewest steps from the top-left
+// cell of a square grid to the bottom-right one, moving up, down, left or
+// right, where about 30% of the cells are walls, from the shared generator.
+// The corner cells and the cells beside them are kept open. The search keeps
+// its frontier in an array used as a queue. Prints the number of steps, or
+// -1 if the far corner cannot be reached, and how many cells were reached.
+//
+//     wind run main.wind test|bench
+
+const int MAX_SIDE = 2000
+const int MAX = MAX_SIDE * MAX_SIDE
+
+u8 wall[MAX]
+int dist[MAX]
+int queue[MAX]
+int tail = 0
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+void visit(int cell, int d) {
+    if (wall[cell] == 0 && dist[cell] == -1) {
+        dist[cell] = d
+        queue[tail] = cell
+        tail++
+    }
+}
+
+int main(int argc, string argv[]) {
+    int side = argc > 1 && argv[1] == "bench" ? MAX_SIDE : 100
+    int n = side * side
+    for (int i = 0; i < n; i++) {
+        wall[i] = random() % 100 < 30 ? 1 : 0
+        dist[i] = -1
+    }
+    int open[6] = {0, 1, side, n - 1, n - 2, n - 1 - side}
+    for (int i = 0; i < 6; i++) wall[open[i]] = 0
+    int head = 0
+    dist[0] = 0
+    queue[tail] = 0
+    tail++
+    while (head < tail) {
+        int cell = queue[head]
+        head++
+        int d = dist[cell] + 1
+        int row = cell / side
+        int col = cell % side
+        if (row > 0) visit(cell - side, d)
+        if (row < side - 1) visit(cell + side, d)
+        if (col > 0) visit(cell - 1, d)
+        if (col < side - 1) visit(cell + 1, d)
+    }
+    cout << dist[n - 1] << " steps, " << tail << " cells reached\n"
+    return 0
+}

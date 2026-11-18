@@ -1,0 +1,57 @@
+// Operands, arguments and initializer values are evaluated from left to
+// right, and an assignment finds its place before it evaluates its value.
+
+int counter = 0
+
+int next() {
+    counter++
+    return counter
+}
+
+struct Pair {
+    int first
+    int second
+}
+
+void show(int a, int b, int c) {
+    cout << a << " " << b << " " << c << "\n"
+}
+
+int bump(int *p) {
+    *p += 10
+    return *p
+}
+
+int main() {
+    show(next(), next(), next())
+
+    int x = next() * 10 + next()
+    cout << x << "\n"
+
+    // A global read before a call sees the value from before the call.
+    int y = counter + next()
+    cout << y << "\n"
+    int z = next() + counter
+    cout << z << "\n"
+
+    Pair pair = {next(), next()}
+    cout << pair.first << " " << pair.second << "\n"
+
+    int values[3] = {next(), next(), next()}
+    cout << values << "\n"
+
+    // The place is found before the value is evaluated.
+    int slots[4]
+    slots[counter % 4] = next()
+    cout << slots << "\n"
+
+    counter += next()
+    cout << counter << "\n"
+
+    int local = 1
+    int sum = local + bump(&local)
+    cout << sum << " " << local << "\n"
+
+    cout << (next() < next()) << "\n"
+    return 0
+}

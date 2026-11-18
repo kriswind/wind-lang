@@ -1,0 +1,42 @@
+// Maximum subarray: the largest sum of a run of consecutive values, out of
+// random values from -1000 to 1000, by Kadane's algorithm. The running sum
+// starts again at a value whenever what came before it is not positive.
+// Prints the sum and the first and last index of the first best run.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 10000000
+
+int values[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 1000
+    for (int i = 0; i < n; i++) values[i] = random() % 2001 - 1000
+    int best = values[0]
+    int bestStart = 0
+    int bestEnd = 0
+    int sum = values[0]
+    int start = 0
+    for (int i = 1; i < n; i++) {
+        if (sum <= 0) {
+            sum = values[i]
+            start = i
+        } else {
+            sum += values[i]
+        }
+        if (sum > best) {
+            best = sum
+            bestStart = start
+            bestEnd = i
+        }
+    }
+    cout << best << " from " << bestStart << " to " << bestEnd << "\n"
+    return 0
+}

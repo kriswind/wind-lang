@@ -1,0 +1,1 @@
+3997 edges, 1000 nodes placed, checksum 621808132

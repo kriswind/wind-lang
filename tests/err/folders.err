@@ -1,7 +1,6 @@
 tests/err/folders.wind:2:1: error: '#module' is already given at line 1
 tests/err/folders.wind:3:8: error: 'same' is exported by both 'a.wind' and 'b.wind' of 'folders/clash'
 tests/err/folders.wind:4:8: error: 'x.wind' names the module 'one' and 'y.wind' names it 'two'
-tests/err/folders.wind:4:8: warning: module 'one' is never used
 tests/err/folders.wind:5:8: error: the folder 'tests/err/folders/blank' holds no .wind files
 tests/err/folders.wind:6:8: error: cannot open the folder 'tests/err/folders/nowhere'
 tests/err/folders.wind:7:8: error: there is no file 'tests/err/folders/absent.wind' or folder 'tests/err/folders/absent'

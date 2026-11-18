@@ -1,27 +1,22 @@
 tests/err/externs.wind:2:20: error: an external function is defined in C and has no body here
 tests/err/externs.wind:3:24: error: an external constant takes its value from C; write only its type and name
 tests/err/externs.wind:4:15: error: an external function cannot have type 'string'; C has no matching type; C's strings are 'char *'
-tests/err/externs.wind:4:15: warning: function 'name' is never used
-tests/err/externs.wind:5:13: warning: function 'take' is never used
 tests/err/externs.wind:5:22: error: an external function cannot take an array; take a pointer to its elements
-tests/err/externs.wind:6:13: warning: function 'place' is never used
 tests/err/externs.wind:6:25: error: a parameter of an external function cannot have type 'Point'; C has no matching type
 tests/err/externs.wind:7:21: error: expected '(' after the name of an external function, or 'const' before the type of an external constant, found end of line
 tests/err/externs.wind:8:21: error: an external constant cannot have type 'string'; C has no matching type; C's strings are 'char *'
-tests/err/externs.wind:8:21: warning: constant 'TEXT' is never used
 tests/err/externs.wind:11:8: error: a header's name cannot be empty or hold quotes, backslashes or control characters
 tests/err/externs.wind:12:8: error: a header's name cannot be empty or hold quotes, backslashes or control characters
 tests/err/externs.wind:14:5: error: 'export' goes before the block's 'extern', where it covers every declaration in it
 tests/err/externs.wind:15:5: error: 'extern' goes before the block's 'extern', where it covers every declaration in it
 tests/err/externs.wind:16:27: error: an external function is defined in C and has no body here
-tests/err/externs.wind:17:15: warning: constant 'BUFSIZ' is never used
 tests/err/externs.wind:18:18: error: expected the end of the declaration, found a name
 tests/err/externs.wind:19:13: error: expected '(' after the name of an external function, or 'const' before the type of an external constant, found end of line
 tests/err/externs.wind:21:1: error: '#no_bounds_check' goes in front of code: a statement, a block or a function
-tests/err/externs.wind:21:41: warning: function 'fflush' is never used
-tests/err/externs.wind:23:5: error: 'extern' can only be used at the top level of a file
-tests/err/externs.wind:24:9: warning: variable 'sized' is never used
-tests/err/externs.wind:24:15: error: an array's length must be an integer known at compile time
-tests/err/externs.wind:25:5: error: cannot assign to constant 'LIMIT'
-tests/err/externs.wind:27:20: error: 'len' needs an array or a string, found 'int'
-tests/err/externs.wind:29:17: error: this '{' is never closed
+tests/err/externs.wind:22:22: error: a library's name is made of letters, digits, '_', '.', '+' and '-', and does not start with '-'
+tests/err/externs.wind:23:22: error: expected the name of a C library, as in 'link "m"', found '{'
+tests/err/externs.wind:25:5: error: 'extern' can only be used at the top level of a file
+tests/err/externs.wind:26:15: error: an array's length must be an integer known at compile time
+tests/err/externs.wind:27:5: error: cannot assign to constant 'LIMIT'
+tests/err/externs.wind:29:20: error: 'len' needs an array or a string, found 'int'
+tests/err/externs.wind:31:17: error: this '{' is never closed

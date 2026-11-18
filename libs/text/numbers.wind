@@ -1,0 +1,30 @@
+// Part of ::text: reading numbers out of strings.
+
+import chars
+
+// Reads s as a whole number in decimal, with an optional sign. Stores it
+// in *value and returns true if all of s is one, and if it fits in an int,
+// whose size depends on the target; returns false, leaving *value as it
+// was, otherwise.
+export bool parse_int(string s, int *value) {
+    int at = 0
+    bool negative = false
+    if (len(s) > 0 && (s[0] == '-' || s[0] == '+')) {
+        negative = s[0] == '-'
+        at = 1
+    }
+    if (at == len(s)) return false
+    /* The size of the smallest int, which is one more than the largest. */
+    u64 limit = u64(1) << (sizeof(int) * 8 - 1)
+    if (!negative) limit--
+    u64 total = 0
+    for (; at < len(s); at++) {
+        int digit = chars.digit_value(s[at])
+        if (digit < 0) return false
+        /* Checked before it grows, so that it cannot overflow first. */
+        if (total > (limit - u64(digit)) / 10) return false
+        total = total * 10 + u64(digit)
+    }
+    *value = negative ? int(0 - total) : int(total)
+    return true
+}

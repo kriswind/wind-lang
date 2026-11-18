@@ -7,7 +7,9 @@
 #define FLOAT_WRITER                                                           \
     "/* Defines the function that prints one float type. Prints the fewest\n" \
     "   digits that read back as the same value; values are formatted through\n" \
-    "   long double, the widest type printf accepts. */\n"                    \
+    "   long double, the widest type printf accepts. A number that so few\n"  \
+    "   digits would put in exponent form, as 2e+01 for 20, is written out\n"  \
+    "   in full while that takes no more digits than the type holds. */\n"   \
     "#define WIND_WRITE_FLOAT(name, T, max_digits, parse) \\\n"              \
     "    static void name(T v) { \\\n"                                       \
     "        char buf[64]; \\\n"                                             \
@@ -15,6 +17,11 @@
     "        for (int digits = 1; digits <= max_digits; digits++) { \\\n"    \
     "            snprintf(buf, sizeof buf, \"%.*Lg\", digits, (long double)v); \\\n" \
     "            if ((T)parse(buf, NULL) == shown) break; \\\n"              \
+    "        } \\\n"                                                         \
+    "        char *e = strchr(buf, 'e'); \\\n"                               \
+    "        int exponent = e ? atoi(e + 1) : -1; \\\n"                      \
+    "        if (exponent >= 0 && exponent < max_digits) { \\\n"             \
+    "            snprintf(buf, sizeof buf, \"%.*Lg\", exponent + 1, (long double)v); \\\n" \
     "        } \\\n"                                                         \
     "        wind_put(buf, strlen(buf)); \\\n"                               \
     "    }\n"
