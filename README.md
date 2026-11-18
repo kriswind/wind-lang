@@ -299,6 +299,11 @@ cout << len(scores) << "\n"   // 5
   in order and within the string.
 - `const int Primes[3] = {2, 3, 5}` declares an array whose elements cannot
   be changed.
+- `sort(scores)` puts an array of numbers, characters, enums or strings in
+  order, and `sort(rows, .field)` an array of structs by one field. Elements
+  that compare equal keep the order they were in. `reverse(scores)` puts an
+  array in the opposite order, so a sort and a reverse give the largest
+  first.
 - `cout << scores` prints the whole array as `[12, 57, 3, 0, 13]`. Inside an
   array, strings and chars are quoted and escaped (`["a", "b"]`, `['x']`) so
   that the elements can be told apart.
@@ -432,7 +437,7 @@ How this was chosen, and what is to come, is in
 | `%` | integers | same type |
 | unary `-` | numbers | same type |
 | `==` `!=` | any two values of one type | `bool` |
-| `<` `<=` `>` `>=` | numbers, `char` | `bool` |
+| `<` `<=` `>` `>=` | numbers, `char`, strings (byte by byte) | `bool` |
 | `&&` `\|\|` `!` | `bool`, or a pointer (true unless `NULL`) | `bool` |
 | `&` `\|` `^` (and, or, xor) | integers | same type |
 | unary `~` (not) | integers | same type |
@@ -596,9 +601,43 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
 **Structs**
 
 - Fields are separated by `;`, `,` or a newline. A field can be of any type,
-  including another struct, but not an array.
+  including another struct, a growable array (`string build[..]`) or a map
+  (`f64 times[string]`), but not an array of a fixed length.
 - A struct is a value, as in C: assigning it, passing it or returning it
   copies it. A variable declared without a value has every field zero.
+- A struct that holds a growable array or a map, itself or in a struct field,
+  cannot be copied into a variable, since the copy would share its
+  elements. It is made with `{ ... }`, where its arrays and maps start empty,
+  or taken out of a growable array with `pop`, and it cannot be assigned,
+  returned, appended from a variable, or kept in a map. Its arrays and maps
+  work like any others.
+- Passed to a function, or gone through with `for ... in`, it is a copy that
+  shares those arrays and maps with the original, and is read-only all the
+  way down: nothing in it can be changed, grown or pointed to. The function
+  reads it without copying any elements. A function that changes one takes
+  the array it is in, and its index. While a function runs, it must not grow
+  the array that the struct it was given lives in, which would move it:
+
+  ```wind
+  struct Language {
+      string name
+      string build[..]
+      f64 times[string]
+  }
+
+  Language languages[..]
+  append(languages, {"wind"})
+  append(languages[0].build, "wind", "build")
+  languages[0].times["sort"] = 0.051
+  cout << languages[0] << "\n"
+  // Language{name = "wind", build = ["wind", "build"], times = {"sort": 0.051}}
+
+  f64 total(Language language) {      // reads it; cannot change it
+      f64 sum = 0
+      for (string name, f64 t in language.times) sum += t
+      return sum
+  }
+  ```
 - `{ ... }` is a struct value. It takes its type from where it is used: a
   declaration, an assignment, an argument, a `return`. Values are given in
   field order, or by name as `.field = value`; fields left out are zero.
@@ -1064,8 +1103,8 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
-- A struct field cannot be an array, and a struct or an enum cannot be read
-  with `cin`; read into the fields.
+- A struct field cannot be an array of a fixed length, and a struct or an enum
+  cannot be read with `cin`; read into the fields.
 - There is no `void *` and no pointer to a function, and memory is
   allocated only by growable arrays and maps: a pointer points to a
   variable, an element or a field. `cin` reads into a variable, not through a pointer.

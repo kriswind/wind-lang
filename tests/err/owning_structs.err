@@ -1,0 +1,11 @@
+tests/err/owning_structs.wind:11:5: error: a map's keys cannot be 'Bag'; they can be integers, 'char', 'bool', enums, pointers or strings
+tests/err/owning_structs.wind:12:5: error: a map's values cannot be 'Bag', which holds a growable array or a map
+tests/err/owning_structs.wind:14:5: error: a 'Bag' holds a growable array or a map, so it cannot be copied; fill one the caller points to instead
+tests/err/owning_structs.wind:18:15: error: a 'Bag' holds a growable array or a map, so it cannot be copied; make it with '{ ... }', or point to the one there is
+tests/err/owning_structs.wind:19:27: error: field 'items' is a growable array, which starts empty; add to it once the struct is made
+tests/err/owning_structs.wind:20:11: error: a 'Bag' holds a growable array or a map, so it cannot be copied; change its fields, or point to it with a pointer
+tests/err/owning_structs.wind:22:18: error: a 'Bag' holds a growable array or a map, so it cannot be copied; append one made with '{ ... }'
+tests/err/owning_structs.wind:23:28: error: an array of 'Bag' cannot be cloned, since each 'Bag' holds a growable array or a map, which a copy would share
+tests/err/owning_structs.wind:25:19: error: a 'Shelf' holds a growable array or a map, so it cannot be copied; make it with '{ ... }', or point to the one there is
+tests/err/owning_structs.wind:26:13: error: 'items' is a growable array; index it, or use it where an array goes, as in 'len(...)' or 'append(...)'
+tests/err/owning_structs.wind:27:5: error: 'items' is a growable array; index it, or use it where an array goes, as in 'len(...)' or 'append(...)'

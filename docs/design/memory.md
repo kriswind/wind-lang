@@ -22,6 +22,8 @@ This note records what was chosen and why, and what is still to come.
 | Where memory comes from | one heap (`malloc`/`realloc`/`free`) | no hidden context parameter in every function, so the generated C stays plain |
 | Pointers into elements | `&xs[i]` is an error, and so is using `xs` as a pointer | elements move when the array grows; this rules out the dangling pointer that C and Odin allow. It can be relaxed later without breaking programs |
 | Copying | `ys = xs` is an error; `ys = clone(xs)` copies | two arrays never share elements, so one can never free the other's |
+| Structs that hold them | a struct with a growable array or a map field, or a field of such a struct, cannot be copied into a variable: it is made with `{ ... }` or taken out with `pop`, and not assigned or returned | the same rule as above: a copy would share the elements |
+| Passing them | as a parameter or a `for ... in` variable, such a struct is a copy that shares its arrays and maps and is read-only all the way down | the function reads it without copying elements, and cannot change, free or point into what it shares; as in Go and Odin, it must not grow the array the original lives in during the call |
 | Errors | an index out of range and `pop` on an empty array stop the program in checked builds; running out of memory always does | the same checks, and the same switch, as fixed arrays |
 | Use after `delete` | safe: `delete` leaves the array empty, so a later index is out of range and a later `append` starts afresh | follows from the two rules above, at no cost |
 

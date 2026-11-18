@@ -105,6 +105,9 @@ typedef enum {
     HELPER_MAP_DELETE,
     HELPER_PAD,
     HELPER_SLICE,
+    HELPER_STRING_COMPARE,
+    HELPER_SORT,
+    HELPER_REVERSE,
     HELPER_COUNT,
 } Helper;
 

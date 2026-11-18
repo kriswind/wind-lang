@@ -25,6 +25,8 @@ typedef enum {
     BUILTIN_RIGHT,   /* right(v, width): spaces and then v */
     BUILTIN_FIXED,   /* fixed(x, digits): x with that many digits after the point */
     BUILTIN_EXIT,    /* exit(status): ends the program */
+    BUILTIN_SORT,    /* sort(xs), sort(rows, .field): into order, keeping equals in order */
+    BUILTIN_REVERSE, /* reverse(xs): into the opposite order */
 } Builtin;
 
 /* ---- Symbols ---- */
@@ -67,6 +69,10 @@ struct Symbol {
     TypeKind key_type;
     /* A loop variable of "for (... in ...)", which cannot be assigned. */
     bool loop_bound;
+    /* A parameter or loop variable that holds a copy of a struct with a
+       growable array or a map in it. The copy shares those elements with
+       the original, so nothing in it can be changed or pointed to. */
+    bool shares;
     size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
@@ -160,6 +166,7 @@ typedef enum {
     EXPR_CIN_OK,
     EXPR_INDEX,
     EXPR_SLICE, /* "s[from:to]": a view of part of a string */
+    EXPR_KEY,   /* ".field": the field that sort(rows, .field) orders by */
     /* The built-in len(x); a call to "len" becomes this during analysis. */
     EXPR_LEN,
     /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
@@ -199,6 +206,8 @@ struct Expr {
     TypeKind type; /* set by unit_analyze */
     /* Written as "( expr )", with nothing outside the parentheses. */
     bool parenthesized;
+    /* A field checked once already, whose type is kept. */
+    bool checked;
     union {
         U128 int_lit;
         Str float_lit; /* spelling, without digit separators */
@@ -273,6 +282,11 @@ struct Expr {
             Expr *base;
             Expr *index;
         } index;
+        /* EXPR_KEY; index is set by unit_analyze to the field's position */
+        struct {
+            Str name;
+            int index;
+        } key;
         /* EXPR_SLICE; from and to are NULL where left out: the start, the end */
         struct {
             Expr *base;
@@ -348,8 +362,12 @@ typedef enum {
 typedef struct {
     Str name;
     SrcLoc loc;
-    TypeKind type; /* field */
+    TypeKind type; /* field: for a growable array or a map, what it holds */
     TypeRef *type_ref;
+    bool is_growable; /* field "T name[..]" */
+    bool is_map;      /* field "V name[K]" */
+    TypeKind key_type;
+    TypeRef *key_ref;
     Expr *value; /* enum name: its explicit value, or NULL */
     Symbol *symbol; /* enum name; set by unit_analyze */
 } Member;

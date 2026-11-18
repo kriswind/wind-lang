@@ -37,10 +37,16 @@ typedef enum {
 
 #define TYPE_COUNT (TYPE_F128 + 1)
 
+struct Symbol;
+
 typedef struct {
     Str name;
     SrcLoc loc;
-    TypeKind type;
+    TypeKind type; /* for a growable array or a map, the type of what it holds */
+    /* A growable array or a map: what describes it as one, in the form a
+       variable of its kind has. NULL for any other field. */
+    struct Symbol *array;
+    bool is_map;
 } Field;
 
 typedef struct {
@@ -56,6 +62,9 @@ typedef struct {
     /* A struct whose fields are not settled yet: it can be pointed to, but
        it has no size and cannot be held by value. */
     bool incomplete;
+    /* Holds a growable array or a map, directly or in a field's struct, and
+       so cannot be copied: the copy would share its elements. */
+    bool owns;
     /* The name as declared, and as diagnostics show it: for a type from an
        imported file, with the file's name in front, since two files may
        each declare a type of one name. */

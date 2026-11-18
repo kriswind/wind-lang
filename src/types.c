@@ -149,11 +149,17 @@ TypeKind type_pointer_to(TypeKind target) {
 
 void type_layout(TypeInfo *info) {
     size_t size = 0, align = 1;
+    size_t word = types_platform()->pointer_size;
     for (size_t i = 0; i < info->field_count; i++) {
-        size_t field_align = type_align(info->fields[i].type);
+        const Field *field = &info->fields[i];
+        /* A growable array is a pointer and two counts; a map, three
+           pointers and five counts. */
+        size_t field_align = field->array ? word : type_align(field->type);
+        size_t field_size = !field->array ? type_size(field->type) : field->is_map ? 8 * word
+                                                                                  : 3 * word;
         if (field_align > align) align = field_align;
         size = (size + field_align - 1) / field_align * field_align;
-        size += type_size(info->fields[i].type);
+        size += field_size;
     }
     info->size = (size + align - 1) / align * align;
     info->align = align;

@@ -1,0 +1,79 @@
+// A struct can hold growable arrays and maps. It cannot be copied, since a
+// copy would share their elements, so it is made with "{ ... }"; a function
+// that changes one reaches it through the array it is in. Its arrays and
+// maps work like any others.
+
+struct Language {
+    string name
+    string build[..]
+    f64 times[string]
+}
+
+struct Point {
+    int x
+    int y
+}
+
+struct Shape {
+    string name
+    Point corners[..]
+}
+
+Language languages[..]
+
+void time(Language all[], int at, string problem, f64 seconds) {
+    all[at].times[problem] = seconds
+}
+
+f64 total(f64 times[string]) {
+    f64 sum = 0
+    for (string problem, f64 seconds in times) sum += seconds
+    return sum
+}
+
+int count(string words[]) { return len(words) }
+
+int main() {
+    append(languages, {"c"}, {"wind"})
+    append(languages[0].build, "cc", "-O2")
+    append(languages[1].build, "wind", "build")
+    languages[1].build = clone(languages[0].build)
+    append(languages[1].build, "-o")
+    time(languages, 0, "sort", 0.05)
+    languages[0].times["hash"] = 0.07
+    time(languages, 1, "sort", 0.06)
+
+    for (int i = 0; i < len(languages); i++) {
+        cout << languages[i].name << " " << languages[i].build << " "
+             << len(languages[i].build) << " " << count(languages[i].build) << " "
+             << languages[i].times << " " << total(languages[i].times) << "\n"
+    }
+    cout << has(languages[0].times, "hash") << " " << languages[1].times["hash"] << "\n"
+    remove(languages[0].times, "hash")
+
+    Shape square = {"square"}
+    append(square.corners, {0, 0}, {1, 0}, {1, 1}, {0, 1})
+    square.corners[2].y = 5
+    sort(square.corners, .y)
+    cout << square << "\n"
+    cout << languages[0] << "\n"
+
+    sort(languages, .name)
+    reverse(languages)
+    cout << languages[0].name << " " << languages[1].name << "\n"
+
+    Language last = pop(languages)
+    cout << last.name << " " << len(languages) << "\n"
+
+    char line[..]
+    append(line, square.corners[0], " ", len(square.corners))
+    cout << string(line) << "\n"
+    for (string word in languages[0].build) cout << word << ";"
+    cout << "\n"
+
+    delete(line)
+    delete(square.corners)
+    delete(last.build)
+    delete(last.times)
+    return 0
+}

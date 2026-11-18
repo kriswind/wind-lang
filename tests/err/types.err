@@ -2,7 +2,7 @@ tests/err/types.wind:3:8: error: a struct needs at least one field
 tests/err/types.wind:4:30: error: field 'a' is already declared at line 4
 tests/err/types.wind:5:20: error: a struct cannot hold itself; hold a pointer to it: 'Loop *inner'
 tests/err/types.wind:6:21: error: struct 'Later' is declared below, so this field can only hold a pointer to it: 'Later *l'
-tests/err/types.wind:8:23: error: a field cannot be an array
+tests/err/types.wind:8:24: error: a field cannot be an array of a fixed length; '[..]' makes it a growable one
 tests/err/types.wind:9:1: error: this struct needs a name
 tests/err/types.wind:10:26: error: 'RED' is already defined at line 10
 tests/err/types.wind:11:6: error: an enum needs at least one name

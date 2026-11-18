@@ -640,6 +640,17 @@ static Expr *parse_primary(Parser *p) {
     switch (tok.kind) {
     case TOK_KW_SIZEOF:
         return parse_sizeof(p);
+    case TOK_DOT:
+        /* ".field", which only sort takes; the checker says so elsewhere. */
+        if (peek_kind(p, 1) != TOK_IDENT) {
+            error_expected(p, "an expression");
+            return NULL;
+        }
+        next(p);
+        expr = new_expr(p, EXPR_KEY, span(tok.loc, p->tok.loc));
+        expr->as.key.name = p->tok.text;
+        next(p);
+        return expr;
     case TOK_LBRACE:
         return parse_init(p);
     case TOK_KW_CIN:
@@ -1553,14 +1564,25 @@ static bool parse_struct_body(Parser *p, Stmt *stmt) {
                      (int)name.text.len, name.text.data);
             field.type = TYPE_INVALID;
         }
-        if (at(p, TOK_LBRACKET)) {
-            diag_add(p->diags, SEV_ERROR, p->tok.loc, "a field cannot be an array");
-            /* Skipped so that the rest of the struct is still read. */
-            while (!at(p, TOK_RBRACKET) && !at(p, TOK_NEWLINE) && !at(p, TOK_RBRACE) &&
-                   !at(p, TOK_EOF)) {
+        if (accept(p, TOK_LBRACKET)) {
+            if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
                 next(p);
+                next(p);
+                field.is_growable = true;
+            } else if (at_type(p) || at(p, TOK_IDENT)) {
+                if (!parse_type(p, &field.key_type, &field.key_ref)) return false;
+                field.is_map = true;
+            } else {
+                diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                         "a field cannot be an array of a fixed length; '[..]' makes it a "
+                         "growable one");
+                /* Skipped so that the rest of the struct is still read. */
+                while (!at(p, TOK_RBRACKET) && !at(p, TOK_NEWLINE) && !at(p, TOK_RBRACE) &&
+                       !at(p, TOK_EOF)) {
+                    next(p);
+                }
             }
-            accept(p, TOK_RBRACKET);
+            if (!expect(p, TOK_RBRACKET, NULL)) return false;
         }
         if (!at(p, TOK_NEWLINE) && !at(p, TOK_SEMI) && !at(p, TOK_COMMA) &&
             !at(p, TOK_RBRACE)) {

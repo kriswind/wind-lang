@@ -1,0 +1,10 @@
+tests/err/sorting.wind:11:10: error: 'sort' has no order to sort 'Point' by; name a field to sort by: 'sort(rows, .field)'
+tests/err/sorting.wind:12:18: error: 'Point' has no field 'z'
+tests/err/sorting.wind:13:17: error: field 'corner' is 'Point', which has no order to sort by
+tests/err/sorting.wind:14:18: error: 'sort' takes the field to sort by as '.x'
+tests/err/sorting.wind:15:10: error: constant array 'FIXED' cannot be put in order, since that changes it
+tests/err/sorting.wind:16:10: error: 'sort' has no order to sort 'int *' by
+tests/err/sorting.wind:17:5: error: 'reverse' takes an array, but 2 arguments were given
+tests/err/sorting.wind:18:10: error: 'sort' needs an array, found 'int'
+tests/err/sorting.wind:19:15: error: '.x' names a field to sort by, as in 'sort(rows, .x)', and has no value of its own
+tests/err/sorting.wind:20:13: error: mismatched types 'string' and 'int' for operator '<'

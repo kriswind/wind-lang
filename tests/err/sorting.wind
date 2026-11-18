@@ -1,0 +1,22 @@
+// What sort and reverse do not allow.
+struct Point { int x; int y }
+struct Box { Point corner }
+
+const int FIXED[3] = {3, 1, 2}
+
+int main() {
+    Point points[2]
+    Box boxes[2]
+    int *pointers[2]
+    sort(points)
+    sort(points, .z)
+    sort(boxes, .corner)
+    sort(points, x)
+    sort(FIXED)
+    sort(pointers)
+    reverse(points, .x)
+    sort(5)
+    int key = .x
+    cout << ("a" < 1) << key << "\n"
+    return 0
+}

@@ -528,6 +528,67 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return part;\n"
         "}\n",
         0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {TYPE_STRING}},
+    [HELPER_STRING_COMPARE] = {
+        "/* Below zero if a comes before b, byte by byte, zero if they are the\n"
+        "   same, and above zero if a comes after: a string comes before any\n"
+        "   longer one that starts with it. */\n"
+        "static int wind_string_compare(wind_string a, wind_string b) {\n"
+        "    size_t n = a.len < b.len ? a.len : b.len;\n"
+        "    int order = n ? memcmp(a.data, b.data, n) : 0;\n"
+        "    if (order) return order;\n"
+        "    return (a.len > b.len) - (a.len < b.len);\n"
+        "}\n",
+        HEADER_STRING, {0}, {TYPE_STRING}},
+    [HELPER_SORT] = {
+        "/* Sorts count elements of size bytes at data into the order that order\n"
+        "   gives the keys found offset bytes into them, keeping equal ones in\n"
+        "   the order they were in: a merge sort, through a scratch copy. */\n"
+        "static void wind_sort(void *data, size_t count, size_t size, size_t offset,\n"
+        "                      int (*order)(const void *, const void *), int line) {\n"
+        "    if (count < 2) return;\n"
+        "    char *from = data;\n"
+        "    char *into = malloc(count * size);\n"
+        "    if (!into) wind_out_of_memory(line);\n"
+        "    char *scratch = into;\n"
+        "    for (size_t width = 1; width < count; width *= 2) {\n"
+        "        for (size_t lo = 0; lo < count; lo += 2 * width) {\n"
+        "            size_t mid = lo + width < count ? lo + width : count;\n"
+        "            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;\n"
+        "            size_t i = lo, j = mid, k = lo;\n"
+        "            while (i < mid && j < hi) {\n"
+        "                if (order(from + j * size + offset, from + i * size + offset) < 0) {\n"
+        "                    memcpy(into + k++ * size, from + j++ * size, size);\n"
+        "                } else {\n"
+        "                    memcpy(into + k++ * size, from + i++ * size, size);\n"
+        "                }\n"
+        "            }\n"
+        "            memcpy(into + k * size, from + i * size, (mid - i) * size);\n"
+        "            k += mid - i;\n"
+        "            memcpy(into + k * size, from + j * size, (hi - j) * size);\n"
+        "        }\n"
+        "        char *swap = from;\n"
+        "        from = into;\n"
+        "        into = swap;\n"
+        "    }\n"
+        "    if (from != (char *)data) memcpy(data, from, count * size);\n"
+        "    free(scratch);\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB | HEADER_STRING, {HELPER_OUT_OF_MEMORY}, {0}},
+    [HELPER_REVERSE] = {
+        "/* Puts count elements of size bytes at data into the opposite order. */\n"
+        "static void wind_reverse(void *data, size_t count, size_t size) {\n"
+        "    unsigned char *items = data;\n"
+        "    for (size_t i = 0; i < count / 2; i++) {\n"
+        "        unsigned char *a = items + i * size;\n"
+        "        unsigned char *b = items + (count - 1 - i) * size;\n"
+        "        for (size_t byte = 0; byte < size; byte++) {\n"
+        "            unsigned char t = a[byte];\n"
+        "            a[byte] = b[byte];\n"
+        "            b[byte] = t;\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+        HEADER_STDDEF, {0}, {0}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -1001,11 +1062,40 @@ static void emit_field_name(Str name, FILE *out) {
 static void emit_place(const Symbol *symbol, const Expr *index, const PlaceField *fields,
                        size_t field_count, FILE *out);
 
-/* True for an array's name that stands for the array itself, and not for a
-   pointer to its first element. */
+/* The array or map that an expression names as a whole: a variable's name,
+   or a field of a struct that holds a growable array or a map. NULL for
+   anything else, an array's name that stands for a pointer included. */
+static const Symbol *named(const Expr *expr) {
+    if (expr->kind == EXPR_IDENT) {
+        const Symbol *symbol = expr->as.ident.symbol;
+        return symbol && !expr->as.ident.decayed && (any_array(symbol) || symbol->is_map)
+                   ? symbol
+                   : NULL;
+    }
+    if (expr->kind != EXPR_FIELD || expr->as.field.index < 0) return NULL;
+    TypeKind base = expr->as.field.base->type;
+    if (expr->as.field.through_pointer) base = type_target(base);
+    const TypeInfo *info = type_info(base);
+    if (!info || (size_t)expr->as.field.index >= info->field_count) return NULL;
+    return info->fields[expr->as.field.index].array;
+}
+
+/* True for an expression that names an array as a whole. */
 static bool is_array_name(const Expr *expr) {
-    return expr->kind == EXPR_IDENT && expr->as.ident.symbol && !expr->as.ident.decayed &&
-           any_array(expr->as.ident.symbol);
+    const Symbol *array = named(expr);
+    return array && !array->is_map;
+}
+
+/* Writes the array or map that expr names, as an lvalue: the variable, or
+   the struct's field. */
+static void emit_named(const Symbol *array, const Expr *expr, FILE *out) {
+    if (expr && expr->kind == EXPR_FIELD) {
+        fputs("(", out);
+        emit_expr(expr, out);
+        fputs(")", out);
+    } else {
+        emit_symbol(array, out);
+    }
 }
 
 /* Emits a pointer, checked for NULL, as a pointer of its own type again. */
@@ -1027,14 +1117,24 @@ static bool literal_position(const Symbol *array, const Expr *index, size_t *pos
 }
 
 /* Emits one element of an array as something that can be read or assigned. */
+static void emit_element(const Symbol *array, const Expr *index, FILE *out);
+
+static void emit_named_element(const Symbol *array, const Expr *named_expr, const Expr *index,
+                               FILE *out);
+
 static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
+    emit_named_element(array, NULL, index, out);
+}
+
+static void emit_named_element(const Symbol *array, const Expr *named_expr, const Expr *index,
+                               FILE *out) {
     size_t position;
     if (literal_position(array, index, &position)) {
-        emit_symbol(array, out);
+        emit_named(array, named_expr, out);
         fprintf(out, "[%zu]", position);
         return;
     }
-    emit_symbol(array, out);
+    emit_named(array, named_expr, out);
     if (runtime_length(array)) fputs(".data", out);
     if (!bounds_checked) {
         fputs("[(size_t)(", out);
@@ -1047,7 +1147,7 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
     emit_expr(index, out);
     fprintf(out, "), %d, ", type_is_signed(index->type));
     if (runtime_length(array)) {
-        emit_symbol(array, out);
+        emit_named(array, named_expr, out);
         fputs(".len", out);
     } else {
         fprintf(out, "%zu", array->length);
@@ -1207,13 +1307,11 @@ static bool is_stable(const Expr *expr) {
     }
     case EXPR_LEN:
         /* A growable array's or a map's length changes as it grows. */
-        if (is_array_name(expr->as.len.operand)) {
-            return !expr->as.len.operand->as.ident.symbol->is_growable;
+        if (named(expr->as.len.operand)) {
+            const Symbol *array = named(expr->as.len.operand);
+            return !array->is_growable && !array->is_map;
         }
-        return expr->as.len.operand->kind != EXPR_IDENT || !expr->as.len.operand->as.ident.symbol ||
-                       !expr->as.len.operand->as.ident.symbol->is_map
-                   ? is_stable(expr->as.len.operand)
-                   : false;
+        return is_stable(expr->as.len.operand);
     case EXPR_UNARY:
         if (expr->as.unary.op == OP_ADDR) return expr->as.unary.operand->kind == EXPR_IDENT;
         return expr->as.unary.op != OP_DEREF && is_stable(expr->as.unary.operand);
@@ -1309,11 +1407,41 @@ static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
     return count;
 }
 
+/* An element of an array that a struct holds. The way to the field is
+   worked out once, into a pointer, when it has a call in it. */
+static void emit_field_element(const Symbol *array, const Expr *field, const Expr *index,
+                               FILE *out) {
+    if (!has_call(field)) {
+        emit_named_element(array, field, index, out);
+        return;
+    }
+    int id = ++held.next_id;
+    size_t mark = held.count;
+    fputs("(*__extension__ ({ ", out);
+    emit_list_type(array->type, out);
+    fprintf(out, " *wind_p%d = &", id);
+    emit_named(array, field, out);
+    fputs("; &", out);
+    hold(field, id, true);
+    emit_named_element(array, field, index, out);
+    held.count = mark;
+    fputs("; }))", out);
+}
+
 static void emit_binary(const Expr *expr, FILE *out) {
     Op op = expr->as.binary.op;
     const Expr *left = expr->as.binary.left;
     const Expr *right = expr->as.binary.right;
 
+    if (left->type == TYPE_STRING && op != OP_EQ && op != OP_NE) {
+        used.helpers[HELPER_STRING_COMPARE] = true;
+        fputs("(wind_string_compare(", out);
+        emit_expr(left, out);
+        fputs(", ", out);
+        emit_expr(right, out);
+        fprintf(out, ") %s 0)", op_text(op));
+        return;
+    }
     if (left->type == TYPE_STRING) {
         used.helpers[HELPER_STRING_EQ] = true;
         fputs(op == OP_NE ? "(!wind_string_eq(" : "(wind_string_eq(", out);
@@ -1351,18 +1479,18 @@ static void emit_clone(const Expr *source, TypeKind elem, int line, FILE *out) {
                 id, id, line, id, id);
         return;
     }
-    const Symbol *array = source->as.ident.symbol;
+    const Symbol *array = named(source);
     fputs("(", out);
     emit_list_type(elem, out);
     fputs("){ wind_clone(", out);
-    emit_symbol(array, out);
+    emit_named(array, source, out);
     if (runtime_length(array)) {
         fputs(".data, ", out);
-        emit_symbol(array, out);
+        emit_named(array, source, out);
         fprintf(out, ".len, sizeof(%s), %d), ", c_type(elem), line);
-        emit_symbol(array, out);
+        emit_named(array, source, out);
         fputs(".len, ", out);
-        emit_symbol(array, out);
+        emit_named(array, source, out);
         fputs(".len }", out);
     } else {
         fprintf(out, ", %zu, sizeof(%s), %d), %zu, %zu }", array->length, c_type(elem), line,
@@ -1395,10 +1523,7 @@ static void hold_value(const Expr *expr, FILE *out) {
 
 /* Works out what is written by arg, a format's parts included. */
 static void hold_written(const Expr *arg, FILE *out) {
-    if (is_array_name(arg) || (arg->kind == EXPR_IDENT && arg->as.ident.symbol &&
-                               arg->as.ident.symbol->is_map)) {
-        return;
-    }
+    if (named(arg)) return;
     if (is_format_call(arg)) {
         if (arg->as.call.builtin == BUILTIN_FIXED) {
             hold_value(arg->as.call.args[0], out);
@@ -1459,11 +1584,89 @@ static void emit_format(const Expr *expr, FILE *out) {
             id);
 }
 
+/* The types that sort compares, each of which needs its comparison. */
+static struct {
+    TypeKind items[64];
+    size_t count;
+} orders;
+
+static void emit_order_name(TypeKind type, FILE *out) {
+    const TypeInfo *info = type_info(type);
+    fprintf(out, "wind_order_%s", info ? info->c_stem : type_name(type));
+}
+
+/* "data, count" for an array named by its symbol. */
+static void emit_array_extent(const Symbol *array, const Expr *expr, FILE *out) {
+    emit_named(array, expr, out);
+    if (runtime_length(array)) {
+        fputs(".data, ", out);
+        emit_named(array, expr, out);
+        fputs(".len", out);
+    } else {
+        fprintf(out, ", %zu", array->length);
+    }
+}
+
+/* sort and reverse. */
+static void emit_order_builtin(const Expr *expr, FILE *out) {
+    const Expr *first = expr->as.call.args[0];
+    const Symbol *array = named(first);
+    if (expr->as.call.builtin == BUILTIN_REVERSE) {
+        used.helpers[HELPER_REVERSE] = true;
+        fputs("wind_reverse(", out);
+        emit_array_extent(array, first, out);
+        fprintf(out, ", sizeof(%s))", c_type(array->type));
+        return;
+    }
+    TypeKind key = array->type;
+    const TypeInfo *info = type_info(array->type);
+    const Expr *field = expr->as.call.count == 2 ? expr->as.call.args[1] : NULL;
+    if (field) key = info->fields[field->as.key.index].type;
+    bool known = false;
+    for (size_t i = 0; i < orders.count; i++) known = known || orders.items[i] == key;
+    if (!known && orders.count < sizeof orders.items / sizeof orders.items[0]) {
+        orders.items[orders.count++] = key;
+    }
+    if (key == TYPE_STRING) used.helpers[HELPER_STRING_COMPARE] = true;
+    used.helpers[HELPER_SORT] = true;
+    fputs("wind_sort(", out);
+    emit_array_extent(array, first, out);
+    fprintf(out, ", sizeof(%s), ", c_type(array->type));
+    if (field) {
+        fprintf(out, "offsetof(%s, ", c_type(array->type));
+        emit_field_name(info->fields[field->as.key.index].name, out);
+        fputs(")", out);
+    } else {
+        fputs("0", out);
+    }
+    fputs(", ", out);
+    emit_order_name(key, out);
+    fprintf(out, ", %d)", expr->loc.line);
+}
+
+/* The comparison of each type sort was used on. */
+static void emit_orders(FILE *out) {
+    for (size_t i = 0; i < orders.count; i++) {
+        TypeKind type = orders.items[i];
+        fputs("static int ", out);
+        emit_order_name(type, out);
+        fputs("(const void *a, const void *b) {\n", out);
+        if (type == TYPE_STRING) {
+            fprintf(out, "    return wind_string_compare(*(const %s *)a, *(const %s *)b);\n",
+                    c_type(type), c_type(type));
+        } else {
+            fprintf(out, "    %s x = *(const %s *)a, y = *(const %s *)b;\n"
+                         "    return (x > y) - (x < y);\n",
+                    c_type(type), c_type(type), c_type(type));
+        }
+        fputs("}\n\n", out);
+    }
+}
+
 /* The map an expression names, if it is a map's name. */
 static const Symbol *map_named(const Expr *expr) {
-    return expr->kind == EXPR_IDENT && expr->as.ident.symbol && expr->as.ident.symbol->is_map
-               ? expr->as.ident.symbol
-               : NULL;
+    const Symbol *map = named(expr);
+    return map && map->is_map ? map : NULL;
 }
 
 /* "sizeof(K), is_string", what the map functions are told of a key. */
@@ -1479,42 +1682,46 @@ static void emit_key_temp(const Symbol *map, const Expr *key, int id, FILE *out)
 }
 
 /* Looking up a key: the value stored under it, or zero. */
-static void emit_map_read(const Symbol *map, const Expr *key, FILE *out) {
+static void emit_map_read(const Expr *base, const Expr *key, FILE *out) {
+    const Symbol *map = map_named(base);
     used.helpers[HELPER_MAP_FIND] = true;
     int id = ++held.next_id;
-    fputs("__extension__ ({ ", out);
+    fprintf(out, "__extension__ ({ wind_map *wind_m%d = &", id);
+    emit_named(map, base, out);
+    fputs("; ", out);
     emit_key_temp(map, key, id, out);
-    fprintf(out, "size_t wind_i%d = wind_map_find(&", id);
-    emit_symbol(map, out);
-    fprintf(out, ", &wind_k%d, ", id);
+    fprintf(out, "size_t wind_i%d = wind_map_find(wind_m%d, &wind_k%d, ", id, id, id);
     emit_key_facts(map, out);
-    fprintf(out, "); wind_i%d == (size_t)-1 ? (%s){0} : ((%s *)", id, c_type(map->type),
-            c_type(map->type));
-    emit_symbol(map, out);
-    fprintf(out, ".values)[wind_i%d]; })", id);
+    fprintf(out, "); wind_i%d == (size_t)-1 ? (%s){0} : ((%s *)wind_m%d->values)[wind_i%d]; })",
+            id, c_type(map->type), c_type(map->type), id, id);
 }
 
 /* has, remove, clear and delete on a map. */
 static void emit_map_builtin(const Expr *expr, const Symbol *map, FILE *out) {
     int id = ++held.next_id;
     Builtin which = expr->as.call.builtin;
+    const Expr *base = expr->as.call.args[0];
     used.helpers[which == BUILTIN_HAS      ? HELPER_MAP_FIND
                  : which == BUILTIN_REMOVE ? HELPER_MAP_REMOVE
                  : which == BUILTIN_CLEAR  ? HELPER_MAP_CLEAR
                                            : HELPER_MAP_DELETE] = true;
-    fputs("__extension__ ({ ", out);
+    fprintf(out, "__extension__ ({ wind_map *wind_m%d = &", id);
+    emit_named(map, base, out);
+    fputs("; ", out);
     if (which == BUILTIN_HAS || which == BUILTIN_REMOVE) {
         emit_key_temp(map, expr->as.call.args[1], id, out);
-        fprintf(out, which == BUILTIN_HAS ? "(%s)(wind_map_find(&" : "wind_map_remove(&",
-                c_type(TYPE_BOOL));
-        emit_symbol(map, out);
+        if (which == BUILTIN_HAS) {
+            fprintf(out, "(%s)(wind_map_find(wind_m%d", c_type(TYPE_BOOL), id);
+        } else {
+            fprintf(out, "wind_map_remove(wind_m%d", id);
+        }
         fprintf(out, ", &wind_k%d, ", id);
         emit_key_facts(map, out);
         fputs(which == BUILTIN_HAS ? ") != (size_t)-1); })" : "); (void)0; })", out);
         return;
     }
-    fputs(which == BUILTIN_CLEAR ? "wind_map_clear(&" : "wind_map_delete(&", out);
-    emit_symbol(map, out);
+    fprintf(out, which == BUILTIN_CLEAR ? "wind_map_clear(wind_m%d" : "wind_map_delete(wind_m%d",
+            id);
     fputs(", ", out);
     emit_key_facts(map, out);
     fputs("); (void)0; })", out);
@@ -1523,6 +1730,10 @@ static void emit_map_builtin(const Expr *expr, const Symbol *map, FILE *out) {
 /* A call of one of the built-in functions on growable arrays. Those that
    give no value are statement expressions ending in "(void)0". */
 static void emit_builtin(const Expr *expr, FILE *out) {
+    if (expr->as.call.builtin == BUILTIN_SORT || expr->as.call.builtin == BUILTIN_REVERSE) {
+        emit_order_builtin(expr, out);
+        return;
+    }
     if (expr->as.call.builtin == BUILTIN_EXIT) {
         used.helpers[HELPER_EXIT] = true;
         fputs("wind_exit((int)(", out);
@@ -1535,7 +1746,8 @@ static void emit_builtin(const Expr *expr, FILE *out) {
         emit_map_builtin(expr, map, out);
         return;
     }
-    const Symbol *array = expr->as.call.args[0]->as.ident.symbol;
+    const Expr *first = expr->as.call.args[0];
+    const Symbol *array = named(first);
     int line = expr->loc.line;
     int id = ++held.next_id;
     fputs("__extension__ ({ ", out);
@@ -1543,7 +1755,7 @@ static void emit_builtin(const Expr *expr, FILE *out) {
         /* Into an array of char, each value is written as text. */
         use_sink();
         fprintf(out, "wind_list_char *wind_in%d = &", id);
-        emit_symbol(array, out);
+        emit_named(array, first, out);
         fputs("; ", out);
         char into[32];
         snprintf(into, sizeof into, "wind_in%d", id);
@@ -1563,7 +1775,7 @@ static void emit_builtin(const Expr *expr, FILE *out) {
         used.helpers[HELPER_GROW] = true;
         emit_list_type(array->type, out);
         fprintf(out, " *wind_d%d = &", id);
-        emit_symbol(array, out);
+        emit_named(array, first, out);
         fprintf(out, "; wind_d%d->data = wind_grow(wind_d%d->data, &wind_d%d->cap, "
                      "wind_d%d->len + %zu, sizeof *wind_d%d->data, %d); ",
                 id, id, id, id, count, id, line);
@@ -1575,7 +1787,7 @@ static void emit_builtin(const Expr *expr, FILE *out) {
     }
     emit_list_type(array->type, out);
     fprintf(out, " *wind_d%d = &", id);
-    emit_symbol(array, out);
+    emit_named(array, first, out);
     fputs("; ", out);
     switch (expr->as.call.builtin) {
     case BUILTIN_POP:
@@ -1614,11 +1826,11 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
     case EXPR_INDEX: {
         const Expr *base = expr->as.index.base;
         if (map_named(base)) {
-            emit_map_read(map_named(base), expr->as.index.index, out);
+            emit_map_read(base, expr->as.index.index, out);
             break;
         }
         if (is_array_name(base)) {
-            emit_element(base->as.ident.symbol, expr->as.index.index, out);
+            emit_field_element(named(base), base, expr->as.index.index, out);
             break;
         }
         if (type_is_pointer(base->type)) {
@@ -1677,11 +1889,11 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             fputs("(", out);
             emit_expr(operand, out);
             fputs(").len)", out);
-        } else if (runtime_length(operand->as.ident.symbol)) {
-            emit_symbol(operand->as.ident.symbol, out);
+        } else if (runtime_length(named(operand))) {
+            emit_named(named(operand), operand, out);
             fputs(".len)", out);
         } else {
-            fprintf(out, "%zu)", operand->as.ident.symbol->length);
+            fprintf(out, "%zu)", named(operand)->length);
         }
         break;
     }
@@ -1809,31 +2021,31 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             } else if (func->as.func.params[i].is_map) {
                 /* The function is given the caller's own map. */
                 fputs("&", out);
-                emit_symbol(arg->as.ident.symbol, out);
+                emit_named(named(arg), arg, out);
             } else if (!is_array_name(arg)) {
                 emit_expr(arg, out);
             } else if (func->as.func.params[i].is_growable) {
                 /* The function is given the caller's own array, to grow. */
                 fputs("&", out);
-                emit_symbol(arg->as.ident.symbol, out);
-            } else if (arg->as.ident.symbol->is_slice) {
-                emit_symbol(arg->as.ident.symbol, out);
-            } else if (arg->as.ident.symbol->is_growable) {
+                emit_named(named(arg), arg, out);
+            } else if (named(arg)->is_slice) {
+                emit_named(named(arg), arg, out);
+            } else if (named(arg)->is_growable) {
                 /* A view of the elements the array holds now. */
                 fputs("(", out);
-                emit_slice_type(arg->as.ident.symbol->type, out);
+                emit_slice_type(named(arg)->type, out);
                 fputs("){ ", out);
-                emit_symbol(arg->as.ident.symbol, out);
+                emit_named(named(arg), arg, out);
                 fputs(".data, ", out);
-                emit_symbol(arg->as.ident.symbol, out);
+                emit_named(named(arg), arg, out);
                 fputs(".len }", out);
             } else {
                 /* A fixed array is passed as a view of all its elements. */
                 fputs("(", out);
-                emit_slice_type(arg->as.ident.symbol->type, out);
+                emit_slice_type(named(arg)->type, out);
                 fputs("){ ", out);
-                emit_symbol(arg->as.ident.symbol, out);
-                fprintf(out, ", %zu }", arg->as.ident.symbol->length);
+                emit_named(named(arg), arg, out);
+                fprintf(out, ", %zu }", named(arg)->length);
             }
         }
         fputs(cast_result ? "))" : ")", out);
@@ -1841,13 +2053,14 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
     }
     case EXPR_CAST:
         if (expr->type == TYPE_STRING && is_array_name(expr->as.cast.operand) &&
-            expr->as.cast.operand->as.ident.symbol->is_growable) {
+            named(expr->as.cast.operand)->is_growable) {
             /* A view of the characters an array of char holds now. */
-            const Symbol *chars = expr->as.cast.operand->as.ident.symbol;
+            const Expr *operand = expr->as.cast.operand;
+            const Symbol *chars = named(operand);
             fprintf(out, "((%s){ (const char *)", c_type(TYPE_STRING));
-            emit_symbol(chars, out);
+            emit_named(chars, operand, out);
             fputs(".data, ", out);
-            emit_symbol(chars, out);
+            emit_named(chars, operand, out);
             fputs(".len })", out);
             break;
         }
@@ -1880,6 +2093,8 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
         emit_expr(expr->as.ternary.otherwise, out);
         fputs("))", out);
         break;
+    case EXPR_KEY:
+        break; /* only sort takes one, and reads it itself */
     case EXPR_CIN_OK:
         used.helpers[HELPER_CIN_STATE] = true;
         fputs("wind_cin_ok", out);
@@ -1988,22 +2203,22 @@ static void emit_write(const Expr *arg, FILE *out) {
         fprintf(out, "{ int wind_first%d = 1; wind_put(\"{\", 1); "
                      "for (size_t wind_i%d = 0; wind_i%d < ",
                 id, id, id);
-        emit_symbol(map, out);
+        emit_named(map, arg, out);
         fprintf(out, ".used; wind_i%d++) { if (!", id);
-        emit_symbol(map, out);
+        emit_named(map, arg, out);
         fprintf(out, ".live[wind_i%d]) continue; if (!wind_first%d) wind_put(\", \", 2); "
                      "wind_first%d = 0; %s(%s((%s *)",
                 id, id, id, key_writer, key_cast, c_type(map->key_type));
-        emit_symbol(map, out);
+        emit_named(map, arg, out);
         fprintf(out, ".keys)[wind_i%d]); wind_put(\": \", 2); %s(%s((%s *)", id,
                 value_writer_name, value_cast, c_type(map->type));
-        emit_symbol(map, out);
+        emit_named(map, arg, out);
         fprintf(out, ".values)[wind_i%d]); } wind_put(\"}\", 1); }\n", id);
         return;
     }
     if (is_array_name(arg)) {
         /* A whole array prints as "[a, b, c]". */
-        const Symbol *array = arg->as.ident.symbol;
+        const Symbol *array = named(arg);
         TypeInfo *info = type_info(array->type);
         if (info) {
             info->array_writer_used = true;
@@ -2012,10 +2227,10 @@ static void emit_write(const Expr *arg, FILE *out) {
             used.array_writers[array->type] = true;
             fprintf(out, "wind_write_array_%s(", type_name(array->type));
         }
-        emit_symbol(array, out);
+        emit_named(array, arg, out);
         if (runtime_length(array)) {
             fputs(".data, ", out);
-            emit_symbol(array, out);
+            emit_named(array, arg, out);
             fputs(".len);\n", out);
         } else {
             fprintf(out, ", %zu);\n", array->length);
@@ -2137,7 +2352,7 @@ static void emit_map_assign(const Stmt *stmt, const Expr *entry, int depth, FILE
     emit_expr(value, out);
     fprintf(out, "; %s *wind_p%d = (%s *)wind_map_put(&", c_type(map->type), id,
             c_type(map->type));
-    emit_symbol(map, out);
+    emit_named(map, entry->as.index.base, out);
     fprintf(out, ", &wind_k%d, sizeof(%s), sizeof(%s), %d, %d); ", id, c_type(map->key_type),
             c_type(map->type), map->key_type == TYPE_STRING, stmt->loc.line);
     hold(entry, id, true);
@@ -2382,7 +2597,7 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         if (value->kind == EXPR_CALL && value->as.call.builtin == BUILTIN_CLONE) {
             /* The copy is made before the old elements are freed, since it
                may be a copy of them. */
-            const Symbol *array = target->as.ident.symbol;
+            const Symbol *array = named(target);
             used.headers |= HEADER_STDLIB;
             indent(depth, out);
             fputs("{ ", out);
@@ -2390,9 +2605,9 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
             fputs(" wind_copy = ", out);
             emit_clone(value->as.call.args[0], array->type, stmt->loc.line, out);
             fputs("; free(", out);
-            emit_symbol(array, out);
+            emit_named(array, target, out);
             fputs(".data); ", out);
-            emit_symbol(array, out);
+            emit_named(array, target, out);
             fputs(" = wind_copy; }\n", out);
             break;
         }
@@ -2537,7 +2752,7 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         size_t count = stmt->as.loop.each_count;
         int id = ++held.next_id;
         const Symbol *map = map_named(over);
-        const Symbol *array = !map && is_array_name(over) ? over->as.ident.symbol : NULL;
+        const Symbol *array = !map && is_array_name(over) ? named(over) : NULL;
         indent(depth, out);
         fputs("{\n", out);
         if (!map && !array) {
@@ -2550,10 +2765,10 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         fprintf(out, "for (size_t wind_i%d = 0; wind_i%d < ", id, id);
         if (map) {
             used.helpers[HELPER_MAP] = true;
-            emit_symbol(map, out);
+            emit_named(map, over, out);
             fputs(".used", out);
         } else if (array && runtime_length(array)) {
-            emit_symbol(array, out);
+            emit_named(array, over, out);
             fputs(".len", out);
         } else if (array) {
             fprintf(out, "%zu", array->length);
@@ -2564,7 +2779,7 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         if (map) {
             indent(depth + 2, out);
             fputs("if (!", out);
-            emit_symbol(map, out);
+            emit_named(map, over, out);
             fprintf(out, ".live[wind_i%d]) continue;\n", id);
         }
         for (size_t i = 0; i < count; i++) {
@@ -2576,10 +2791,10 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
                 fprintf(out, "(%s)wind_i%d;\n", c_type(TYPE_INT), id);
             } else if (map) {
                 fprintf(out, "((%s *)", c_type(i == 0 ? map->key_type : map->type));
-                emit_symbol(map, out);
+                emit_named(map, over, out);
                 fprintf(out, ".%s)[wind_i%d];\n", i == 0 ? "keys" : "values", id);
             } else if (array) {
-                emit_symbol(array, out);
+                emit_named(array, over, out);
                 fprintf(out, "%s[wind_i%d];\n", runtime_length(array) ? ".data" : "", id);
             } else {
                 fprintf(out, "(%s)wind_s%d.data[wind_i%d];\n", c_type(TYPE_CHAR), id, id);
@@ -3030,16 +3245,21 @@ static void emit_declared_types(FILE *out) {
             fprintf(out, "typedef %s *%s;\n", c_type(info->target), info->c_name);
         }
     }
+    /* The arrays and maps that structs hold, which the typedefs below and
+       their definitions need. A growable array's typedef holds only a
+       pointer to its elements, so it can come before any struct. */
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
-        if (info->is_enum || info->is_pointer) continue;
-        fprintf(out, "struct %s {\n", info->c_name);
-        for (size_t j = 0; j < info->field_count; j++) {
-            fprintf(out, "    %s ", c_type(info->fields[j].type));
-            emit_field_name(info->fields[j].name, out);
-            fputs(";\n", out);
+        for (size_t j = 0; j < info->field_count && !info->is_enum && !info->is_pointer; j++) {
+            const Field *field = &info->fields[j];
+            if (field->array && field->is_map) {
+                used.helpers[HELPER_MAP] = true;
+            } else if (field->array && type_info(field->type)) {
+                type_info(field->type)->list_used = true;
+            } else if (field->array) {
+                used.lists[field->type] = true;
+            }
         }
-        fputs("};\n", out);
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
@@ -3055,6 +3275,26 @@ static void emit_declared_types(FILE *out) {
                     "} wind_list_%s;\n",
                     info->c_name, info->c_stem);
         }
+    }
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (info->is_enum || info->is_pointer) continue;
+        fprintf(out, "struct %s {\n", info->c_name);
+        for (size_t j = 0; j < info->field_count; j++) {
+            const Field *field = &info->fields[j];
+            fputs("    ", out);
+            if (field->array && field->is_map) {
+                fputs("wind_map", out);
+            } else if (field->array) {
+                emit_list_type(field->type, out);
+            } else {
+                fputs(c_type(field->type), out);
+            }
+            fputs(" ", out);
+            emit_field_name(field->name, out);
+            fputs(";\n", out);
+        }
+        fputs("};\n", out);
     }
     if (count) fputs("\n", out);
 
@@ -3075,10 +3315,27 @@ static void emit_declared_types(FILE *out) {
                 value_writer((TypeKind)(TYPE_COUNT + i), true, &cast);
             }
             for (size_t j = 0; j < info->field_count; j++) {
+                const Field *field = &info->fields[j];
                 const char *cast;
-                value_writer(info->fields[j].type, true, &cast);
+                value_writer(field->type, true, &cast);
+                if (field->array && field->is_map) {
+                    value_writer(field->array->key_type, true, &cast);
+                } else if (field->array && type_info(field->type)) {
+                    type_info(field->type)->array_writer_used = true;
+                } else if (field->array) {
+                    used.array_writers[field->type] = true;
+                }
             }
         }
+    }
+    /* The writers of arrays of structs come after the structs' own, which
+       may call them. */
+    for (size_t i = 0; i < count; i++) {
+        const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
+        if (!info->array_writer_used) continue;
+        used.headers |= HEADER_STDDEF;
+        fprintf(out, "static void wind_write_array_%s(const %s *data, size_t len);\n",
+                info->c_stem, info->c_name);
     }
     for (size_t i = 0; i < count; i++) {
         const TypeInfo *info = type_info((TypeKind)(TYPE_COUNT + i));
@@ -3114,6 +3371,38 @@ static void emit_declared_types(FILE *out) {
                 fprintf(out, "    wind_put(\"%s%.*s = \", %zu);\n", j ? ", " : "",
                         (int)field->name.len, field->name.data,
                         field->name.len + (j ? 5 : 3));
+                if (field->array && field->is_map) {
+                    /* As a whole map prints: "{key: value, ...}". */
+                    const char *key_cast;
+                    const char *key_writer = value_writer(field->array->key_type, true, &key_cast);
+                    fputs("    {\n        int first = 1;\n        wind_put(\"{\", 1);\n", out);
+                    fputs("        for (size_t i = 0; i < value.", out);
+                    emit_field_name(field->name, out);
+                    fputs(".used; i++) {\n            if (!value.", out);
+                    emit_field_name(field->name, out);
+                    fputs(".live[i]) continue;\n"
+                          "            if (!first) wind_put(\", \", 2);\n"
+                          "            first = 0;\n", out);
+                    fprintf(out, "            %s(%s((%s *)value.", key_writer, key_cast,
+                            c_type(field->array->key_type));
+                    emit_field_name(field->name, out);
+                    fprintf(out, ".keys)[i]);\n            wind_put(\": \", 2);\n"
+                                 "            %s(%s((%s *)value.",
+                            writer, cast, c_type(field->type));
+                    emit_field_name(field->name, out);
+                    fputs(".values)[i]);\n        }\n        wind_put(\"}\", 1);\n    }\n", out);
+                    continue;
+                }
+                if (field->array) {
+                    const TypeInfo *element = type_info(field->type);
+                    fprintf(out, "    wind_write_array_%s(value.",
+                            element ? element->c_stem : type_name(field->type));
+                    emit_field_name(field->name, out);
+                    fputs(".data, value.", out);
+                    emit_field_name(field->name, out);
+                    fputs(".len);\n", out);
+                    continue;
+                }
                 fprintf(out, "    %s(%svalue.", writer, cast);
                 emit_field_name(field->name, out);
                 fputs(");\n", out);
@@ -3155,6 +3444,7 @@ static char *emit_to_memory(void (*emit)(const Unit *, FILE *), const Unit *unit
 static void emit_types_of(const Unit *unit, FILE *out) {
     (void)unit;
     emit_declared_types(out);
+    emit_orders(out);
 }
 
 void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
@@ -3162,6 +3452,7 @@ void emit_c(const Unit *unit, FILE *out, EmitOptions options) {
     bounds_checked = !options.no_bounds_check;
     free(used.externals);
     memset(&used, 0, sizeof used);
+    orders.count = 0;
     for (size_t i = 0; i < links.count; i++) free(links.items[i]);
     links.count = 0;
     types_use((TypeTable *)&unit->types);
