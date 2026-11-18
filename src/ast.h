@@ -265,10 +265,11 @@ typedef enum {
     STMT_TYPE,
     /* "{ ... }" standing on its own, which a directive can be put on. */
     STMT_BLOCK,
-    /* 'extern "header" { ... }': external declarations that share their
-       header. Only the parser sees one; the program holds its declarations
-       in its place. */
-    STMT_EXTERN_GROUP,
+    /* Declarations that a block gives something in common: 'extern
+       "header" { ... }' their header, "export { ... }" their export,
+       "const { ... }" their being constant. Only the parser sees one; the
+       program holds its declarations in its place. */
+    STMT_GROUP,
     /* "#target name" or "#board name", what the file is compiled for, or
        "#module name", what an import of it is called. */
     STMT_SETTING,
@@ -387,7 +388,7 @@ struct Stmt {
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;
-        /* STMT_BLOCK; STMT_EXTERN_GROUP, holding the declarations */
+        /* STMT_BLOCK; STMT_GROUP, holding the declarations */
         Block block;
         /* STMT_SETTING */
         struct {

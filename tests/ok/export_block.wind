@@ -1,0 +1,10 @@
+// Uses what a library exports through an "export { ... }" block.
+import ::shelf
+
+int main() {
+    shelf.Jar jar = shelf.fill("jam", 150)
+    shelf.Size size = shelf.LARGE
+    cout << shelf.LABEL << " " << shelf.SHELVES << " " << jar.name << " " << jar.grams
+         << " " << shelf.abs(-4) << " " << (size == shelf.LARGE) << "\n"
+    return 0
+}

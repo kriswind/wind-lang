@@ -236,7 +236,7 @@ check("import completion in the libraries directory",
       sorted((item["label"], item["kind"]) for item in items),
       [("::geometry", 9), ("::geometry/area", 17), ("::geometry/perimeter", 17), ("::geometry/solids", 9),
        ("::geometry/solids/volume", 17), ("::numbers", 9), ("::numbers/rounding", 17), ("::numbers/stats", 17),
-       ("::tally", 17)])
+       ("::shelf", 17), ("::tally", 17)])
 items = request("textDocument/completion", at_main(2, 18))["result"]
 check("import completion inside a library folder",
       [(item["label"], item["textEdit"]["range"]) for item in items if item["label"] == "::numbers/rounding"],

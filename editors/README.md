@@ -41,15 +41,15 @@ In a `.wind` file:
 
 `:WindRun file.wind` runs another file.
 
-The cursor stays in the code, and the terminal follows what the program
-prints. To read earlier output, or to type input for a program that reads
-it, move into the terminal with `Ctrl-W j`; while the cursor is there the
-terminal stays where it is. `i` there sends what is typed to the program,
-and `Ctrl-\ Ctrl-N` gives the keys back to Neovim. To have F5 put the
-cursor in the terminal, set:
+The cursor moves into the terminal, where what is typed goes to the
+program. `Ctrl-\ Ctrl-N` gives the keys back to Neovim, to scroll through
+earlier output (the terminal then stays where it is), and `Ctrl-W k` goes
+back to the code; `i` in the terminal sends keys to the program again. To
+have F5 leave the cursor in the code instead, with the terminal following
+what the program prints, set:
 
 ```lua
-vim.g.wind_run_focus = "terminal"
+vim.g.wind_run_focus = "editor"
 ```
 
 There is one run terminal, so a program for a board never holds the board's

@@ -229,6 +229,19 @@ count++              // also count--, ++count, --count
   `false` or `""`.
 - A constant's value must be known at compile time: literals, other
   constants, and operators over them. It cannot be assigned to.
+- `const { ... }` declares several constants without repeating `const`.
+  Each line in it is a typed declaration with a value, and the names are
+  declared where the block is, not inside a scope of their own. It can go
+  wherever a constant can, and `export const { ... }` exports them all:
+
+  ```wind
+  const {
+      int ROWS = 9
+      int COLUMNS = 9
+      int CELLS = ROWS * COLUMNS
+      string TITLE = "sudoku"
+  }
+  ```
 - Names must be declared before use. A name may shadow one from an enclosing
   block, but cannot be declared twice in the same block.
 
@@ -663,6 +676,17 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
 - Functions, constants and types can be exported. Everything else in a file
   is private to it, including its top-level variables, which its functions can
   use and which are initialized before the program starts.
+- `export { ... }` exports every declaration in the block, extern blocks
+  and `const` blocks included, so a file can gather what it offers in one
+  place:
+
+  ```wind
+  export {
+      const int SIDES = 4
+      struct Box { int w; int h }
+      int area(Box b) { return b.w * b.h }
+  }
+  ```
 - A file is loaded once, however many files import it, so its variables
   exist once. Imports cannot form a cycle.
 - Imports and `export` go at the top level. An import can be used anywhere
@@ -899,7 +923,8 @@ cout << name << " is " << age << "\n"
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.
-- A module cannot export a variable; export a function that returns it.
+- A module cannot export a variable; make it a constant if its value never
+  changes, or export a function that returns it.
 - A constant array cannot be passed to a function, because nothing yet marks
   a parameter as read-only.
 - An index must be an integer of at most 64 bits.

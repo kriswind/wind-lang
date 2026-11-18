@@ -1192,7 +1192,8 @@ static bool parse_body(Parser *p, Block *block, bool braces_optional) {
     bool needs_terminator = true;
     Stmt *stmt = parse_statement(p, false, &needs_terminator);
     if (!stmt) return false;
-    if (stmt->kind == STMT_CONST || stmt->kind == STMT_VAR || stmt->kind == STMT_LABEL) {
+    if (stmt->kind == STMT_CONST || stmt->kind == STMT_VAR || stmt->kind == STMT_LABEL ||
+        stmt->kind == STMT_GROUP) {
         diag_add(p->diags, SEV_ERROR, start, "a %s cannot be a body without braces",
                  stmt->kind == STMT_LABEL ? "label" : "declaration");
         return false;
@@ -1626,7 +1627,7 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
     }
     bool is_code = stmt->kind != STMT_TYPE && stmt->kind != STMT_IMPORT &&
                    stmt->kind != STMT_LABEL && stmt->kind != STMT_CONST &&
-                   stmt->kind != STMT_EXTERN_GROUP && !stmt->external;
+                   stmt->kind != STMT_GROUP && !stmt->external;
     if (!is_code) {
         diag_add(p->diags, SEV_ERROR, directive.loc,
                  "'#%.*s' goes in front of code: a statement, a block or a function",
@@ -1699,7 +1700,7 @@ static Stmt *parse_external(Parser *p, Str header, Str link) {
    declaration that fails is reported and skipped, and the rest are still
    read. */
 static Stmt *parse_extern_group(Parser *p, SrcLoc keyword, Str header, Str link) {
-    Stmt *group = new_stmt(p, STMT_EXTERN_GROUP, keyword);
+    Stmt *group = new_stmt(p, STMT_GROUP, keyword);
     Block *block = &group->as.block;
     size_t cap = 0;
     block->open = p->tok.loc;
@@ -1829,6 +1830,101 @@ static bool parse_import_path(Parser *p, Stmt *stmt) {
 
 /* *needs_terminator is cleared for statements that end themselves: a label,
    and anything closed by a "}". */
+/* Marks a declaration, or each declaration of a group, as exported, or
+   reports why it cannot be. */
+static void export_stmt(Parser *p, Stmt *stmt) {
+    if (stmt->kind == STMT_VAR) {
+        diag_add(p->diags, SEV_ERROR, stmt->loc,
+                 "a variable cannot be exported; make it a constant if its value never "
+                 "changes, or export a function that returns it");
+    } else if (stmt->kind == STMT_GROUP) {
+        for (size_t i = 0; i < stmt->as.block.count; i++) {
+            export_stmt(p, stmt->as.block.stmts[i]);
+        }
+    } else if (stmt->kind != STMT_CONST && stmt->kind != STMT_FUNC &&
+               stmt->kind != STMT_TYPE) {
+        diag_add(p->diags, SEV_ERROR, stmt->loc,
+                 "only a function, a constant or a type can be exported");
+    } else {
+        stmt->exported = true;
+    }
+}
+
+/* Parses one declaration of an export block, and exports it. */
+static Stmt *parse_exported(Parser *p, bool top_level, bool *needs_terminator) {
+    if (at(p, TOK_KW_EXPORT)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "this is already exported by the block's 'export'");
+        next(p);
+        return NULL;
+    }
+    Stmt *stmt = parse_statement(p, top_level, needs_terminator);
+    if (stmt) export_stmt(p, stmt);
+    return stmt;
+}
+
+/* Parses one declaration of a const block: a type, a name and a value. */
+static Stmt *parse_constant(Parser *p, bool top_level, bool *needs_terminator) {
+    if (at(p, TOK_KW_CONST)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "this is already constant by the block's 'const'");
+        next(p);
+        return NULL;
+    }
+    if (!at_type(p) && !at(p, TOK_IDENT)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "a 'const' block holds only constants, written as 'int SIZE = 4'");
+        next(p);
+        return NULL;
+    }
+    TypeKind type;
+    TypeRef *type_ref;
+    if (!parse_type(p, &type, &type_ref)) return NULL;
+    return parse_typed_decl(p, STMT_CONST, type, type_ref, top_level, needs_terminator);
+}
+
+/* Parses a block of declarations that share something written once before
+   it, from its "{" to its "}", reading each with parse_item. A declaration
+   that fails is reported and skipped, and the rest are still read. */
+static Stmt *parse_group(Parser *p, SrcLoc keyword, bool top_level,
+                         Stmt *(*parse_item)(Parser *, bool, bool *)) {
+    Stmt *group = new_stmt(p, STMT_GROUP, keyword);
+    Block *block = &group->as.block;
+    size_t cap = 0;
+    block->open = p->tok.loc;
+    next(p);
+    for (;;) {
+        while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
+        if (at(p, TOK_RBRACE) || at(p, TOK_EOF)) break;
+        bool needs_terminator = true;
+        SrcLoc start = p->tok.loc;
+        size_t errors_before = p->diags->error_count;
+        Stmt *stmt = parse_item(p, top_level, &needs_terminator);
+        if (!stmt) {
+            synchronize(p);
+            continue;
+        }
+        stmt->start = start;
+        stmt->end = p->prev;
+        if (needs_terminator && !at_terminator(p)) {
+            if (p->diags->error_count == errors_before) error_expected(p, "end of statement");
+            synchronize(p);
+        }
+        Stmt **items = stmt->kind == STMT_GROUP ? stmt->as.block.stmts : &stmt;
+        size_t count = stmt->kind == STMT_GROUP ? stmt->as.block.count : 1;
+        for (size_t i = 0; i < count; i++) {
+            ARENA_PUSH(p->arena, block->stmts, block->count, cap, items[i]);
+        }
+    }
+    if (!at(p, TOK_RBRACE)) {
+        diag_add(p->diags, SEV_ERROR, block->open, "this '{' is never closed");
+        return group;
+    }
+    block->close = p->tok.loc;
+    next(p);
+    return group;
+}
+
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) {
     Token tok = p->tok;
     Stmt *stmt;
@@ -1846,6 +1942,10 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         return parse_type_decl(p, top_level, needs_terminator);
     case TOK_KW_CONST:
         next(p);
+        if (at(p, TOK_LBRACE)) {
+            *needs_terminator = false;
+            return parse_group(p, tok.loc, top_level, parse_constant);
+        }
         if (!parse_type(p, &type, &type_ref)) return NULL;
         return parse_typed_decl(p, STMT_CONST, type, type_ref, top_level, needs_terminator);
     case TOK_INC:
@@ -1890,30 +1990,22 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
     }
     case TOK_KW_EXPORT:
         next(p);
+        if (!top_level) {
+            diag_add(p->diags, SEV_ERROR, tok.loc,
+                     "'export' can only be used at the top level of a file");
+            return NULL;
+        }
+        if (at(p, TOK_LBRACE)) {
+            *needs_terminator = false;
+            return parse_group(p, tok.loc, top_level, parse_exported);
+        }
         if (!at_type(p) && !at(p, TOK_KW_CONST) && !at(p, TOK_KW_TYPEDEF) &&
             !at(p, TOK_KW_EXTERN) && !at(p, TOK_IDENT)) {
-            error_expected(p, "a function, a constant or a type after 'export'");
+            error_expected(p, "a function, a constant, a type or '{' after 'export'");
             return NULL;
         }
         stmt = parse_statement(p, top_level, needs_terminator);
-        if (!stmt) return NULL;
-        if (stmt->kind == STMT_VAR) {
-            diag_add(p->diags, SEV_ERROR, stmt->loc,
-                     "a variable cannot be exported; export a function that returns it");
-        } else if (stmt->kind != STMT_CONST && stmt->kind != STMT_FUNC &&
-                   stmt->kind != STMT_TYPE && stmt->kind != STMT_EXTERN_GROUP) {
-            diag_add(p->diags, SEV_ERROR, tok.loc,
-                     "only a function, a constant or a type can be exported");
-        } else if (!top_level) {
-            diag_add(p->diags, SEV_ERROR, tok.loc,
-                     "'export' can only be used at the top level of a file");
-        } else if (stmt->kind == STMT_EXTERN_GROUP) {
-            for (size_t i = 0; i < stmt->as.block.count; i++) {
-                stmt->as.block.stmts[i]->exported = true;
-            }
-        } else {
-            stmt->exported = true;
-        }
+        if (stmt) export_stmt(p, stmt);
         return stmt;
     case TOK_KW_COUT:
         return parse_cout(p);
@@ -2045,7 +2137,7 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         } else if (top_level) {
             p->past_settings = true;
         }
-        if (stmt->kind == STMT_EXTERN_GROUP) {
+        if (stmt->kind == STMT_GROUP) {
             for (size_t i = 0; i < stmt->as.block.count; i++) {
                 ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt->as.block.stmts[i]);
             }

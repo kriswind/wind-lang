@@ -2270,7 +2270,7 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_IMPORT:
     case STMT_TYPE:
         break; /* handled before anything else is checked */
-    case STMT_EXTERN_GROUP:
+    case STMT_GROUP:
         break; /* the parser leaves its declarations in its place */
     case STMT_SETTING:
         break; /* see check_settings */

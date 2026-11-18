@@ -11,11 +11,12 @@ end
 -- on a board also frees the board's serial port, and runs the new one in
 -- its place.
 --
--- The keyboard stays where it was, as in other editors, and the terminal
--- follows what the program prints while the cursor is elsewhere; with the
--- cursor in it, it stays where it is, so that earlier output can be read.
--- With vim.g.wind_run_focus set to "terminal", the keyboard goes to the
--- terminal instead. ":q" in the terminal closes it and stops the program.
+-- The keyboard goes to the terminal, so that a program that reads input
+-- can be typed to straight away. With vim.g.wind_run_focus set to
+-- "editor", it stays where it was instead. The terminal follows what the
+-- program prints while the cursor is elsewhere; with the cursor in it, out
+-- of terminal mode, it stays where it is, so that earlier output can be
+-- read. ":q" in the terminal closes it and stops the program.
 local run = { buf = nil, job = nil, file = nil }
 
 -- Stops the program, if one is running, and leaves the terminal as it is.
@@ -63,6 +64,13 @@ local function start(file)
       if run.job == job then
         run.job = nil
       end
+      -- In terminal mode, Neovim closes a terminal whose program has ended
+      -- at the next key; leaving that mode keeps what it printed in view.
+      vim.schedule(function()
+        if vim.api.nvim_get_current_buf() == buf and vim.api.nvim_get_mode().mode == "t" then
+          vim.cmd.stopinsert()
+        end
+      end)
     end,
   }
   if vim.fn.has("nvim-0.11") == 1 then
@@ -87,10 +95,10 @@ local function start(file)
     end or stop_program
     vim.keymap.set({ "n", "t" }, key, action, { buffer = buf, desc = "Run or stop the Wind program" })
   end
-  if vim.g.wind_run_focus == "terminal" then
-    vim.cmd.startinsert()
-  elseif vim.api.nvim_win_is_valid(from) then
+  if vim.g.wind_run_focus == "editor" and vim.api.nvim_win_is_valid(from) then
     vim.api.nvim_set_current_win(from)
+  else
+    vim.cmd.startinsert()
   end
 end
 
