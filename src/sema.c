@@ -574,20 +574,56 @@ static const char *char_hint(bool involved) {
                     : "";
 }
 
-static void check_index_value(Checker *c, Expr *index, bool fixed, size_t length) {
+static bool const_len(const Expr *operand, size_t *length);
+static bool eval_const_int(const Expr *expr, long long *out);
+
+/* What an index is applied to, for check_index_value. */
+typedef struct {
+    bool pointer;       /* "p[n]", which may reach before p as in C */
+    bool length_known;  /* a fixed array, or a string whose length is constant */
+    size_t length;
+    const char *runtime_length; /* why the length is not known, for a message */
+    const char *what;           /* "array" or "string", for a message */
+    Str name;                   /* what is indexed, if it is a name */
+} Indexed;
+
+/* Checks an index. One whose value is known at compile time is checked
+   against a length known then; a negative one counts back from the end and
+   becomes the position it names, so that no negative index is left for the
+   program to deal with. A negative index whose length is only known when the
+   program runs is an error. Everything else is checked when the program runs. */
+static void check_index_value(Checker *c, Expr *index, Indexed of) {
     TypeKind type = check_expr(c, index, TYPE_INT);
     if (type == TYPE_INVALID) return;
     if (!type_is_integer(type) || type == TYPE_I128 || type == TYPE_U128) {
         error(c, index->loc, "an index must be an integer of at most 64 bits, found '%s'%s",
               type_name(type), char_hint(type == TYPE_CHAR));
-    } else if (fixed && index->kind == EXPR_UNARY && index->as.unary.op == OP_NEG &&
-               index->as.unary.operand->kind == EXPR_INT_LIT &&
-               index->as.unary.operand->as.int_lit > length) {
-        error(c, index->loc, "index -%llu is out of range for an array of length %zu",
-              (unsigned long long)index->as.unary.operand->as.int_lit, length);
-    } else if (fixed && index->kind == EXPR_INT_LIT && index->as.int_lit >= length) {
-        error(c, index->loc, "index %llu is out of range for an array of length %zu",
-              (unsigned long long)index->as.int_lit, length);
+        return;
+    }
+    long long value;
+    if (of.pointer || !eval_const_int(index, &value)) return;
+    if (type_is_signed(type) && value < 0) {
+        unsigned long long back = 0ULL - (unsigned long long)value;
+        if (!of.length_known && of.name.len) {
+            error(c, index->loc,
+                  "index %lld counts back from the end, which needs a length known at "
+                  "compile time, and %s; write '%.*s[len(%.*s) - %llu]'",
+                  value, of.runtime_length, NAME(of.name), NAME(of.name), back);
+        } else if (!of.length_known) {
+            error(c, index->loc,
+                  "index %lld counts back from the end, which needs a length known at "
+                  "compile time, and %s; subtract from 'len' instead",
+                  value, of.runtime_length);
+        } else if (back > of.length) {
+            error(c, index->loc, "index %lld is out of range for %s of length %zu", value,
+                  of.what, of.length);
+        } else {
+            index->kind = EXPR_INT_LIT;
+            index->as.int_lit = of.length - back;
+        }
+    } else if (of.length_known && (unsigned long long)value >= of.length) {
+        error(c, index->loc, "index %llu is out of range for %s of length %zu",
+              (unsigned long long)value, of.what, of.length);
     }
 }
 
@@ -610,8 +646,21 @@ static TypeKind check_index(Checker *c, Expr *expr) {
                   type_name(type));
         }
     }
-    check_index_value(c, expr->as.index.index, array && array->is_array,
-                      array ? array->length : 0);
+    Indexed of = {.what = "an array"};
+    if (base->kind == EXPR_IDENT && !base->as.ident.module.len) of.name = base->as.ident.name;
+    if (array && array->is_array) {
+        of.length_known = true;
+        of.length = array->length;
+    } else if (array) {
+        of.runtime_length = "an array parameter's length is known only when the program runs";
+    } else if (base->type == TYPE_STRING) {
+        of.what = "a string";
+        of.length_known = const_len(base, &of.length);
+        of.runtime_length = "this string's length is known only when the program runs";
+    } else {
+        of.pointer = true;
+    }
+    check_index_value(c, expr->as.index.index, of);
     return result;
 }
 
@@ -2155,7 +2204,11 @@ static void check_stmt(Checker *c, Stmt *stmt) {
             }
             bool is_array = symbol->is_array || symbol->is_slice;
             if (target->index) {
-                check_index_value(c, target->index, symbol->is_array, symbol->length);
+                Indexed of = {.what = "an array", .length_known = symbol->is_array,
+                              .length = symbol->length, .name = target->name,
+                              .runtime_length = "an array parameter's length is known only "
+                                                "when the program runs"};
+                check_index_value(c, target->index, of);
                 if (!is_array) {
                     error(c, target->loc, "'%.*s' is not an array", NAME(target->name));
                 } else if (symbol->kind == SYM_CONST) {

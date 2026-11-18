@@ -5,6 +5,8 @@
 #                  A matching .in file, if present, is fed to the program's stdin.
 #                  Each is run a second time built with --no-bounds-check, which
 #                  must not change what a correct program prints.
+# tests/stop/*.wind must stop with status 1, printing exactly the matching .out
+#                  file on stdout and stderr together: errors found while running.
 # tests/err/*.wind must fail `wind check` with exactly the matching .err output.
 # tests/warn/*.wind must pass `wind check` with exactly the matching .warn output.
 # These find "::" imports in tests/libs.
@@ -45,6 +47,17 @@ for src in tests/ok/*.wind; do
     if [ "$actual" != "$expected" ]; then
         failed=$((failed + 1))
         printf 'FAIL %s (--no-bounds-check)\n--- expected\n%s\n--- actual\n%s\n' \
+            "$src" "$expected" "$actual"
+    fi
+done
+
+for src in tests/stop/*.wind; do
+    total=$((total + 1))
+    actual=$("$WIND" run "$src" 2>&1 </dev/null; echo "[exit $?]")
+    expected=$(cat "${src%.wind}.out"; echo "[exit 1]")
+    if [ "$actual" != "$expected" ]; then
+        failed=$((failed + 1))
+        printf 'FAIL %s\n--- expected\n%s\n--- actual\n%s\n' \
             "$src" "$expected" "$actual"
     fi
 done

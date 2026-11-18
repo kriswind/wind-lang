@@ -17,6 +17,9 @@ program's output must equal the folder's expected-test.txt or
 expected-bench.txt, which --expected writes from the Python version, the
 reference. A language whose toolchain is missing is left out.
 
+At bench size a run of every problem in which every answer is right also
+writes bench/problems/RESULTS.md, the tables that the README links to.
+
 The exit status is 1 if any program fails to build, fails to run, or gives
 a different answer.
 """
@@ -31,8 +34,13 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.dirname(HERE))
+import results  # noqa: E402  (bench/results.py, shared with bench/run.py)
 OUT = os.path.join(ROOT, "build", "problems")
 REFERENCE = "python"
+# A program that takes longer than this is not run again: its time is far
+# from the noise that repeating is there to remove.
+SLOW = 1.0
 
 
 def wind_compiler():
@@ -46,22 +54,29 @@ def languages():
     of the program to build."""
     wind = wind_compiler()
     return [
-        {"name": "wind", "file": "main.wind", "tool": wind,
+        {"name": "wind", "label": "Wind", "version": [wind, "--version"],
+         "file": "main.wind", "tool": wind,
          "build": lambda src, exe: [wind, "build", src, "-o", exe], "run": lambda src, exe: [exe]},
-        {"name": "wind-unchecked", "file": "main.wind", "tool": wind,
+        {"name": "wind-unchecked", "label": "Wind, no bounds checks", "version": [wind, "--version"],
+         "file": "main.wind", "tool": wind,
          "build": lambda src, exe: [wind, "build", "--no-bounds-check", src, "-o", exe],
          "run": lambda src, exe: [exe]},
-        {"name": "c", "file": "main.c", "tool": "cc",
+        {"name": "c", "label": "C", "version": ["cc", "--version"],
+         "file": "main.c", "tool": "cc",
          "build": lambda src, exe: ["cc", "-std=c11", "-O2", "-o", exe, src, "-lm"],
          "run": lambda src, exe: [exe]},
-        {"name": "rust", "file": "main.rs", "tool": "rustc",
+        {"name": "rust", "label": "Rust", "version": ["rustc", "--version"],
+         "file": "main.rs", "tool": "rustc",
          "build": lambda src, exe: ["rustc", "-C", "opt-level=3", "-C", "panic=abort", "-o", exe, src],
          "run": lambda src, exe: [exe]},
-        {"name": "go", "file": "main.go", "tool": "go",
+        {"name": "go", "label": "Go", "version": ["go", "version"],
+         "file": "main.go", "tool": "go",
          "build": lambda src, exe: ["go", "build", "-o", exe, src], "run": lambda src, exe: [exe]},
-        {"name": "js", "file": "main.js", "tool": "node",
+        {"name": "js", "label": "JavaScript (Node.js)", "version": ["node", "--version"],
+         "file": "main.js", "tool": "node",
          "build": None, "run": lambda src, exe: ["node", src]},
-        {"name": "python", "file": "main.py", "tool": sys.executable,
+        {"name": "python", "label": "Python", "version": [sys.executable, "--version"],
+         "file": "main.py", "tool": sys.executable,
          "build": None, "run": lambda src, exe: [sys.executable, src]},
     ]
 
@@ -129,6 +144,8 @@ def main():
                 if done.returncode != 0:
                     break
                 best = elapsed if best is None else min(best, elapsed)
+                if elapsed > SLOW:
+                    break
             if done.returncode != 0:
                 failures += 1
                 print("FAIL %s %s: exit %d\n%s" % (problem, lang["name"], done.returncode,
@@ -171,7 +188,58 @@ def main():
             r = ratios[n]
             means.append("%16s" % ("-" if not r else "%.2fx" % math.exp(sum(map(math.log, r)) / len(r))))
         print("%-*s" % (width, "mean") + "".join(means))
+    if args.size == "bench" and not args.problems and not failures and "c" in names:
+        print()
+        write_results(chosen, langs, times, runs)
     sys.exit(1 if failures else 0)
+
+
+TOOLCHAINS = {"wind": "wind", "wind-unchecked": "wind", "rust": "rustc", "go": "Go",
+              "js": "Node.js", "python": "CPython"}
+
+
+def c_compiler_name():
+    done = subprocess.run(["cc", "--version"], capture_output=True, text=True)
+    return "Clang" if "clang" in done.stdout.lower() else "GCC"
+
+
+def write_results(chosen, langs, times, runs):
+    """Writes bench/problems/RESULTS.md from a run of every problem."""
+    names = [lang["name"] for lang in langs]
+    shown = [n for n in names if n != "c"]
+    label = {lang["name"]: lang["label"] for lang in langs}
+    lines = [results.heading("Problem set results", "python3 bench/problems/run.py --size bench",
+                             "the best of up to %d runs" % runs),
+             "",
+             "Time at bench size as a multiple of C's, and C's own time in seconds. "
+             "Every program's answer was checked first.",
+             "",
+             "| Problem | " + " | ".join(label[n] for n in shown) + " | C, seconds |",
+             "| --- |" + " ---: |" * (len(shown) + 1)]
+    ratios = {n: [] for n in shown}
+    for problem in chosen:
+        base = times.get((problem, "c"))
+        cells = []
+        for n in shown:
+            t = times.get((problem, n))
+            if t is None or not base:
+                cells.append("-")
+                continue
+            ratios[n].append(t / base)
+            cells.append(results.ratio_text(t / base))
+        lines.append("| `%s` | %s | %s |" % (problem, " | ".join(cells),
+                                             "%.3f" % base if base else "-"))
+    lines.append("| **mean** | %s | |" % " | ".join(
+        "**%s**" % results.ratio_text(results.geometric_mean(ratios[n])) if ratios[n] else "-"
+        for n in shown))
+    lines += ["", "The mean is the geometric mean of the ratios.", "",
+              "| | Toolchain |", "| --- | --- |"]
+    for lang in langs:
+        version = results.tool_version(lang["version"])
+        tool = c_compiler_name() if lang["name"] == "c" else TOOLCHAINS.get(lang["name"], lang["name"])
+        lines.append("| %s | %s |" % (lang["label"], "%s %s" % (tool, version) if version else tool))
+    lines.append("")
+    results.write(os.path.join(HERE, "RESULTS.md"), "\n".join(lines))
 
 
 if __name__ == "__main__":

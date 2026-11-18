@@ -124,8 +124,21 @@ wind program.wind one two     # argc is 3
 
 - A statement ends at a newline or a `;`. Semicolons are optional.
 - A newline does not end a statement directly after `=`, `<<`, `>>`, `,` or a
-  binary operator, inside parentheses, or before a line that starts with the
-  `?` or `:` of a conditional.
+  binary operator, or inside parentheses. A line that starts with a binary
+  operator, `.`, `->`, the `?` or `:` of a conditional, or the `<<` or `>>`
+  of a `cout` or `cin`, carries on the line before:
+
+  ```wind
+  int total = price
+      + tax
+      - discount
+  cout << "total: " << total
+       << "\n"
+  ```
+
+  `*` and `&` can also start a statement (`*p = 7`), so a line that starts
+  with one of them carries on the line before only when a space follows it,
+  as in `* scale`.
 - `// ...` is a comment to the end of the line; `/* ... */` is a comment that
   may span lines. Block comments do not nest.
 - Names are `[A-Za-z_][A-Za-z0-9_]*`. Keywords and type names are reserved.
@@ -236,12 +249,21 @@ cout << len(scores) << "\n"   // 5
 
 - A length must be known at compile time: a literal, a constant, or
   arithmetic over them.
-- Elements are indexed from zero. A negative index counts back from the
-  end, as in Python: `scores[-1]` is the last element and `scores[-2]` the
-  one before it.
+- Elements are indexed from zero. A negative index known at compile time
+  counts back from the end, as in Python: `scores[-1]` is the last element
+  and `scores[-2]` the one before it. The compiler turns it into the
+  position it names, so it costs nothing when the program runs. It needs a
+  length known at compile time too: a fixed array, a string literal or a
+  string constant. For an array parameter or a string variable, write
+  `values[len(values) - 1]`.
+- An index worked out while the program runs is never counted back from
+  the end: a negative one is out of range, so a mistake such as
+  `grid[cell - width]` on the top row is caught rather than reading the
+  bottom row.
 - Every index is checked: one that is out of range, in either direction,
   stops the program with a message naming the line, the index and the
-  length. A literal index that is out of range is a compile-time error.
+  length. An index known at compile time that is out of range is a
+  compile-time error.
   Building with `--no-bounds-check` leaves the run-time test out; an index
   that is out of range is then undefined, as in C.
 - `#no_bounds_check` and `#bounds_check` set this for one piece of code,
@@ -301,8 +323,9 @@ int sum(int values[]) {           // the whole function
 - The directive can sit on the line above what it covers. The innermost
   one wins. It covers the code written there, not the functions that code
   calls.
-- A negative index counts back from the end either way, and a literal index
-  that is out of range is still a compile-time error.
+- An index known at compile time is settled either way: a negative one
+  counts back from the end, and one out of range is still a compile-time
+  error.
 - `NULL` checks on pointers are not affected.
 
 An array is not a value in itself. Its name can be indexed, measured,
@@ -910,11 +933,10 @@ twelve kernels, each of which leans on one thing:
 | `list` | pointer chasing: a shuffled linked list of a million nodes |
 
 ```sh
-python3 bench/run.py                       # everything (a few minutes)
+python3 bench/run.py                       # everything (a few minutes); writes bench/RESULTS.md
 python3 bench/run.py --skip python --skip lua
 python3 bench/run.py --only wind --only c sort hash
 python3 bench/run.py --seconds             # times in place of ratios
-python3 bench/run.py --markdown            # the tables below
 ```
 
 The script builds each program, runs every kernel as its own process, keeps
@@ -923,81 +945,11 @@ for a kernel. A language whose toolchain is missing is left out.
 
 ### Results
 
-Time relative to C, as the geometric mean over the twelve kernels. Lower is
-better, and one block is one times C.
-
-```
-C                        1.00x  █
-Wind, no bounds checks   0.99x  █
-C++                      1.05x  █
-Wind                     1.06x  █
-Zig                      1.06x  █
-Odin                     1.09x  █▏
-Rust                     1.10x  █▏
-Swift                    1.19x  █▎
-Go                       1.34x  █▍
-Haskell                  1.67x  █▋
-JavaScript (Bun)         1.88x  █▉
-Lua (LuaJIT)             1.97x  ██
-Java                     2.09x  ██▏
-JavaScript (Node.js)     2.35x  ██▍
-Elixir                   12.7x  ████████████▊
-Lua                      13.3x  █████████████▎
-Python                   32.8x  ████████████████████████████████▊
-```
-
-| | Built with | Relative to C | All twelve kernels |
-| --- | --- | ---: | ---: |
-| C | `cc -O2` | 1.00x | 0.86 s |
-| Wind, no bounds checks | `wind build --no-bounds-check` | 0.99x | 0.85 s |
-| C++ | `c++ -O2` | 1.05x | 0.91 s |
-| **Wind** | `wind build` | **1.06x** | 0.89 s |
-| Zig | `zig build-exe -O ReleaseFast` | 1.06x | 0.93 s |
-| Odin | `odin build -o:aggressive -no-bounds-check` | 1.09x | 0.91 s |
-| Rust | `rustc -C opt-level=3 -C panic=abort` | 1.10x | 0.95 s |
-| Swift | `swiftc -Ounchecked` | 1.19x | 0.97 s |
-| Go | `go build` | 1.34x | 1.08 s |
-| Haskell | `ghc -O2` | 1.67x | 1.34 s |
-| JavaScript (Bun) | `bun` | 1.88x | 1.38 s |
-| Lua (LuaJIT) | `luajit` | 1.97x | 1.57 s |
-| Java | `javac`, run on the JVM | 2.09x | 1.40 s |
-| JavaScript (Node.js) | `node` | 2.35x | 1.67 s |
-| Elixir | `elixirc`, run on the BEAM | 12.7x | 11.13 s |
-| Lua | `lua` | 13.3x | 10.09 s |
-| Python | `python3` | 32.8x | 25.42 s |
-
-Each kernel, as a multiple of C's time:
-
-| | fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| C | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Wind, no bounds checks | 1.04 | 1.01 | 1.03 | 1.00 | 1.00 | 1.01 | 1.00 | 1.05 | 1.01 | 0.82 | 1.00 | 0.97 |
-| C++ | 1.08 | 1.08 | 1.15 | 1.02 | 1.01 | 1.09 | 1.23 | 0.99 | 1.01 | 0.85 | 1.05 | 1.11 |
-| **Wind** | 1.04 | 1.10 | 1.04 | 1.01 | 1.00 | 1.02 | 1.22 | 1.05 | 1.03 | 1.17 | 1.02 | 1.01 |
-| Zig | 2.12 | 1.00 | 0.85 | 1.02 | 0.98 | 1.92 | 1.01 | 0.98 | 0.78 | 0.81 | 0.85 | 1.08 |
-| Odin | 1.77 | 1.01 | 0.92 | 1.04 | 1.01 | 1.97 | 1.02 | 1.00 | 0.99 | 1.02 | 0.86 | 0.99 |
-| Rust | 1.79 | 1.08 | 0.86 | 0.97 | 1.01 | 2.01 | 1.02 | 0.97 | 1.02 | 0.93 | 0.94 | 1.11 |
-| Swift | 1.83 | 1.06 | 0.92 | 1.05 | 1.06 | 2.10 | 1.22 | 1.00 | 1.03 | 1.36 | 1.05 | 1.08 |
-| Go | 4.04 | 1.16 | 1.42 | 1.11 | 1.04 | 2.09 | 1.72 | 1.05 | 1.03 | 1.14 | 0.98 | 1.02 |
-| Haskell | 5.34 | 1.30 | 1.64 | 1.28 | 1.52 | 2.26 | 1.94 | 1.62 | 1.35 | 1.57 | 1.31 | 1.11 |
-| JavaScript (Bun) | 5.47 | 1.59 | 4.65 | 1.33 | 1.30 | 3.08 | 2.00 | 1.28 | 1.55 | 1.58 | 1.69 | 0.88 |
-| Lua (LuaJIT) | 6.81 | 1.22 | 3.60 | 1.98 | 1.06 | 3.05 | 1.24 | 2.81 | 2.32 | 1.50 | 1.71 | 0.84 |
-| Java | 2.89 | 1.55 | 2.63 | 2.10 | 2.52 | 3.69 | 2.84 | 1.50 | 1.99 | 2.15 | 1.75 | 0.96 |
-| JavaScript (Node.js) | 8.38 | 1.70 | 3.77 | 1.95 | 1.52 | 4.54 | 3.26 | 1.59 | 2.12 | 1.70 | 2.25 | 0.92 |
-| Elixir | 9.79 | 19.2 | 6.63 | 8.38 | 16.9 | 47.1 | 35.4 | 20.0 | 6.02 | 10.7 | 6.45 | 7.09 |
-| Lua | 46.6 | 11.8 | 27.3 | 4.24 | 15.6 | 60.0 | 45.5 | 7.51 | 9.24 | 6.62 | 8.45 | 2.83 |
-| Python | 93.1 | 10.1 | 60.2 | 9.45 | 52.1 | 126 | 105 | 33.2 | 18.0 | 22.5 | 29.6 | 10.4 |
-
-C's own times for the kernels, in seconds, to give the ratios a scale:
-
-| fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.044 | 0.088 | 0.033 | 0.026 | 0.049 | 0.024 | 0.023 | 0.133 | 0.033 | 0.034 | 0.034 | 0.337 |
-
-Measured on one x86-64 Linux machine with GCC 16.2, Zig 0.17, Rust 1.91,
-Go 1.27, Odin dev-2026-10, Swift 6.3, GHC 9.6, OpenJDK 17, Node.js 25.8,
-Bun 1.3, Elixir 1.20 on Erlang/OTP 29, LuaJIT 2.1, Lua 5.5 and Python 3.14. Other machines and versions will give other
-numbers; the script is there to run it again.
+The latest results are in [bench/RESULTS.md](bench/RESULTS.md): each
+language's time relative to C over all twelve kernels, each kernel on its
+own, and the toolchain versions and machine they were measured with.
+`bench/run.py` writes that file whenever it runs every kernel, so running
+it again on another machine replaces the numbers with that machine's.
 
 ### Reading the numbers
 
@@ -1007,9 +959,9 @@ numbers; the script is there to run it again.
   Where that changes the shape of the code, the top of the file says how.
 - **Wind is C with checks.** It compiles to C, so it gets whatever the C
   compiler can do. What it adds is a range check on every array index and a
-  `NULL` check on every use of a pointer. That shows where indexes are
-  scattered or packed into tight loops (`hash`, `particles`, `sieve`) and
-  nowhere else. With `--no-bounds-check` the difference from C is within
+  `NULL` check on every use of a pointer. A check is one comparison that
+  the processor predicts, so it shows only where indexes are worked out in
+  a tight loop. With `--no-bounds-check` the difference from C is within
   the noise of the measurement.
 - **Most of the others here run without those checks.** Zig, Odin and
   Swift are built with them off, and Rust and Haskell skip them in their
@@ -1063,7 +1015,7 @@ for clarity rather than speed.
 
 ```sh
 python3 bench/problems/run.py                     # check everything at test size
-python3 bench/problems/run.py --size bench --skip python   # check and time
+python3 bench/problems/run.py --size bench        # check, time, write RESULTS.md
 python3 bench/problems/run.py --only wind knapsack sudoku
 python3 bench/problems/run.py --expected two_sum  # rewrite the answers from Python
 ```
@@ -1072,40 +1024,14 @@ python3 bench/problems/run.py --expected two_sum  # rewrite the answers from Pyt
 without bounds checks, so the set doubles as a body of real programs that
 each change to the compiler must still get right.
 
-Time at bench size relative to C (best of three; C's own time on the right):
-
-| Problem | Wind | Wind, no bounds checks | Rust | Go | JavaScript | C, seconds |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `bfs_maze` | 1.22 | 1.20 | 1.02 | 1.37 | 4.02 | 0.059 |
-| `coin_change` | 1.28 | 1.37 | 1.50 | 1.11 | 5.04 | 0.046 |
-| `dijkstra_grid` | 1.12 | 0.70 | 1.05 | 1.15 | 2.22 | 0.144 |
-| `edit_distance` | 1.00 | 1.00 | 1.66 | 2.56 | 4.28 | 0.050 |
-| `game_of_life` | 0.97 | 0.98 | 1.19 | 1.11 | 1.61 | 0.135 |
-| `islands` | 1.19 | 1.19 | 0.95 | 1.65 | 6.09 | 0.074 |
-| `knapsack` | 1.35 | 1.35 | 2.18 | 1.23 | 2.47 | 0.062 |
-| `kth_largest` | 1.10 | 1.09 | 1.08 | 1.10 | 5.15 | 0.131 |
-| `longest_common_subsequence` | 1.01 | 1.00 | 0.97 | 1.93 | 3.18 | 0.067 |
-| `longest_increasing_subsequence` | 1.03 | 1.03 | 0.91 | 1.03 | 1.53 | 0.144 |
-| `longest_unique_substring` | 0.91 | 0.91 | 0.88 | 1.22 | 4.69 | 0.104 |
-| `matrix_fibonacci` | 1.00 | 1.00 | 1.40 | 1.15 | 12.72 | 0.168 |
-| `max_subarray` | 1.02 | 1.04 | 1.20 | 1.09 | 5.31 | 0.045 |
-| `merge_sort_inversions` | 1.10 | 1.01 | 1.04 | 1.21 | 2.51 | 0.167 |
-| `next_permutation` | 1.14 | 1.08 | 0.99 | 2.10 | 5.17 | 0.077 |
-| `sliding_window_maximum` | 1.03 | 1.06 | 1.01 | 1.05 | 3.59 | 0.106 |
-| `sudoku` | 1.05 | 1.01 | 1.14 | 1.22 | 1.49 | 0.174 |
-| `topological_sort` | 1.11 | 1.05 | 1.12 | 1.24 | 1.84 | 0.266 |
-| `trapping_rain_water` | 1.00 | 0.90 | 1.00 | 1.02 | 9.42 | 0.048 |
-| `two_sum` | 1.33 | 1.00 | 1.12 | 1.20 | 2.98 | 0.060 |
-| `union_find` | 1.47 | 1.21 | 1.07 | 1.66 | 2.49 | 0.080 |
-| `unique_paths_obstacles` | 1.00 | 1.01 | 0.74 | 0.71 | 3.72 | 0.151 |
-| **mean** | **1.10** | **1.04** | **1.11** | **1.27** | **3.54** | |
-
-Here the programs are written plainly in every language, with no unchecked
-reads in Rust and no tuning beyond sensible types. Wind's bounds checks cost
-most where an index is computed in a tight loop (`dijkstra_grid`,
-`two_sum`, `union_find`). On `knapsack` and `coin_change`, the test for a
-negative index stays even without bounds checks, and keeps GCC from
-optimizing the inner loop as it does C's.
+The latest timings are in
+[bench/problems/RESULTS.md](bench/problems/RESULTS.md), which `run.py`
+writes whenever it checks and times every problem at bench size with every
+answer right. The programs are written plainly in every language, with no
+unchecked reads in Rust and no tuning beyond sensible types, so the numbers
+show what ordinary code in each language costs. Wind's bounds checks cost
+most where an index is computed in a tight loop; without them Wind runs as
+fast as C.
 
 ## Compiler layout
 

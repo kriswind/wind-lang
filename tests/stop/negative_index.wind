@@ -1,0 +1,10 @@
+// An index worked out while the program runs that comes to a negative
+// number is out of range, like one past the end.
+int edges[4] = {1, 2, 3, 4}
+
+int main() {
+    int at = 0
+    cout << edges[at] << "\n"
+    cout << edges[at - 1] << "\n"
+    return 0
+}

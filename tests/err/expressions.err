@@ -1,8 +1,8 @@
 tests/err/expressions.wind:10:14: error: '++' is a statement in Wind, not part of an expression; write it on its own line, before or after the line that uses the value
 tests/err/expressions.wind:11:18: error: '++' is a statement in Wind, not part of an expression; write it on its own line, before or after the line that uses the value
 tests/err/expressions.wind:13:9: error: '--' is a statement in Wind, not part of an expression; write it on its own line, before or after the line that uses the value
-tests/err/expressions.wind:17:9: error: a line cannot start with '+': the line before it ends its statement; to carry a statement on, end the line before with the operator
-tests/err/expressions.wind:19:16: error: operator '-' is not defined for 'char'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
-tests/err/expressions.wind:20:19: error: mismatched types 'char' and 'int' for operator '+'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
-tests/err/expressions.wind:21:20: error: an index must be an integer of at most 64 bits, found 'char'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
-tests/err/expressions.wind:23:19: error: argument 1 of 'total' must be an array of 'int', found 'int *'; a pointer does not know how many elements it points to, and an array does
+tests/err/expressions.wind:19:9: error: a statement cannot start with '+', and the statement before it is complete, so the line cannot carry it on
+tests/err/expressions.wind:21:16: error: operator '-' is not defined for 'char'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
+tests/err/expressions.wind:22:19: error: mismatched types 'char' and 'int' for operator '+'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
+tests/err/expressions.wind:23:20: error: an index must be an integer of at most 64 bits, found 'char'; a 'char' is a character, not a number: 'int(c)' is its code, and 'char(n)' is the character with code n
+tests/err/expressions.wind:25:19: error: argument 1 of 'total' must be an array of 'int', found 'int *'; a pointer does not know how many elements it points to, and an array does

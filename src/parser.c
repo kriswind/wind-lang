@@ -502,6 +502,47 @@ static bool continues_with(Parser *p, TokenKind kind) {
     return tok.kind == kind;
 }
 
+/* True for a token that, at the start of a line, carries on the expression
+   of the line before: one that cannot start a statement. "*" and "&" can
+   (as in "*p = 1"), so they carry on only when followed by a space, as a
+   binary operator is written; "after" is the token that follows. */
+static bool carries_on(Token tok, Token after) {
+    switch (tok.kind) {
+    case TOK_OR: case TOK_AND:
+    case TOK_EQ: case TOK_NE: case TOK_LT: case TOK_LE: case TOK_GT: case TOK_GE:
+    case TOK_PIPE: case TOK_CARET: case TOK_SHL: case TOK_SHR:
+    case TOK_PLUS: case TOK_MINUS: case TOK_SLASH: case TOK_PERCENT:
+    case TOK_QUESTION: case TOK_COLON: case TOK_DOT: case TOK_ARROW:
+        return true;
+    case TOK_STAR:
+    case TOK_AMP:
+        return after.loc.offset > tok.loc.offset + tok.loc.len;
+    default:
+        return false;
+    }
+}
+
+/* At the end of a line that the next one carries on, moves to the start of
+   that line and returns true. Looks ahead without consuming anything
+   otherwise. */
+static bool carry_on(Parser *p) {
+    if (!at(p, TOK_NEWLINE)) return false;
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    Token tok;
+    do tok = lexer_next(&lexer);
+    while (tok.kind == TOK_NEWLINE);
+    Token after = lexer_next(&lexer);
+    /* Problems found while looking ahead are dropped here; they are
+       reported when the tokens are parsed. */
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    if (!carries_on(tok, after)) return false;
+    skip_newlines(p);
+    return true;
+}
+
 /* True at a "(" that opens a C-style cast: one holding a type and nothing
    else. Looks ahead without consuming anything. */
 static bool at_c_cast(Parser *p) {
@@ -687,7 +728,9 @@ static Expr *parse_index(Parser *p, Expr *base) {
 
 static Expr *parse_postfix(Parser *p) {
     Expr *expr = parse_primary(p);
-    while (expr && (at(p, TOK_LBRACKET) || at(p, TOK_DOT) || at(p, TOK_ARROW))) {
+    while (expr) {
+        carry_on(p);
+        if (!at(p, TOK_LBRACKET) && !at(p, TOK_DOT) && !at(p, TOK_ARROW)) break;
         if (at(p, TOK_LBRACKET)) {
             expr = parse_index(p, expr);
             continue;
@@ -773,6 +816,7 @@ static Expr *parse_binary(Parser *p, int min_precedence) {
     if (!left) return NULL;
     for (;;) {
         Op op;
+        carry_on(p);
         if (at(p, TOK_INC) || at(p, TOK_DEC)) return step_in_expression(p);
         int precedence = binary_precedence(p, &op);
         if (precedence == 0 || precedence < min_precedence) return left;
@@ -1001,7 +1045,7 @@ static Stmt *parse_cout(Parser *p) {
             ok = arg != NULL;
         }
         if (ok) ARENA_PUSH(p->arena, stmt->as.cout.args, stmt->as.cout.count, cap, arg);
-    } while (ok && at(p, TOK_SHL));
+    } while (ok && (carry_on(p), at(p, TOK_SHL)));
     p->no_shift = false;
     return ok ? stmt : NULL;
 }
@@ -1071,7 +1115,7 @@ static Stmt *parse_cin(Parser *p) {
             target.field_count = rest.field_count;
         }
         ARENA_PUSH(p->arena, stmt->as.cin.targets, stmt->as.cin.count, cap, target);
-    } while (at(p, TOK_SHR));
+    } while (carry_on(p), at(p, TOK_SHR));
     return stmt;
 }
 
@@ -1935,9 +1979,8 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         Op op;
         if (binary_precedence(p, &op) && !at(p, TOK_AMP) && !at(p, TOK_STAR)) {
             diag_add(p->diags, SEV_ERROR, tok.loc,
-                     "a line cannot start with %s: the line before it ends its "
-                     "statement; to carry a statement on, end the line before with the "
-                     "operator",
+                     "a statement cannot start with %s, and the statement before it "
+                     "is complete, so the line cannot carry it on",
                      token_kind_name(tok.kind));
         } else {
             error_expected(p, "a statement");

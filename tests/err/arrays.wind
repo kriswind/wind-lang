@@ -39,3 +39,11 @@ void big_local() {
     table[0] = 1
     cout << table[0] << "\n"
 }
+
+int last_of(int values[]) {
+    return values[-1]
+}
+
+void ends(string word) {
+    cout << word[-1] << "after"[-1] << "\n"
+}

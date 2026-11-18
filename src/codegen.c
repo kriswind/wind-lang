@@ -25,11 +25,11 @@
  *
  * - A fixed array is a C array. An array parameter is a slice: a struct of a
  *   pointer and a length, defined once per element type. Every index goes
- *   through wind_index, which counts a negative index back from the end and
- *   stops the program if the index is out of range (a literal index into a
- *   fixed array is settled here and is written as the position), or through
- *   wind_index_unchecked, which leaves that test out, where the build or a
- *   directive asks for it.
+ *   through wind_index, which stops the program if the index is out of
+ *   range, a negative one included, unless the build or a directive leaves
+ *   that test out. A literal index into a fixed array is written as the
+ *   position; unit_analyze has already turned one that counts back from the
+ *   end into the position it names.
  * - A pointer is a C pointer, under a typedef per pointer type. Reaching
  *   through one goes through wind_deref, which stops the program if the
  *   pointer is NULL; moving one is plain C pointer arithmetic.
@@ -228,50 +228,30 @@ static const HelperInfo helpers[HELPER_COUNT] = {
        a negative index, which counts back from the end, and an index that
        is out of range. */
     [HELPER_INDEX] = {
-        "/* What wind_index does with an index that is not a position as it\n"
-        "   stands. A negative index counts back from the end, so -1 is the\n"
-        "   last element. An index that is out of range is reported and stops\n"
-        "   the program. is_signed tells whether the index had a signed type:\n"
-        "   an unsigned one arrives here as negative only when it is too large\n"
-        "   to be valid. */\n"
-        "WIND_RARE static size_t wind_index_rare(long long i, int is_signed, size_t len, int line) {\n"
-        "    long long position = (is_signed && i < 0) ? i + (long long)len : i;\n"
-        "    if (position < 0 || (unsigned long long)position >= len) {\n"
-        "        wind_flush();\n"
-        "        wind_error(\"wind: line \");\n"
-        "        wind_error_number(line, 1);\n"
-        "        wind_error(\": index \");\n"
-        "        wind_error_number(i, is_signed);\n"
-        "        wind_error(\" is out of range for length \");\n"
-        "        wind_error_number((long long)len, 0);\n"
-        "        wind_error(\"\\n\");\n"
-        "        wind_stop();\n"
-        "    }\n"
-        "    return (size_t)position;\n"
+        "/* Reports an index that is out of range, and stops the program.\n"
+        "   is_signed tells whether the index had a signed type, which decides\n"
+        "   how it is printed. */\n"
+        "WIND_RARE static _Noreturn void wind_index_fail(long long i, int is_signed, size_t len, int line) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": index \");\n"
+        "    wind_error_number(i, is_signed);\n"
+        "    wind_error(\" is out of range for length \");\n"
+        "    wind_error_number((long long)len, 0);\n"
+        "    wind_error(\"\\n\");\n"
+        "    wind_stop();\n"
         "}\n"
         "\n"
-        "/* Turns an index into a position among len elements. */\n"
+        "/* Turns an index into a position among len elements. A negative index\n"
+        "   is out of range: one that counts back from the end is known at\n"
+        "   compile time and arrives here as the position it names. */\n"
         "static inline size_t wind_index(long long i, int is_signed, size_t len, int line) {\n"
-        "    if (WIND_UNLIKELY((unsigned long long)i >= len)) {\n"
-        "        return wind_index_rare(i, is_signed, len, line);\n"
-        "    }\n"
+        "    if (WIND_UNLIKELY((unsigned long long)i >= len)) wind_index_fail(i, is_signed, len, line);\n"
         "    return (size_t)i;\n"
         "}\n",
         HEADER_STDDEF,
         {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
-    [HELPER_INDEX_UNCHECKED] = {
-        "WIND_RARE static size_t wind_index_from_end(long long i, size_t len) {\n"
-        "    return (size_t)(i + (long long)len);\n"
-        "}\n"
-        "\n"
-        "/* Turns an index into a position among len elements, counting a\n"
-        "   negative index back from the end, without testing the position\n"
-        "   against len. */\n"
-        "static inline size_t wind_index_unchecked(long long i, int is_signed, size_t len) {\n"
-        "    if (WIND_UNLIKELY(is_signed && i < 0)) return wind_index_from_end(i, len);\n"
-        "    return (size_t)i;\n"
-        "}\n",
-        HEADER_STDDEF, {HELPER_HINTS}, {0}},
     [HELPER_DEREF] = {
         "/* Returns the pointer it is given, or stops the program if that is\n"
         "   NULL. */\n"
@@ -291,11 +271,6 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
         "}\n",
         0, {HELPER_INDEX}, {TYPE_STRING, TYPE_CHAR}},
-    [HELPER_STRING_AT_UNCHECKED] = {
-        "static wind_char wind_string_at_unchecked(wind_string s, long long i, int is_signed) {\n"
-        "    return (wind_char)s.data[wind_index_unchecked(i, is_signed, s.len)];\n"
-        "}\n",
-        0, {HELPER_INDEX_UNCHECKED}, {TYPE_STRING, TYPE_CHAR}},
     [HELPER_ARGS] = {
         "/* Wraps the program's C argument vector as an array of strings. */\n"
         "static wind_slice_string wind_args(int argc, char **argv) {\n"
@@ -756,22 +731,13 @@ static void emit_checked_pointer(const Expr *pointer, FILE *out) {
     fprintf(out, ", %d))", pointer->loc.line);
 }
 
-/* If the index is a literal, possibly negated, that is within a fixed
-   array's length, sets *position to the element it names and returns true.
-   Such an index needs nothing worked out when the program runs. */
+/* If the index is a literal within a fixed array's length, sets *position
+   to the element it names and returns true. Such an index needs nothing
+   worked out when the program runs. */
 static bool literal_position(const Symbol *array, const Expr *index, size_t *position) {
-    if (array->is_slice) return false;
-    bool negated = index->kind == EXPR_UNARY && index->as.unary.op == OP_NEG;
-    const Expr *literal = negated ? index->as.unary.operand : index;
-    if (literal->kind != EXPR_INT_LIT) return false;
-    U128 value = literal->as.int_lit;
-    if (negated && value != 0) {
-        if (value > array->length) return false;
-        *position = array->length - (size_t)value;
-        return true;
-    }
-    if (value >= array->length) return false;
-    *position = (size_t)value;
+    if (array->is_slice || index->kind != EXPR_INT_LIT) return false;
+    if (index->as.int_lit >= array->length) return false;
+    *position = (size_t)index->as.int_lit;
     return true;
 }
 
@@ -783,10 +749,16 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
         fprintf(out, "[%zu]", position);
         return;
     }
-    used.helpers[bounds_checked ? HELPER_INDEX : HELPER_INDEX_UNCHECKED] = true;
     emit_symbol(array, out);
-    fprintf(out, "%s[%s((long long)(", array->is_slice ? ".data" : "",
-            bounds_checked ? "wind_index" : "wind_index_unchecked");
+    if (array->is_slice) fputs(".data", out);
+    if (!bounds_checked) {
+        fputs("[(size_t)(", out);
+        emit_expr(index, out);
+        fputs(")]", out);
+        return;
+    }
+    used.helpers[HELPER_INDEX] = true;
+    fputs("[wind_index((long long)(", out);
     emit_expr(index, out);
     fprintf(out, "), %d, ", type_is_signed(index->type));
     if (array->is_slice) {
@@ -795,8 +767,7 @@ static void emit_element(const Symbol *array, const Expr *index, FILE *out) {
     } else {
         fprintf(out, "%zu", array->length);
     }
-    if (bounds_checked) fprintf(out, ", %d", index->loc.line);
-    fputs(")]", out);
+    fprintf(out, ", %d)]", index->loc.line);
 }
 
 static void emit_int_value(U128 value, TypeKind type, FILE *out);
@@ -1065,14 +1036,21 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             fputs("]", out);
             break;
         }
-        used.helpers[bounds_checked ? HELPER_STRING_AT : HELPER_STRING_AT_UNCHECKED] = true;
-        fputs(bounds_checked ? "wind_string_at(" : "wind_string_at_unchecked(", out);
+        if (!bounds_checked) {
+            fprintf(out, "((%s)(", c_type(TYPE_CHAR));
+            emit_expr(base, out);
+            fputs(").data[(size_t)(", out);
+            emit_expr(expr->as.index.index, out);
+            fputs(")])", out);
+            break;
+        }
+        used.helpers[HELPER_STRING_AT] = true;
+        fputs("wind_string_at(", out);
         emit_expr(base, out);
         fputs(", (long long)(", out);
         emit_expr(expr->as.index.index, out);
-        fprintf(out, "), %d", type_is_signed(expr->as.index.index->type));
-        if (bounds_checked) fprintf(out, ", %d", expr->loc.line);
-        fputs(")", out);
+        fprintf(out, "), %d, %d)", type_is_signed(expr->as.index.index->type),
+                expr->loc.line);
         break;
     }
     case EXPR_LEN: {

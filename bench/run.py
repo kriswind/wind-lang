@@ -7,6 +7,9 @@ Each kernel is run as its own process, so a time includes starting the
 program, and the best of several runs is kept. A language whose toolchain is
 not installed is left out. Every language must print the same result for a
 kernel; one that does not is reported and left out of the summary.
+
+A run of every kernel also writes bench/RESULTS.md, the tables that the
+README links to.
 """
 
 import argparse
@@ -16,6 +19,8 @@ import shutil
 import subprocess
 import sys
 import time
+
+import results
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -127,6 +132,47 @@ def languages(cc, cxx):
     ]
 
 
+# Each language as the results file names it, and the toolchain it names
+# with the version: the command that prints the version, and the text on
+# the line that holds it where there are several.
+LABELS = {
+    "wind": "Wind", "wind-unchecked": "Wind, no bounds checks", "c": "C", "c++": "C++",
+    "rust": "Rust", "zig": "Zig", "odin": "Odin", "go": "Go", "swift": "Swift",
+    "haskell": "Haskell", "java": "Java", "node": "JavaScript (Node.js)",
+    "bun": "JavaScript (Bun)", "elixir": "Elixir", "luajit": "Lua (LuaJIT)", "lua": "Lua",
+    "python": "Python",
+}
+
+
+def c_compiler_name(command):
+    done = subprocess.run([command, "--version"], capture_output=True, text=True)
+    return "Clang" if "clang" in done.stdout.lower() else "GCC"
+
+
+def toolchains(cc, cxx):
+    """name: (toolchain, version command, line to pick)."""
+    wind = wind_compiler()
+    return {
+        "wind": ("wind", [wind, "--version"], None),
+        "wind-unchecked": ("wind", [wind, "--version"], None),
+        "c": (c_compiler_name(cc), [cc, "--version"], None),
+        "c++": (c_compiler_name(cxx), [cxx, "--version"], None),
+        "rust": ("rustc", ["rustc", "--version"], None),
+        "zig": ("Zig", ["zig", "version"], None),
+        "odin": ("Odin", ["odin", "version"], None),
+        "go": ("Go", ["go", "version"], None),
+        "swift": ("Swift", ["swiftc", "--version"], None),
+        "haskell": ("GHC", ["ghc", "--version"], None),
+        "java": ("OpenJDK", ["java", "-version"], None),
+        "node": ("Node.js", ["node", "--version"], None),
+        "bun": ("Bun", ["bun", "--version"], None),
+        "elixir": ("Elixir", ["elixir", "--version"], "Elixir"),
+        "luajit": ("LuaJIT", ["luajit", "-v"], None),
+        "lua": ("Lua", ["lua", "-v"], None),
+        "python": ("CPython", [sys.executable, "--version"], None),
+    }
+
+
 def best_time(command, kernel, runs):
     """Returns the shortest of up to `runs` runs in seconds, and what the
     program printed; None and the problem if it fails."""
@@ -146,14 +192,6 @@ def best_time(command, kernel, runs):
     return best, output
 
 
-def geometric_mean(values):
-    return math.exp(sum(math.log(value) for value in values) / len(values))
-
-
-def ratio_text(ratio):
-    return "%.2f" % ratio if ratio < 10 else "%.1f" % ratio if ratio < 100 else "%.0f" % ratio
-
-
 def print_table(rows, kernels, baseline, seconds):
     """rows: (name, {kernel: seconds}, mean ratio, total seconds), fastest first."""
     width = 8
@@ -167,28 +205,49 @@ def print_table(rows, kernels, baseline, seconds):
             elif seconds:
                 cells.append("%*.3f" % (width, times[kernel]))
             else:
-                cells.append("%*s" % (width, ratio_text(times[kernel] / baseline[kernel])))
+                cells.append("%*s" % (width, results.ratio_text(times[kernel] / baseline[kernel])))
         print("%-15s" % name + "".join(cells)
-              + "%*s%*s" % (width, ratio_text(mean) if mean else "-", width, "%.2f" % total))
+              + "%*s%*s" % (width, results.ratio_text(mean) if mean else "-", width, "%.2f" % total))
 
 
-def print_markdown(rows, kernels, baseline, hows):
-    print("| | Built with | Time relative to C | All kernels |")
-    print("| --- | --- | --- | --- |")
+def write_results(rows, kernels, baseline, ready, runs, cc, cxx):
+    """Writes bench/RESULTS.md from a run of every kernel."""
+    tools = toolchains(cc, cxx)
+    label = {language["name"]: LABELS.get(language["name"], language["name"]) for language in ready}
+    how = {language["name"]: language["how"] for language in ready}
+    timed = [row for row in rows if row[2]]
+    width = max(len(label[name]) for name, *_ in timed) + 2
+    lines = [results.heading("Benchmark results", "python3 bench/run.py",
+                             "the best of up to %d runs" % runs),
+             "",
+             "Time relative to C, as the geometric mean over the %d kernels. Lower is "
+             "better, and one block is one times C." % len(kernels),
+             "",
+             "```"]
+    for name, times, mean, total in timed:
+        lines.append("%-*s %6sx  %s" % (width, label[name], results.ratio_text(mean),
+                                        results.bar(mean)))
+    lines += ["```", "",
+              "| | Built with | Toolchain | Relative to C | All kernels |",
+              "| --- | --- | --- | ---: | ---: |"]
     for name, times, mean, total in rows:
-        print("| %s | %s | %s | %.2f s |" % (name, hows[name], ratio_text(mean) + "x" if mean else "-", total))
-    print()
-    print("| | " + " | ".join(kernels) + " |")
-    print("| --- |" + " ---: |" * len(kernels))
+        tool, command, pick = tools.get(name, (name, None, None))
+        version = results.tool_version(command, pick) if command else None
+        bold = "**%s**" if name == "wind" else "%s"
+        lines.append("| %s | %s | %s | %s | %.2f s |" % (
+            bold % label[name], how[name], "%s %s" % (tool, version) if version else tool,
+            bold % (results.ratio_text(mean) + "x") if mean else "-", total))
+    lines += ["", "## Each kernel", "", "As a multiple of C's time:", "",
+              "| | " + " | ".join(kernels) + " |",
+              "| --- |" + " ---: |" * len(kernels)]
     for name, times, mean, total in rows:
-        cells = [ratio_text(times[k] / baseline[k]) if k in times else "-" for k in kernels]
-        print("| %s | %s |" % (name, " | ".join(cells)))
-    print()
-    print("| | " + " | ".join(kernels) + " |")
-    print("| --- |" + " ---: |" * len(kernels))
-    for name, times, mean, total in rows:
-        cells = ["%.3f" % times[k] if k in times else "-" for k in kernels]
-        print("| %s | %s |" % (name, " | ".join(cells)))
+        cells = [results.ratio_text(times[k] / baseline[k]) if k in times else "-" for k in kernels]
+        lines.append("| %s | %s |" % (label[name], " | ".join(cells)))
+    lines += ["", "C's own times, in seconds, to give the ratios a scale:", "",
+              "| " + " | ".join(kernels) + " |",
+              "|" + " ---: |" * len(kernels),
+              "| " + " | ".join("%.3f" % baseline[k] for k in kernels) + " |", ""]
+    results.write(os.path.join(HERE, "RESULTS.md"), "\n".join(lines))
 
 
 def main():
@@ -204,7 +263,6 @@ def main():
     parser.add_argument("--skip", action="append", default=[], metavar="language",
                         help="leave a language out; may be repeated")
     parser.add_argument("--seconds", action="store_true", help="show seconds in place of ratios")
-    parser.add_argument("--markdown", action="store_true", help="print the results as Markdown tables")
     parser.add_argument("--cc", default=os.environ.get("CC") or "cc", help="the C compiler (default: $CC or cc)")
     parser.add_argument("--cxx", default=os.environ.get("CXX") or "c++",
                         help="the C++ compiler (default: $CXX or c++)")
@@ -266,17 +324,17 @@ def main():
     rows = []
     for name in names:
         shared = [k for k in kernels if k in times[name] and k in baseline]
-        mean = geometric_mean([times[name][k] / baseline[k] for k in shared]) if shared else None
+        mean = results.geometric_mean([times[name][k] / baseline[k] for k in shared]) if shared else None
         rows.append((name, times[name], mean, sum(times[name].values())))
     rows.sort(key=lambda row: row[2] if row[2] else float("inf"))
 
-    if args.markdown:
-        print_markdown(rows, kernels, baseline, {language["name"]: language["how"] for language in ready})
-    else:
-        what = "seconds" if args.seconds else "time relative to %s" % reference
-        print("%s, best of up to %d run%s; mean is the geometric mean of the ratios to %s\n"
-              % (what, args.runs, "" if args.runs == 1 else "s", reference))
-        print_table(rows, kernels, baseline, args.seconds)
+    what = "seconds" if args.seconds else "time relative to %s" % reference
+    print("%s, best of up to %d run%s; mean is the geometric mean of the ratios to %s\n"
+          % (what, args.runs, "" if args.runs == 1 else "s", reference))
+    print_table(rows, kernels, baseline, args.seconds)
+    if not args.kernels and reference == "c":
+        print()
+        write_results(rows, kernels, baseline, ready, args.runs, args.cc, args.cxx)
     sys.exit(1 if wrong else 0)
 
 
