@@ -198,6 +198,10 @@ char letter = char(65)
 Conversions work between any two numeric types and between `char` and
 integers. C's spelling works too: `(i8)wide` is `i8(wide)`. As in C it applies
 to the one value after it, so `(float)a / b` converts `a` and then divides.
+A float converted to an integer type drops its fraction, and one that does
+not fit that type, or is not a number, stops the program with a message
+naming the line, where C leaves the result undefined (unless index checks
+are left out, as described under [Arrays](#arrays)).
 
 ### Literals
 
@@ -217,8 +221,16 @@ literal suffixes (`1.5f`, `10UL`, `2.0L`) are accepted and ignored.
 `sizeof(type)` and `sizeof expr` give a size in bytes and behave like an
 integer literal, so the result fits whatever integer type it is used as.
 
-Escapes in strings and characters: `\n` `\t` `\r` `\0` `\\` `\"` `\'`.
-A string literal cannot span lines.
+Escapes in strings and characters are C's: `\n` `\t` `\r` `\0` `\\` `\"`
+`\'` `\a` `\b` `\f` `\v` `\?`, a byte in hexadecimal as `\x41`, and one in
+octal as `\101`. A string literal cannot span lines, but string literals
+written one after another are one string, as in C, so a long one can be
+split across lines:
+
+```wind
+string usage = "usage: wind run FILE\n"
+               "       wind check FILE\n"
+```
 
 ### Variables and constants
 
@@ -229,10 +241,15 @@ const f64 Pi = 3.14  // constant
 count = count + 1
 count += 2           // also -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
 count++              // also count--, ++count, --count
+int rows = 3, columns = rows * 2, cells[6]   // several of one type
 ```
 
 - `++` and `--` are statements, not expressions: they cannot be used inside a
   larger expression.
+- Declarations separated by `,` share their type, and each takes its own
+  value, as in C. They declare one name after another, so a later one can
+  use an earlier one. A pointer is declared one at a time: in C,
+  `int *p, q` makes `q` an `int`, so Wind rejects it.
 - A variable without an initializer starts at its type's zero value: `0`,
   `false` or `""`.
 - A constant's value must be known at compile time: literals, other
@@ -473,7 +490,11 @@ How this was chosen, and what is to come, is in
 
 From tightest to loosest: unary and casts, `* / %`, `+ -`, `<< >>`, `&`, `^`,
 `|`, comparisons, `&&`, `||`, `?:`. Integer arithmetic wraps at the width of
-its type.
+its type. Integer `/` and `%` by zero stop the program with a message naming
+the line; dividing the most negative value by `-1` wraps to itself, with a
+remainder of 0, where C would stop the program with a signal. The test is
+left out for a divisor that is a literal other than zero, and, like the
+tests on float conversions, wherever index checks are left out.
 
 Operands are evaluated from left to right, and so are the arguments of a
 call and the values between braces: `show(next(), next())` passes the first
@@ -541,7 +562,9 @@ for (int i = 0; i < count; i++) {
   assignment or a call, and `last` an assignment or a call. Any of the three
   can be left out; without a condition the loop runs until something leaves
   it. The parentheses are optional. A variable declared in `first` belongs to
-  the loop.
+  the loop. `first` may declare several variables of one type, and `last`
+  may be several assignments or calls, separated by `,`:
+  `for (int i = 0, j = n - 1; i < j; i++, j--)`.
 - `for (T x in a)` goes through an array, a string or a map: one name takes
   each element, character or key; two names take each index and element,
   or each key and value.
@@ -556,8 +579,35 @@ for (int i = 0; i < count; i++) {
   copy and cannot be assigned. The length is read on each pass, so a body
   that appends to the array also goes through what it appended; keys put
   into a map during the loop may or may not be reached.
-- `break` leaves the innermost loop. `continue` skips to its next pass: to
-  the condition of a `while` or `do`, or to the last clause of a `for`.
+- `break` leaves the innermost loop or `switch`. `continue` skips to the
+  next pass of the innermost loop: to the condition of a `while` or `do`, or
+  to the last clause of a `for`.
+- `switch` chooses a case by an integer, a `char`, an enum or a string:
+
+  ```wind
+  switch (command) {
+  case "add", "plus":
+      total += value
+      break
+  case "clear":
+      total = 0
+      break
+  case "quit":
+      return total
+  default:
+      cerr << "unknown command '" << command << "'\n"
+  }
+  ```
+
+  Each case's values must be constants of the switch's type, and no value
+  may appear twice. Labels written one after another share a case, as in C,
+  and so do values listed with `,`. A case with statements must end with
+  something that leaves it, `break`, `continue`, `return` and the like, or
+  with `fallthrough`, which runs on into the next case; running on without
+  saying so is an error, since in C it is a common mistake. The last case
+  needs neither. Every case is a block of its own, so its declarations end
+  with it. As in C, the parentheses are optional and `default` can sit
+  anywhere.
 - `name:` declares a label and `goto name` jumps to it. Labels work as in C:
   a label is known throughout the function it is in (or throughout the
   top-level code of a script), so a `goto` can jump forwards or backwards,
@@ -1066,6 +1116,11 @@ value, `bool` as `true` or `false`.
 `cerr << ...` writes the same way to the error output, after anything
 `cout` has written so far. `exit(status)` ends the program at once, from
 anywhere, with that exit status; deferred statements do not run.
+`panic(values...)` writes its values as `cerr` would, after `wind: line N: `,
+and stops the program with status 1. `assert(condition)` stops it the same
+way when the condition is false, with the condition as it is written:
+`wind: line 12: assertion failed: count > 0`. Neither is affected by
+`--no-bounds-check`.
 
 Three functions give a printed value a width or a number of digits. They can
 be used wherever a value is written as text: in `cout`, in `cerr`, and when
@@ -1192,8 +1247,6 @@ cout << name << " is " << age << "\n"
 - A module cannot export a variable; make it a constant if its value never
   changes, or export a function that returns it.
 - An index must be an integer of at most 64 bits.
-- Integer division by zero and converting an out-of-range float to an integer
-  are not checked.
 - `f128` values are printed and read with the precision of the C
   `long double`.
 - A `string` read with `cin`, and a `char *` made by `cstring`, keep their

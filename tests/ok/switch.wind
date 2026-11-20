@@ -1,0 +1,58 @@
+// switch as in C, on integers, chars, enums and strings. Labels written
+// together share a case, and so do values listed with ','. A case that has
+// statements ends with break, a way out, or "fallthrough" into the next;
+// break leaves the switch, and continue goes on with the loop around it.
+enum Color { RED, GREEN, BLUE }
+const int BIG = 100
+const string HELLO = "hello"
+
+// Every case returns, so nothing follows the switch.
+string name(Color c) {
+    switch (c) {
+    case RED: return "red"
+    case GREEN: return "green"
+    default: return "other"
+    }
+}
+
+int score(string word) {
+    switch word {
+    case HELLO, "hi":
+        return 1
+    case "bye":
+    case "later":
+        return 2
+    }
+    return 0
+}
+
+int main() {
+    for (int i = 0; i < 6; i++) {
+        defer cout << ";"
+        switch (i) {
+        case 0:
+            cout << "zero"
+            break
+        case 1:
+        case 2:
+            cout << "small"
+            fallthrough
+        case 3: {
+            cout << "+three"
+            if (i == 2) continue
+            break
+        }
+        case BIG - 96:
+            defer cout << "(d)"
+            cout << "four"
+            fallthrough
+        default:
+            cout << "other"
+        }
+        cout << "."
+    }
+    cout << "\n" << name(RED) << name(BLUE) << score("hello") << score("hi") << score("later") << score("x") << "\n"
+    char c = 'b'
+    switch (c) { case 'a': cout << "A\n"; break; case 'b': cout << "B\n" }
+    return 0
+}

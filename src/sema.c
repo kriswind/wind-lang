@@ -132,6 +132,11 @@ typedef struct {
     /* The innermost loop being checked, or NULL outside any loop. A
        deferred statement starts with none, since it cannot leave. */
     const Stmt *loop;
+    /* What a break leaves: the innermost loop or switch, or NULL. */
+    const Stmt *breakable;
+    /* The "fallthrough" that ends the case being checked, the one place
+       one may be. */
+    const Stmt *fallthrough_ok;
     /* Inside a deferred statement. */
     bool in_defer;
     /* A growable array or map field may be named here as one, rather than
@@ -354,6 +359,7 @@ static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str nam
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
 static const Symbol *array_operand(Checker *c, Expr *expr);
 static bool type_owns(TypeKind type);
+static void check_condition(Checker *c, Expr *cond);
 static bool is_format(Builtin builtin);
 static Builtin builtin_called(const Checker *c, const Expr *expr);
 static void check_written(Checker *c, Expr *arg, const char *doing);
@@ -1309,7 +1315,8 @@ static const struct {
     {"reserve", BUILTIN_RESERVE}, {"delete", BUILTIN_DELETE}, {"clone", BUILTIN_CLONE},
     {"has", BUILTIN_HAS},         {"remove", BUILTIN_REMOVE},     {"left", BUILTIN_LEFT},
     {"right", BUILTIN_RIGHT},     {"fixed", BUILTIN_FIXED},       {"exit", BUILTIN_EXIT},
-    {"sort", BUILTIN_SORT},       {"reverse", BUILTIN_REVERSE},
+    {"sort", BUILTIN_SORT},       {"reverse", BUILTIN_REVERSE},   {"assert", BUILTIN_ASSERT},
+    {"panic", BUILTIN_PANIC},
 };
 
 static bool is_format(Builtin builtin) {
@@ -1528,6 +1535,22 @@ static TypeKind check_builtin(Checker *c, Expr *expr, Builtin which) {
     }
     if (which == BUILTIN_SORT || which == BUILTIN_REVERSE) {
         return check_order_builtin(c, expr, which, name);
+    }
+    if (which == BUILTIN_ASSERT) {
+        if (count != 1) {
+            error(c, expr->loc, "'assert' takes the condition that must hold, but %zu "
+                                "arguments were given",
+                  count);
+            check_args_anyway(c, expr, 0);
+            return TYPE_VOID;
+        }
+        check_condition(c, expr->as.call.args[0]);
+        return TYPE_VOID;
+    }
+    if (which == BUILTIN_PANIC) {
+        if (count == 0) error(c, expr->loc, "'panic' takes the message to stop with");
+        for (size_t i = 0; i < count; i++) check_written(c, expr->as.call.args[i], "print");
+        return TYPE_VOID;
     }
     if (which == BUILTIN_EXIT) {
         if (count != 1) {
@@ -2749,6 +2772,10 @@ static void collect_labels(Checker *c, Block *block) {
         } else if (stmt->kind == STMT_WHILE || stmt->kind == STMT_DO_WHILE ||
                    stmt->kind == STMT_FOR || stmt->kind == STMT_FOR_IN) {
             collect_labels(c, &stmt->as.loop.body);
+        } else if (stmt->kind == STMT_SWITCH) {
+            for (size_t j = 0; j < stmt->as.switch_.case_count; j++) {
+                collect_labels(c, &stmt->as.switch_.cases[j].body);
+            }
         } else if (stmt->kind == STMT_LABEL) {
             Str name = stmt->as.label.name;
             const Symbol *prev = find_in(&c->labels, name);
@@ -2789,11 +2816,13 @@ static bool loops_forever(const Stmt *loop) {
 }
 
 static bool stmt_has_label(const Stmt *stmt);
+static bool switch_terminates(const Stmt *stmt);
 
 /* True for a statement that is a call of exit, which ends the program. */
 static bool is_exit(const Stmt *stmt) {
     return stmt->kind == STMT_EXPR && stmt->as.expr->kind == EXPR_CALL &&
-           stmt->as.expr->as.call.builtin == BUILTIN_EXIT;
+           (stmt->as.expr->as.call.builtin == BUILTIN_EXIT ||
+            stmt->as.expr->as.call.builtin == BUILTIN_PANIC);
 }
 
 /* True if control cannot run off the end of the block. Conservative: it only
@@ -2825,11 +2854,63 @@ static bool block_terminates(const Block *block) {
         case STMT_FOR:
             if (loops_forever(stmt)) exits = true;
             break;
+        case STMT_SWITCH:
+            if (switch_terminates(stmt)) exits = true;
+            break;
         default:
             break;
         }
     }
     return exits;
+}
+
+/* True if a break that leaves target is anywhere in the block. */
+static bool block_breaks_to(const Block *block, const Stmt *target) {
+    for (size_t i = 0; i < block->count; i++) {
+        const Stmt *stmt = block->stmts[i];
+        switch (stmt->kind) {
+        case STMT_BREAK:
+            if (stmt->as.target == target) return true;
+            break;
+        case STMT_BLOCK:
+            if (block_breaks_to(&stmt->as.block, target)) return true;
+            break;
+        case STMT_IF:
+            if (block_breaks_to(&stmt->as.if_.then_block, target) ||
+                (stmt->as.if_.has_else && block_breaks_to(&stmt->as.if_.else_block, target))) {
+                return true;
+            }
+            break;
+        case STMT_WHILE:
+        case STMT_DO_WHILE:
+        case STMT_FOR:
+        case STMT_FOR_IN:
+            if (block_breaks_to(&stmt->as.loop.body, target)) return true;
+            break;
+        case STMT_SWITCH:
+            for (size_t j = 0; j < stmt->as.switch_.case_count; j++) {
+                if (block_breaks_to(&stmt->as.switch_.cases[j].body, target)) return true;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
+/* True if no value leaves the switch to what follows it: it has a default,
+   nothing breaks out of it, and every case leaves the block or falls into
+   the next. */
+static bool switch_terminates(const Stmt *stmt) {
+    bool has_default = false;
+    for (size_t i = 0; i < stmt->as.switch_.case_count; i++) {
+        const SwitchCase *each = &stmt->as.switch_.cases[i];
+        if (each->is_default) has_default = true;
+        if (block_breaks_to(&each->body, stmt)) return false;
+        if (!each->falls && !block_terminates(&each->body)) return false;
+    }
+    return has_default;
 }
 
 /* A goto could jump past a defer, or out of the block it belongs to, so a
@@ -2848,11 +2929,13 @@ static void check_func(Checker *c, Stmt *stmt) {
     SymbolList outer_labels = c->labels;
     Scope *outer_scope = c->scope;
     const Stmt *outer_loop = c->loop;
+    const Stmt *outer_breakable = c->breakable;
 
     /* A function body sees the top level only. */
     c->scope = c->global;
     c->func = stmt;
     c->loop = NULL;
+    c->breakable = NULL;
     c->locals = &stmt->as.func.locals;
     memset(&c->labels, 0, sizeof c->labels);
 
@@ -2893,6 +2976,7 @@ static void check_func(Checker *c, Stmt *stmt) {
     c->locals = outer_locals;
     c->labels = outer_labels;
     c->loop = outer_loop;
+    c->breakable = outer_breakable;
     c->scope = outer_scope;
 }
 
@@ -2914,6 +2998,11 @@ static bool stmt_has_label(const Stmt *stmt) {
     case STMT_FOR:
     case STMT_FOR_IN:
         return block_has_label(&stmt->as.loop.body);
+    case STMT_SWITCH:
+        for (size_t i = 0; i < stmt->as.switch_.case_count; i++) {
+            if (block_has_label(&stmt->as.switch_.cases[i].body)) return true;
+        }
+        return false;
     default:
         return false;
     }
@@ -2953,7 +3042,13 @@ static const char *never_continues(const Stmt *stmt) {
     case STMT_BREAK:    return stmt->as.target ? "it follows a 'break'" : NULL;
     case STMT_CONTINUE: return stmt->as.target ? "it follows a 'continue'" : NULL;
     case STMT_GOTO:     return "it follows a 'goto'";
-    case STMT_EXPR:     return is_exit(stmt) ? "it follows a call of 'exit'" : NULL;
+    case STMT_SWITCH:
+        return switch_terminates(stmt) ? "every case of the 'switch' before it leaves this block"
+                                       : NULL;
+    case STMT_EXPR:
+        return !is_exit(stmt)                                         ? NULL
+               : stmt->as.expr->as.call.builtin == BUILTIN_EXIT ? "it follows a call of 'exit'"
+                                                                : "it follows a call of 'panic'";
     case STMT_BLOCK:
         return block_terminates(&stmt->as.block) ? "the block before it never reaches its end"
                                                  : NULL;
@@ -3005,6 +3100,135 @@ static void check_condition(Checker *c, Expr *cond) {
     }
 }
 
+/* The text of a string constant: a literal, or a constant set to one. */
+static bool const_text(const Expr *expr, Str *out) {
+    if (expr->kind == EXPR_STRING_LIT) {
+        *out = expr->as.string_lit;
+        return true;
+    }
+    if (expr->kind != EXPR_IDENT) return false;
+    const Symbol *symbol = expr->as.ident.symbol;
+    if (!symbol || symbol->kind != SYM_CONST || symbol->is_array || !symbol->decl ||
+        symbol->decl->external || symbol->decl->as.decl.broken || !symbol->decl->as.decl.init) {
+        return false;
+    }
+    return const_text(symbol->decl->as.decl.init, out);
+}
+
+/* True if a case's statements never run on to the end of the case: the
+   last of them leaves, by a break, a continue, a fallthrough or a way out
+   of the block. */
+static bool case_leaves(const Block *body) {
+    if (body->count == 0) return false;
+    if (block_terminates(body)) return true;
+    const Stmt *last = body->stmts[body->count - 1];
+    switch (last->kind) {
+    case STMT_BREAK:
+    case STMT_CONTINUE:
+    case STMT_FALLTHROUGH:
+        return true;
+    case STMT_BLOCK:
+        return case_leaves(&last->as.block);
+    case STMT_IF:
+        return last->as.if_.has_else && case_leaves(&last->as.if_.then_block) &&
+               case_leaves(&last->as.if_.else_block);
+    default:
+        return false;
+    }
+}
+
+/* Checks "switch (value) { ... }": the value is an integer, a char, an
+   enum or a string, and each case's values are constants of its type that
+   no other case has. A case that has statements must not run on into the
+   next unless it says so with "fallthrough", since C's silent fall is a
+   common mistake. */
+static void check_switch(Checker *c, Stmt *stmt) {
+    Expr *subject = stmt->as.switch_.subject;
+    TypeKind type = check_expr(c, subject, TYPE_INVALID);
+    bool is_string = type == TYPE_STRING;
+    bool usable = is_string || type_is_integer(type) || type == TYPE_CHAR || type_is_enum(type);
+    if (type != TYPE_INVALID && !usable) {
+        error(c, subject->loc,
+              "a switch is on an integer, a 'char', an enum or a string, not '%s'",
+              type_name(type));
+    }
+    const SwitchCase *default_case = NULL;
+    size_t count = stmt->as.switch_.case_count;
+    for (size_t i = 0; i < count; i++) {
+        SwitchCase *each = &stmt->as.switch_.cases[i];
+        if (each->is_default && default_case) {
+            error(c, each->loc, "a switch has one 'default', and this one has one at line %d",
+                  default_case->loc.line);
+        } else if (each->is_default) {
+            default_case = each;
+        }
+        if (!is_string && each->value_count) {
+            each->numbers = arena_alloc(c->arena, each->value_count * sizeof *each->numbers);
+        }
+        for (size_t j = 0; j < each->value_count; j++) {
+            Expr *value = each->values[j];
+            TypeKind found = check_expr(c, value, usable ? type : TYPE_INVALID);
+            if (!usable || found == TYPE_INVALID) continue;
+            /* A value that is wrong is marked so, and matches no other. */
+            if (found != type) {
+                error(c, value->loc, "this case is a '%s', and the switch is on '%s'",
+                      type_name(found), type_name(type));
+                value->type = TYPE_INVALID;
+                continue;
+            }
+            if (!is_constant(value)) {
+                error(c, value->loc, "a case must be a value known at compile time");
+                value->type = TYPE_INVALID;
+                continue;
+            }
+            /* The same value in an earlier case, or earlier in this one. */
+            Str text = {0};
+            long long number = 0;
+            if (is_string ? !const_text(value, &text) : !eval_const_int(value, &number)) {
+                error(c, value->loc, "a case must be a literal, or a constant set to one");
+                value->type = TYPE_INVALID;
+                continue;
+            }
+            if (!is_string) each->numbers[j] = number;
+            for (size_t k = 0; k <= i; k++) {
+                const SwitchCase *other = &stmt->as.switch_.cases[k];
+                size_t limit = k == i ? j : other->value_count;
+                for (size_t m = 0; m < limit; m++) {
+                    Str other_text;
+                    bool same = is_string ? const_text(other->values[m], &other_text) &&
+                                                str_eq(text, other_text)
+                                          : other->numbers && other->numbers[m] == number &&
+                                                other->values[m]->type == type;
+                    if (same) {
+                        error(c, value->loc, "this value already has a case, at line %d",
+                              other->values[m]->loc.line);
+                        k = i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        const Stmt *outer_breakable = c->breakable;
+        const Stmt *outer_fallthrough = c->fallthrough_ok;
+        Block *body = &each->body;
+        const Stmt *last = body->count ? body->stmts[body->count - 1] : NULL;
+        each->falls = last && last->kind == STMT_FALLTHROUGH;
+        c->breakable = stmt;
+        c->fallthrough_ok = each->falls ? last : NULL;
+        check_block(c, body);
+        c->breakable = outer_breakable;
+        c->fallthrough_ok = outer_fallthrough;
+        if (each->falls && i + 1 == count) {
+            error(c, last->loc, "'fallthrough' needs a case after it to go on to");
+        } else if (i + 1 < count && body->count > 0 && !case_leaves(body)) {
+            error(c, each->loc,
+                  "this case runs on into the next; end it with 'break', or with "
+                  "'fallthrough' if that is meant");
+        }
+    }
+}
+
 static void check_loop(Checker *c, Stmt *stmt) {
     const Stmt *outer_loop = c->loop;
     Block *body = &stmt->as.loop.body;
@@ -3019,9 +3243,11 @@ static void check_loop(Checker *c, Stmt *stmt) {
     }
     if (stmt->as.loop.step) check_stmt(c, stmt->as.loop.step);
 
-    c->loop = stmt;
+    const Stmt *outer_breakable = c->breakable;
+    c->loop = c->breakable = stmt;
     check_block(c, body);
     c->loop = outer_loop;
+    c->breakable = outer_breakable;
     /* A do-while runs its body once whatever the condition says. */
     if (stmt->kind != STMT_DO_WHILE && is_literal(stmt->as.loop.cond, false)) {
         warn_dead_block(c, body, "the loop's condition is always false");
@@ -3084,9 +3310,11 @@ static void check_for_in(Checker *c, Stmt *stmt) {
         declare(c, symbol);
         list_push(c, c->locals, symbol);
     }
-    c->loop = stmt;
+    const Stmt *outer_breakable = c->breakable;
+    c->loop = c->breakable = stmt;
     check_block(c, body);
     c->loop = outer_loop;
+    c->breakable = outer_breakable;
     pop_scope(c);
 }
 
@@ -3120,24 +3348,36 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_DEFER: {
         if (!c->defer_seen) c->defer_seen = stmt;
         const Stmt *outer_loop = c->loop;
+        const Stmt *outer_breakable = c->breakable;
         bool outer_in_defer = c->in_defer;
-        c->loop = NULL;
+        c->loop = c->breakable = NULL;
         c->in_defer = true;
         check_stmt(c, stmt->as.deferred);
         c->loop = outer_loop;
+        c->breakable = outer_breakable;
         c->in_defer = outer_in_defer;
         break;
     }
     case STMT_BREAK:
     case STMT_CONTINUE:
-        stmt->as.target = c->loop;
-        if (!c->loop && c->in_defer) {
+        stmt->as.target = stmt->kind == STMT_BREAK ? c->breakable : c->loop;
+        if (!stmt->as.target && c->in_defer) {
             error(c, stmt->loc, "a deferred statement cannot leave with '%s'; it runs as "
                                 "its block is left",
                   stmt->kind == STMT_BREAK ? "break" : "continue");
-        } else if (!c->loop) {
-            error(c, stmt->loc, "'%s' outside of a loop",
-                  stmt->kind == STMT_BREAK ? "break" : "continue");
+        } else if (!stmt->as.target) {
+            error(c, stmt->loc, "'%s' outside of a loop%s",
+                  stmt->kind == STMT_BREAK ? "break" : "continue",
+                  stmt->kind == STMT_BREAK ? " or a switch" : "");
+        }
+        break;
+    case STMT_SWITCH:
+        check_switch(c, stmt);
+        break;
+    case STMT_FALLTHROUGH:
+        if (stmt != c->fallthrough_ok) {
+            error(c, stmt->loc, "'fallthrough' can only be the last statement of a case "
+                                "of a switch");
         }
         break;
     case STMT_CONST:
@@ -3260,7 +3500,10 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_TYPE:
         break; /* handled before anything else is checked */
     case STMT_GROUP:
-        break; /* the parser leaves its declarations in its place */
+        /* Left only in a for loop's clauses: blocks hold a group's
+           declarations in its place. */
+        for (size_t i = 0; i < stmt->as.block.count; i++) check_stmt(c, stmt->as.block.stmts[i]);
+        break;
     case STMT_SETTING:
         break; /* see check_settings */
     }

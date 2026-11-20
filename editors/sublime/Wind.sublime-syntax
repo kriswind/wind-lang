@@ -26,7 +26,7 @@ contexts:
       scope: keyword.control.import.wind
     - match: '\bas\b(?=\s+[A-Za-z_]\w*\s*$)'
       scope: keyword.control.import.wind
-    - match: '\b(if|else|while|do|for|break|continue|goto|return|defer)\b'
+    - match: '\b(if|else|switch|case|default|fallthrough|while|do|for|break|continue|goto|return|defer)\b'
       scope: keyword.control.wind
     - match: '\bsizeof\b'
       scope: keyword.operator.word.wind

@@ -11,10 +11,11 @@
  *   block      = "{" { statement } "}"
  *   statement  = directive ( statement | block ) | setting terminator
  *              | ( const_decl | var_decl | assign | call | cout | cin | goto
- *                | return | do_while | "break" | "continue" | import
+ *                | return | do_while | "break" | "continue" | "fallthrough"
+ *                | import
  *                | "export" const_decl | [ "export" ] type_decl
  *                | [ "export" ] extern ) terminator
- *              | if | while | for | [ "export" ] func | label
+ *              | if | while | for | switch | [ "export" ] func | label
  *   directive  = "#no_bounds_check" | "#bounds_check"
  *   setting    = "#target" IDENT | "#module" IDENT
  *              | "#board" ( STRING | name up to a space )
@@ -30,9 +31,10 @@
  *   separator  = "," | ";" | NEWLINE
  *   terminator = NEWLINE | ";" | EOF | before "}"
  *
- *   const_decl = "const" type IDENT "=" expr
- *   var_decl   = type IDENT [ "=" expr ]
- *              | type IDENT "[" [ expr ] "]" [ "=" "{" [ expr { "," expr } ] "}" ]
+ *   const_decl = "const" type declarator { "," declarator }
+ *   var_decl   = type declarator { "," declarator }
+ *   declarator = IDENT [ "=" expr ]
+ *              | IDENT "[" [ expr ] "]" [ "=" "{" [ expr { "," expr } ] "}" ]
  *   assign     = unary ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|="
  *                      | "^=" | "<<=" | ">>=" ) expr
  *              | unary ( "++" | "--" ) | ( "++" | "--" ) unary
@@ -47,8 +49,11 @@
  *   while      = "while" expr block | "while" "(" expr ")" body
  *   do_while   = "do" body "while" expr
  *   for        = "for" "(" clauses ")" body | "for" clauses block
+ *   switch     = "switch" ( "(" expr ")" | expr ) "{" { case } "}"
+ *   case       = ( "case" expr { "," expr } | "default" ) ":"
+ *                { statement | block }
  *   body       = block | statement
- *   clauses    = [ simple ] ";" [ expr ] ";" [ simple ]
+ *   clauses    = [ simple ] ";" [ expr ] ";" [ simple { "," simple } ]
  *   simple     = var_decl | assign | call
  *   func       = type IDENT "(" [ params ] ")" block
  *   params     = "void" | param { "," param }
@@ -673,11 +678,24 @@ static Expr *parse_primary(Parser *p) {
         expr = new_expr(p, EXPR_CHAR_LIT, tok.loc);
         expr->as.char_lit = (char)tok.int_value;
         return expr;
-    case TOK_STRING:
+    case TOK_STRING: {
         next(p);
         expr = new_expr(p, EXPR_STRING_LIT, tok.loc);
         expr->as.string_lit = tok.text;
+        /* Strings written one after another are one string, as in C, on
+           the same line or on the lines that follow. */
+        while (at(p, TOK_STRING) || continues_with(p, TOK_STRING)) {
+            skip_newlines(p);
+            Str more = p->tok.text;
+            Str joined = expr->as.string_lit;
+            char *text = arena_alloc(p->arena, joined.len + more.len + 1);
+            memcpy(text, joined.data, joined.len);
+            memcpy(text + joined.len, more.data, more.len);
+            expr->as.string_lit = (Str){text, joined.len + more.len};
+            next(p);
+        }
         return expr;
+    }
     case TOK_KW_TRUE:
     case TOK_KW_FALSE:
         next(p);
@@ -908,6 +926,10 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_CONTINUE:
     case TOK_KW_GOTO:
     case TOK_KW_DEFER:
+    case TOK_KW_SWITCH:
+    case TOK_KW_CASE:
+    case TOK_KW_DEFAULT:
+    case TOK_KW_FALLTHROUGH:
     case TOK_KW_RETURN:
     case TOK_KW_IMPORT:
     case TOK_KW_EXPORT:
@@ -1199,6 +1221,7 @@ static Stmt *parse_cin(Parser *p) {
 }
 
 static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator);
+static Stmt *parse_switch(Parser *p);
 static bool parse_block(Parser *p, Block *block);
 static bool compound_assign_op(TokenKind kind, Op *op);
 
@@ -1334,14 +1357,34 @@ static Stmt *parse_for_clause(Parser *p, bool is_init) {
     Stmt *stmt = parse_statement(p, false, &unused);
     if (!stmt) return NULL;
     bool allowed = stmt->kind == STMT_ASSIGN || stmt->kind == STMT_EXPR ||
-                   (is_init && stmt->kind == STMT_VAR);
+                   (is_init && (stmt->kind == STMT_VAR ||
+                                (stmt->kind == STMT_GROUP &&
+                                 stmt->as.block.stmts[0]->kind == STMT_VAR)));
     if (!allowed) {
         diag_add(p->diags, SEV_ERROR, start,
                  is_init ? "a for loop starts with a declaration, an assignment or a call"
                          : "a for loop's last clause must be an assignment or a call");
         return NULL;
     }
-    return stmt;
+    if (stmt->kind == STMT_GROUP || !at(p, TOK_COMMA)) return stmt;
+
+    /* "i++, j--": assignments and calls, made into a group run in order. */
+    Stmt *group = new_stmt(p, STMT_GROUP, start);
+    size_t cap = 0;
+    ARENA_PUSH(p->arena, group->as.block.stmts, group->as.block.count, cap, stmt);
+    while (accept(p, TOK_COMMA)) {
+        skip_newlines(p);
+        start = p->tok.loc;
+        Stmt *more = parse_statement(p, false, &unused);
+        if (!more) return NULL;
+        if (more->kind != STMT_ASSIGN && more->kind != STMT_EXPR) {
+            diag_add(p->diags, SEV_ERROR, start,
+                     "a for loop's clauses are assignments and calls, separated by ','");
+            return NULL;
+        }
+        ARENA_PUSH(p->arena, group->as.block.stmts, group->as.block.count, cap, more);
+    }
+    return group;
 }
 
 /* Skips what is left of a for loop whose header failed to parse, body
@@ -1700,7 +1743,31 @@ static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
         *needs_terminator = false;
         return parse_func(p, type, type_ref, name, top_level);
     }
-    return parse_decl_rest(p, kind, type, type_ref, name);
+    Stmt *first = parse_decl_rest(p, kind, type, type_ref, name);
+    if (!first || !at(p, TOK_COMMA)) return first;
+
+    /* "int a = 1, b = 2": declarations of one type, made into a group. */
+    if (type_is_pointer(type)) {
+        diag_add(p->diags, SEV_ERROR, p->tok.loc,
+                 "declare one pointer at a time: in C, 'int *p, q' makes q an 'int', "
+                 "not a pointer");
+        return NULL;
+    }
+    Stmt *group = new_stmt(p, STMT_GROUP, name.loc);
+    size_t cap = 0;
+    first->start = name.loc;
+    first->end = p->prev;
+    ARENA_PUSH(p->arena, group->as.block.stmts, group->as.block.count, cap, first);
+    while (accept(p, TOK_COMMA)) {
+        skip_newlines(p);
+        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        Stmt *more = parse_decl_rest(p, kind, type, type_ref, name);
+        if (!more) return NULL;
+        more->start = name.loc;
+        more->end = p->prev;
+        ARENA_PUSH(p->arena, group->as.block.stmts, group->as.block.count, cap, more);
+    }
+    return group;
 }
 
 /* Called at a directive: parses it and the statement, block or function it
@@ -2206,6 +2273,18 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         return parse_for(p);
     case TOK_KW_DO:
         return parse_do_while(p);
+    case TOK_KW_SWITCH:
+        *needs_terminator = false;
+        return parse_switch(p);
+    case TOK_KW_FALLTHROUGH:
+        next(p);
+        return new_stmt(p, STMT_FALLTHROUGH, tok.loc);
+    case TOK_KW_CASE:
+    case TOK_KW_DEFAULT:
+        diag_add(p->diags, SEV_ERROR, tok.loc, "'%s' outside of a switch",
+                 tok.kind == TOK_KW_CASE ? "case" : "default");
+        next(p);
+        return NULL;
     case TOK_KW_BREAK:
     case TOK_KW_CONTINUE:
         next(p);
@@ -2315,11 +2394,16 @@ static void synchronize(Parser *p) {
 
 /* Parses statements up to the "}" that closes the enclosing block, or to the
    end of the file at the top level. */
-static void parse_statements(Parser *p, Block *block, bool top_level) {
+/* Parses statements into block up to a "}", or the end of the file at the
+   top level; in a case of a switch, also up to its next label. */
+static bool parse_block(Parser *p, Block *block);
+
+static void parse_statements_in(Parser *p, Block *block, bool top_level, bool in_case) {
     size_t cap = 0;
     for (;;) {
         while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
         if (at(p, TOK_EOF)) return;
+        if (in_case && (at(p, TOK_KW_CASE) || at(p, TOK_KW_DEFAULT))) return;
         if (at(p, TOK_RBRACE)) {
             if (!top_level) return;
             error_expected(p, "a statement");
@@ -2329,7 +2413,15 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         bool needs_terminator = true;
         SrcLoc start = p->tok.loc;
         size_t errors_before = p->diags->error_count;
-        Stmt *stmt = parse_statement(p, top_level, &needs_terminator);
+        Stmt *stmt;
+        if (in_case && at(p, TOK_LBRACE)) {
+            /* C's "case x: { ... }", which gives the case a block of its own. */
+            stmt = new_stmt(p, STMT_BLOCK, p->tok.loc);
+            if (!parse_block(p, &stmt->as.block)) stmt = NULL;
+            needs_terminator = false;
+        } else {
+            stmt = parse_statement(p, top_level, &needs_terminator);
+        }
         if (!stmt) {
             synchronize(p);
             continue;
@@ -2354,6 +2446,78 @@ static void parse_statements(Parser *p, Block *block, bool top_level) {
         }
         ARENA_PUSH(p->arena, block->stmts, block->count, cap, stmt);
     }
+}
+
+static void parse_statements(Parser *p, Block *block, bool top_level) {
+    parse_statements_in(p, block, top_level, false);
+}
+
+/* Parses "switch (value) { case c: ... default: ... }" from the "switch".
+   Labels written one after another, with nothing between them, lead to
+   one case. */
+static Stmt *parse_switch(Parser *p) {
+    Stmt *stmt = new_stmt(p, STMT_SWITCH, p->tok.loc);
+    next(p);
+    stmt->as.switch_.subject = parse_condition(p);
+    if (!stmt->as.switch_.subject) return NULL;
+    skip_newlines(p);
+    Token open;
+    if (!expect(p, TOK_LBRACE, &open)) return NULL;
+    size_t cap = 0;
+    SwitchCase *open_case = NULL; /* a case with labels and no statements yet */
+    for (;;) {
+        while (at(p, TOK_NEWLINE) || at(p, TOK_SEMI)) next(p);
+        if (at(p, TOK_RBRACE) || at(p, TOK_EOF)) break;
+        Token label = p->tok;
+        if (!at(p, TOK_KW_CASE) && !at(p, TOK_KW_DEFAULT)) {
+            error_expected(p, "'case' or 'default'");
+            synchronize(p);
+            if (!at(p, TOK_KW_CASE) && !at(p, TOK_KW_DEFAULT) && !at(p, TOK_RBRACE)) next(p);
+            continue;
+        }
+        next(p);
+        if (!open_case) {
+            SwitchCase empty = {.loc = label.loc};
+            ARENA_PUSH(p->arena, stmt->as.switch_.cases, stmt->as.switch_.case_count, cap,
+                       empty);
+            open_case = &stmt->as.switch_.cases[stmt->as.switch_.case_count - 1];
+        }
+        size_t value_cap = open_case->value_count;
+        if (label.kind == TOK_KW_DEFAULT) {
+            if (open_case->is_default) {
+                diag_add(p->diags, SEV_ERROR, label.loc, "this case already has 'default'");
+            }
+            open_case->is_default = true;
+        } else {
+            /* "case a, b:" is "case a: case b:". */
+            Expr *value;
+            do {
+                skip_newlines(p);
+                value = parse_expr(p);
+                if (!value) break;
+                ARENA_PUSH(p->arena, open_case->values, open_case->value_count, value_cap,
+                           value);
+            } while (accept(p, TOK_COMMA));
+            if (!value) {
+                synchronize(p);
+                continue;
+            }
+        }
+        if (!expect(p, TOK_COLON, NULL)) {
+            synchronize(p);
+            continue;
+        }
+        parse_statements_in(p, &open_case->body, false, true);
+        open_case->body.open = label.loc;
+        open_case->body.close = p->tok.loc;
+        if (open_case->body.count > 0) open_case = NULL;
+    }
+    if (!at(p, TOK_RBRACE)) {
+        diag_add(p->diags, SEV_ERROR, open.loc, "this '{' is never closed");
+        return NULL;
+    }
+    next(p);
+    return stmt;
 }
 
 static bool parse_block(Parser *p, Block *block) {

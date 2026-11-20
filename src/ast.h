@@ -27,6 +27,8 @@ typedef enum {
     BUILTIN_EXIT,    /* exit(status): ends the program */
     BUILTIN_SORT,    /* sort(xs), sort(rows, .field): into order, keeping equals in order */
     BUILTIN_REVERSE, /* reverse(xs): into the opposite order */
+    BUILTIN_ASSERT,  /* assert(condition): stops the program if it is false */
+    BUILTIN_PANIC,   /* panic(values...): stops the program with a message */
 } Builtin;
 
 /* ---- Symbols ---- */
@@ -334,6 +336,11 @@ typedef enum {
     /* What "#temp { ... }" is made of: at its start, noting how much
        scratch memory there is, and deferred, freeing what was made since. */
     STMT_SCRATCH,
+    /* "switch (value) { case c: ... default: ... }" */
+    STMT_SWITCH,
+    /* "fallthrough", the last statement of a case that runs on into the
+       next */
+    STMT_FALLTHROUGH,
     STMT_LABEL,
     STMT_RETURN,
     STMT_FUNC,
@@ -392,6 +399,20 @@ typedef struct {
     SrcLoc open;  /* the '{' */
     SrcLoc close; /* the '}' */
 } Block;
+
+/* One case of a switch: the values that lead to it, which several case
+   labels written one after another share, and what it runs. */
+typedef struct {
+    Expr **values;
+    size_t value_count;
+    /* The number each value is, worked out by unit_analyze; NULL in a
+       switch on a string. */
+    long long *numbers;
+    bool is_default; /* "default:" is among its labels */
+    SrcLoc loc;      /* its first label */
+    Block body;
+    bool falls; /* ends with "fallthrough" */
+} SwitchCase;
 
 typedef struct {
     TypeKind type; /* for an array parameter, the type of its elements */
@@ -534,8 +555,14 @@ struct Stmt {
             size_t each_count;
             Expr *over;
         } loop;
-        /* STMT_BREAK, STMT_CONTINUE: the loop it applies to; set by
-           unit_analyze, NULL if it is not inside one. */
+        /* STMT_SWITCH */
+        struct {
+            Expr *subject;
+            SwitchCase *cases;
+            size_t case_count;
+        } switch_;
+        /* STMT_BREAK, STMT_CONTINUE: the loop it applies to, or for a break
+           the switch; set by unit_analyze, NULL if it is not inside one. */
         const Stmt *target;
         /* STMT_DEFER: what runs when the block is left */
         Stmt *deferred;

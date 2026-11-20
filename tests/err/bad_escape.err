@@ -1,0 +1,7 @@
+tests/err/bad_escape.wind:2:14: error: '\x' needs a hexadecimal digit after it
+tests/err/bad_escape.wind:2:22: error: escape sequence is over 255, the most one byte holds
+tests/err/bad_escape.wind:2:32: error: unknown escape sequence '\q'
+tests/err/bad_escape.wind:3:12: error: condition must be 'bool' or a pointer, found 'int'
+tests/err/bad_escape.wind:4:5: error: 'assert' takes the condition that must hold, but 0 arguments were given
+tests/err/bad_escape.wind:5:5: error: 'panic' takes the message to stop with
+tests/err/bad_escape.wind:6:5: warning: unreachable code: it follows a call of 'panic'

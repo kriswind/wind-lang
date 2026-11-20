@@ -1,0 +1,8 @@
+// Dividing an integer by zero stops the program with the line it is on.
+int divide(int a, int b) { return a / b }
+
+int main() {
+    cout << divide(7, 2) << "\n"
+    cout << divide(7, 0) << "\n"
+    return 0
+}

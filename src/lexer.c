@@ -21,6 +21,10 @@ static const struct {
     {"continue", TOK_KW_CONTINUE, TYPE_INVALID},
     {"goto", TOK_KW_GOTO, TYPE_INVALID},
     {"defer", TOK_KW_DEFER, TYPE_INVALID},
+    {"switch", TOK_KW_SWITCH, TYPE_INVALID},
+    {"case", TOK_KW_CASE, TYPE_INVALID},
+    {"default", TOK_KW_DEFAULT, TYPE_INVALID},
+    {"fallthrough", TOK_KW_FALLTHROUGH, TYPE_INVALID},
     {"return", TOK_KW_RETURN, TYPE_INVALID},
     {"true", TOK_KW_TRUE, TYPE_INVALID},
     {"false", TOK_KW_FALSE, TYPE_INVALID},
@@ -121,6 +125,10 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_CONTINUE: return "'continue'";
     case TOK_KW_GOTO:   return "'goto'";
     case TOK_KW_DEFER:  return "'defer'";
+    case TOK_KW_SWITCH: return "'switch'";
+    case TOK_KW_CASE:   return "'case'";
+    case TOK_KW_DEFAULT: return "'default'";
+    case TOK_KW_FALLTHROUGH: return "'fallthrough'";
     case TOK_KW_RETURN: return "'return'";
     case TOK_KW_TRUE:   return "'true'";
     case TOK_KW_FALSE:  return "'false'";
@@ -270,10 +278,39 @@ static char decode_escape(Lexer *lexer) {
     case 'n':  return '\n';
     case 't':  return '\t';
     case 'r':  return '\r';
-    case '0':  return '\0';
+    case 'a':  return '\a';
+    case 'b':  return '\b';
+    case 'f':  return '\f';
+    case 'v':  return '\v';
     case '\\': return '\\';
     case '"':  return '"';
     case '\'': return '\'';
+    case '?':  return '?';
+    }
+    if (c >= '0' && c <= '7') {
+        /* Octal, as in C: up to three digits, "\0" included. */
+        int value = c - '0';
+        for (int i = 1; i < 3 && !at_end(lexer) && peek(lexer) >= '0' && peek(lexer) <= '7'; i++) {
+            value = value * 8 + (advance(lexer) - '0');
+        }
+        if (value > 255) {
+            loc.len = lexer->pos - loc.offset;
+            diag_add(lexer->diags, SEV_ERROR, loc, "escape sequence is over 255, the most one byte holds");
+        }
+        return (char)value;
+    }
+    if (c == 'x') {
+        /* Hexadecimal: one or two digits. */
+        int value = 0, digits = 0;
+        while (digits < 2 && !at_end(lexer) && isxdigit((unsigned char)peek(lexer))) {
+            char d = advance(lexer);
+            value = value * 16 + (isdigit((unsigned char)d) ? d - '0' : tolower(d) - 'a' + 10);
+            digits++;
+        }
+        if (digits == 0) {
+            diag_add(lexer->diags, SEV_ERROR, loc, "'\\x' needs a hexadecimal digit after it");
+        }
+        return (char)value;
     }
     if (isprint((unsigned char)c)) {
         diag_add(lexer->diags, SEV_ERROR, loc, "unknown escape sequence '\\%c'", c);

@@ -1,0 +1,9 @@
+// A failed assert stops the program with the condition as it is written.
+int main() {
+    int count = 3
+    assert(count > 0)
+    cout << "count is positive\n"
+    assert(count % 2 == 0 && count < 10)
+    cout << "not reached\n"
+    return 0
+}

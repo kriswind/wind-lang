@@ -3,6 +3,7 @@
 #include "codegen.h"
 #include "targets/target.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,9 @@ static const Target *target;
 /* Whether the code being emitted tests its indexes: what the build asks
    for, unless a directive around the code says otherwise. */
 static bool bounds_checked;
+
+/* The file whose code is being emitted, whose text an assert quotes. */
+static const Unit *emitting_unit;
 
 /* What the program generated so far needs from the runtime. */
 static struct {
@@ -621,6 +625,50 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    while (wind_scratch.count > mark) free(wind_scratch.blocks[--wind_scratch.count]);\n"
         "}\n",
         HEADER_STDDEF | HEADER_STDLIB, {HELPER_OUT_OF_MEMORY}, {TYPE_STRING, TYPE_CHAR}},
+    [HELPER_DIV_FAIL] = {
+        "WIND_RARE static _Noreturn void wind_div_fail(int line) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": division by zero\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_FLOAT_FAIL] = {
+        "/* Reports a float converted to an integer type that cannot hold it. */\n"
+        "WIND_RARE static _Noreturn void wind_float_fail(int line, const char *type) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": a float that does not fit in '\");\n"
+        "    wind_error(type);\n"
+        "    wind_error(\"' was converted to it\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_ASSERT_FAIL] = {
+        "WIND_RARE static _Noreturn void wind_assert_fail(int line, const char *condition) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": assertion failed: \");\n"
+        "    wind_error(condition);\n"
+        "    wind_error(\"\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
+    [HELPER_PANIC] = {
+        "/* Stops the program with message, which ends with a '\\0'. */\n"
+        "WIND_RARE static _Noreturn void wind_panic(int line, const wind_char *message) {\n"
+        "    wind_flush();\n"
+        "    wind_error(\"wind: line \");\n"
+        "    wind_error_number(line, 1);\n"
+        "    wind_error(\": \");\n"
+        "    wind_error((const char *)message);\n"
+        "    wind_error(\"\\n\");\n"
+        "    wind_stop();\n"
+        "}\n",
+        0, {HELPER_HINTS, HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {TYPE_CHAR}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -1482,10 +1530,58 @@ static void emit_field_element(const Symbol *array, const Expr *field, const Exp
 
 static void emit_joined(const Expr *expr, FILE *out);
 
+/* True for a divisor that is a literal other than zero, which needs no
+   test before dividing by it. */
+static bool nonzero_literal(const Expr *divisor) {
+    if (divisor->kind == EXPR_UNARY && divisor->as.unary.op == OP_NEG) {
+        divisor = divisor->as.unary.operand;
+    }
+    return divisor->kind == EXPR_INT_LIT && divisor->as.int_lit != 0;
+}
+
+/* True for an integer division or remainder whose divisor is tested before
+   it is used: in checked code, unless it is a literal other than zero. */
+static bool checked_division(Op op, TypeKind type, const Expr *divisor) {
+    return (op == OP_DIV || op == OP_MOD) && type_is_integer(type) && bounds_checked &&
+           !nonzero_literal(divisor);
+}
+
+/* "left op right" for an integer division or remainder, with left already
+   written as the C expression in left_text when it is not NULL: a divisor
+   of zero stops the program, and one of -1 gives the wrapped result, as C's
+   own division by it can stop the program for the most negative value. */
+static void emit_division(Op op, TypeKind type, const Expr *left, const char *left_text,
+                          const Expr *right, int line, FILE *out) {
+    used.helpers[HELPER_DIV_FAIL] = true;
+    int id = ++held.next_id;
+    const char *t = c_type(type);
+    fprintf(out, "__extension__ ({ %s wind_l%d = ", t, id);
+    if (left_text) {
+        fputs(left_text, out);
+    } else {
+        emit_expr(left, out);
+    }
+    fprintf(out, "; %s wind_r%d = ", t, id);
+    emit_expr(right, out);
+    fprintf(out, "; if (WIND_UNLIKELY(wind_r%d == 0)) wind_div_fail(%d); ", id, line);
+    if (type_is_signed(type) && op == OP_DIV) {
+        fprintf(out, "wind_r%d == -1 ? (%s)(0 - wind_l%d) : (%s)(wind_l%d / wind_r%d); })", id, t,
+                id, t, id, id);
+    } else if (type_is_signed(type)) {
+        fprintf(out, "wind_r%d == -1 ? (%s)0 : (%s)(wind_l%d %% wind_r%d); })", id, t, t, id, id);
+    } else {
+        fprintf(out, "(%s)(wind_l%d %s wind_r%d); })", t, id, op_text(op), id);
+    }
+}
+
 static void emit_binary(const Expr *expr, FILE *out) {
     Op op = expr->as.binary.op;
     const Expr *left = expr->as.binary.left;
     const Expr *right = expr->as.binary.right;
+    if (checked_division(op, expr->type, right)) {
+        emit_division(op, expr->type, left, NULL, right, expr->loc.line, out);
+        return;
+    }
     if (op == OP_ADD && expr->type == TYPE_STRING) {
         emit_joined(expr, out);
         return;
@@ -1818,6 +1914,32 @@ static void emit_map_builtin(const Expr *expr, const Symbol *map, FILE *out) {
 /* A call of one of the built-in functions on growable arrays. Those that
    give no value are statement expressions ending in "(void)0". */
 static void emit_builtin(const Expr *expr, FILE *out) {
+    if (expr->as.call.builtin == BUILTIN_ASSERT) {
+        /* The condition, as written, is the message. */
+        const Expr *condition = expr->as.call.args[0];
+        used.helpers[HELPER_ASSERT_FAIL] = true;
+        fputs("((", out);
+        emit_expr(condition, out);
+        fprintf(out, ") ? (void)0 : wind_assert_fail(%d, ", expr->loc.line);
+        Str text = {"(condition)", 11};
+        if (emitting_unit && condition->loc.offset + condition->loc.len <= emitting_unit->src.len) {
+            text = (Str){emitting_unit->src.data + condition->loc.offset, condition->loc.len};
+        }
+        emit_c_string(text, out);
+        fputs("))", out);
+        return;
+    }
+    if (expr->as.call.builtin == BUILTIN_PANIC) {
+        /* The message is written as cerr would write it. */
+        used.helpers[HELPER_PANIC] = true;
+        int id = ++held.next_id;
+        fprintf(out, "__extension__ ({ wind_list_char wind_e%d = {0}; ", id);
+        char into[32];
+        snprintf(into, sizeof into, "&wind_e%d", id);
+        emit_written_into(expr->as.call.args, expr->as.call.count, into, expr->loc.line, true, out);
+        fprintf(out, " wind_panic(%d, wind_e%d.data); })", expr->loc.line, id);
+        return;
+    }
     if (expr->as.call.builtin == BUILTIN_SORT || expr->as.call.builtin == BUILTIN_REVERSE) {
         emit_order_builtin(expr, out);
         return;
@@ -2172,6 +2294,27 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
             fputs(")", out);
             break;
         }
+        if (bounds_checked && type_is_float(expr->as.cast.operand->type) &&
+            (type_is_integer(expr->type) || expr->type == TYPE_CHAR)) {
+            /* A float that does not fit stops the program; C leaves it
+               undefined. A value fits if it is truncated to one. */
+            used.helpers[HELPER_FLOAT_FAIL] = true;
+            int id = ++held.next_id;
+            int bits = (int)type_size(expr->type) * 8;
+            bool is_signed = type_is_signed(expr->type);
+            fprintf(out, "__extension__ ({ long double wind_f%d = (long double)(", id);
+            emit_expr(expr->as.cast.operand, out);
+            if (is_signed) {
+                fprintf(out, "); if (WIND_UNLIKELY(!(wind_f%d > -0x1p%dL - 1 && wind_f%d < 0x1p%dL)))",
+                        id, bits - 1, id, bits - 1);
+            } else {
+                fprintf(out, "); if (WIND_UNLIKELY(!(wind_f%d > -1.0L && wind_f%d < 0x1p%dL)))", id,
+                        id, bits);
+            }
+            fprintf(out, " wind_float_fail(%d, \"%s\"); (%s)wind_f%d; })", expr->loc.line,
+                    type_name(expr->type), c_type(expr->type), id);
+            break;
+        }
         fprintf(out, "((%s)", c_type(expr->type));
         emit_expr(expr->as.cast.operand, out);
         fputs(")", out);
@@ -2504,6 +2647,11 @@ static bool continues(const Block *block, const Stmt *loop) {
         case STMT_DO_WHILE:
             if (continues(&stmt->as.loop.body, loop)) return true;
             break;
+        case STMT_SWITCH:
+            for (size_t j = 0; j < stmt->as.switch_.case_count; j++) {
+                if (continues(&stmt->as.switch_.cases[j].body, loop)) return true;
+            }
+            break;
         default:
             break;
         }
@@ -2568,6 +2716,77 @@ static size_t loop_mark(const Stmt *loop) {
     return deferred.count;
 }
 
+/* A case's value as a C constant, whatever constant it was written as. */
+static void emit_case_number(long long number, FILE *out) {
+    if (number == LLONG_MIN) {
+        fputs("(-9223372036854775807LL - 1)", out);
+    } else {
+        fprintf(out, "%lldLL", number);
+    }
+}
+
+/* A C switch. On a string, the case that matches is found by comparing the
+   string with each case's values in turn, and its position switched on. */
+static void emit_switch(const Stmt *stmt, int depth, FILE *out) {
+    const Expr *subject = stmt->as.switch_.subject;
+    bool is_string = subject->type == TYPE_STRING;
+    int inner = depth;
+    if (is_string) {
+        used.helpers[HELPER_STRING_EQ] = true;
+        int id = ++held.next_id;
+        indent(depth, out);
+        fputs("{\n", out);
+        inner = depth + 1;
+        indent(inner, out);
+        fprintf(out, "wind_string wind_s%d = ", id);
+        emit_expr(subject, out);
+        fputs(";\n", out);
+        indent(inner, out);
+        fprintf(out, "int wind_k%d =", id);
+        for (size_t i = 0; i < stmt->as.switch_.case_count; i++) {
+            const SwitchCase *each = &stmt->as.switch_.cases[i];
+            for (size_t j = 0; j < each->value_count; j++) {
+                fprintf(out, " wind_string_eq(wind_s%d, ", id);
+                emit_expr(each->values[j], out);
+                fprintf(out, ") ? %zu :", i);
+            }
+        }
+        fputs(" -1;\n", out);
+        indent(inner, out);
+        fprintf(out, "switch (wind_k%d) {\n", id);
+    } else {
+        indent(depth, out);
+        fputs("switch (", out);
+        emit_expr(subject, out);
+        fputs(") {\n", out);
+    }
+    push_loop(stmt);
+    for (size_t i = 0; i < stmt->as.switch_.case_count; i++) {
+        const SwitchCase *each = &stmt->as.switch_.cases[i];
+        indent(inner, out);
+        if (is_string && each->value_count) {
+            fprintf(out, "case %zu: ", i);
+        }
+        for (size_t j = 0; !is_string && j < each->value_count; j++) {
+            fputs("case ", out);
+            emit_case_number(each->numbers[j], out);
+            fputs(": ", out);
+        }
+        if (each->is_default) fputs("default: ", out);
+        fputs("{\n", out);
+        emit_block(&each->body, inner + 1, out);
+        indent(inner, out);
+        fputs(each->falls ? "}\n" : "} break;\n", out);
+    }
+    loop_marks.count--;
+    indent(inner, out);
+    fputs("}\n", out);
+    if (is_string) {
+        indent(depth, out);
+        fputs("}\n", out);
+    }
+}
+
 static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     switch (stmt->kind) {
     case STMT_BLOCK:
@@ -2581,8 +2800,17 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     case STMT_FUNC:
     case STMT_IMPORT:
     case STMT_TYPE:
-    case STMT_GROUP:
     case STMT_SETTING:
+    case STMT_FALLTHROUGH: /* a C case runs on into the next by itself */
+        break;
+    case STMT_SWITCH:
+        emit_switch(stmt, depth, out);
+        break;
+    case STMT_GROUP:
+        /* Left only in a for loop's clauses. */
+        for (size_t i = 0; i < stmt->as.block.count; i++) {
+            emit_stmt(stmt->as.block.stmts[i], depth, out);
+        }
         break;
     case STMT_VAR:
         indent(depth, out);
@@ -2684,6 +2912,21 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         const Expr *value = stmt->as.assign.value;
         if (map_entry_of(target)) {
             emit_map_assign(stmt, map_entry_of(target), depth, out);
+            break;
+        }
+        if (stmt->as.assign.compound && checked_division(stmt->as.assign.op, target->type,
+                                                         value)) {
+            /* "x /= v": the place is found first, then divided as "/" is. */
+            int id = ++held.next_id;
+            indent(depth, out);
+            fprintf(out, "{ %s *wind_p%d = &", c_type(target->type), id);
+            emit_expr(target, out);
+            fprintf(out, "; *wind_p%d = ", id);
+            char left_text[32];
+            snprintf(left_text, sizeof left_text, "(*wind_p%d)", id);
+            emit_division(stmt->as.assign.op, target->type, NULL, left_text, value,
+                          stmt->loc.line, out);
+            fputs("; }\n", out);
             break;
         }
         if (stmt->as.assign.compound && target->type == TYPE_STRING) {
@@ -3257,6 +3500,7 @@ static void emit_prototypes(const Unit *unit, FILE *out) {
 }
 
 static void emit_functions(const Unit *unit, FILE *out) {
+    emitting_unit = unit;
     const Block *top = &unit->program.top;
     for (size_t i = 0; i < top->count; i++) {
         const Stmt *func = top->stmts[i];
@@ -3313,8 +3557,10 @@ static void emit_program(const Unit *unit, FILE *out) {
     /* An imported file's top level holds only declarations; running it
        initializes the file's variables. */
     for (size_t i = 0; i < unit->module_count; i++) {
+        emitting_unit = unit->modules[i];
         emit_block(&unit->modules[i]->program.top, 1, out);
     }
+    emitting_unit = unit;
     emit_block(top, 1, out);
     if (wind_main) {
         /* The value an int main returns is the process exit status, where

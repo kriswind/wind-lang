@@ -1,0 +1,14 @@
+tests/err/switch.wind:6:12: error: a switch is on an integer, a 'char', an enum or a string, not 'float'
+tests/err/switch.wind:10:13: error: this value already has a case, at line 10
+tests/err/switch.wind:12:10: error: a case must be a value known at compile time
+tests/err/switch.wind:14:10: error: this case is a 'string', and the switch is on 'int'
+tests/err/switch.wind:16:5: error: this case runs on into the next; end it with 'break', or with 'fallthrough' if that is meant
+tests/err/switch.wind:22:5: error: a switch has one 'default', and this one has one at line 20
+tests/err/switch.wind:27:10: error: this value already has a case, at line 26
+tests/err/switch.wind:32:20: error: 'fallthrough' can only be the last statement of a case of a switch
+tests/err/switch.wind:35:9: error: 'fallthrough' needs a case after it to go on to
+tests/err/switch.wind:37:5: error: 'continue' outside of a loop
+tests/err/switch.wind:38:5: error: 'fallthrough' can only be the last statement of a case of a switch
+tests/err/switch.wind:39:5: error: 'break' outside of a loop or a switch
+tests/err/switch.wind:44:5: warning: unreachable code: every case of the 'switch' before it leaves this block
+tests/err/switch.wind:48:5: error: 'case' outside of a switch

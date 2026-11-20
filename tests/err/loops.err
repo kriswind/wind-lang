@@ -1,4 +1,4 @@
-tests/err/loops.wind:2:1: error: 'break' outside of a loop
+tests/err/loops.wind:2:1: error: 'break' outside of a loop or a switch
 tests/err/loops.wind:3:1: error: 'continue' outside of a loop
 tests/err/loops.wind:4:7: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/loops.wind:6:1: error: expected '{', found a name; a body without braces needs its condition in parentheses
@@ -9,7 +9,7 @@ tests/err/loops.wind:10:24: error: a for loop's last clause must be an assignmen
 tests/err/loops.wind:11:17: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/loops.wind:12:22: error: expected ';', found ')'
 tests/err/loops.wind:14:9: error: undefined name 'k'
-tests/err/loops.wind:15:12: error: 'break' outside of a loop
+tests/err/loops.wind:15:12: error: 'break' outside of a loop or a switch
 tests/err/loops.wind:16:5: error: 'g' can reach its end without returning a 'int' value
 tests/err/loops.wind:17:5: error: 'h' can reach its end without returning a 'int' value
 tests/err/loops.wind:19:5: error: expected a name, found 'while'

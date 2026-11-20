@@ -1,0 +1,24 @@
+// Several declarations of one type in one statement, as in C, and a for
+// loop that keeps two variables.
+const int LOW = 1, HIGH = 6
+int total = 0, calls
+
+void count(int n) {
+    calls++
+    total += n
+}
+
+int main() {
+    int width = 3, height = width * 2, cells[4]
+    string first = "left", second = first
+    cout << width << " " << height << " " << len(cells) << " " << first << second << "\n"
+    for (int i = LOW, j = HIGH; i < j; i++, j--) {
+        cout << i << "-" << j << " "
+        count(j - i)
+    }
+    cout << "\n" << total << " in " << calls << " calls\n"
+    int a, b
+    for (a = 0, b = 10; a < b; a += 3, b -= 3) count(1)
+    cout << a << " " << b << " " << calls << "\n"
+    return 0
+}
