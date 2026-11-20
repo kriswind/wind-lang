@@ -12,7 +12,7 @@ typedef _Bool wind_bool;
 typedef unsigned char wind_char;
 typedef intptr_t wind_int;
 typedef int64_t wind_i64;
-typedef double wind_f64;
+typedef double wind_float;
 
 typedef struct {
     const char *data;

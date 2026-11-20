@@ -1,6 +1,7 @@
-// A struct holding growable arrays or maps can be passed to a function, or
-// gone through with "for ... in", as a copy that shares those with the
-// original: the function reads them, and nothing in the copy can change.
+// A struct holding growable arrays or maps can be passed to a function,
+// gone through with "for ... in", or given a name of its own, as a copy
+// that shares those with the original: it reads them, and nothing in the
+// copy can change.
 
 struct Bag {
     string name
@@ -30,6 +31,8 @@ int main() {
     append(lone.items, 7)
     show(lone)
     cout << total({"empty"}) << "\n"
+    Bag second = bags[1]
+    cout << second.name << " " << second.items << " " << second.counts << "\n"
     delete(lone.items)
     return 0
 }

@@ -59,10 +59,20 @@ builds text has nothing added to its output path. `left`, `right` and
 into a scratch array first, to measure it. `cerr` builds its text this way
 and then writes it out whole.
 
+Joining strings with `+` makes new text, which a `string` view cannot own.
+It goes in scratch memory, as Odin's temporary allocator does: one list of
+blocks, kept until the program ends. `#temp { ... }` notes how long the list
+is as the block starts, and defers freeing what was added since, so the
+block frees its joined text however it is left. Text joined inside a
+`#temp` block must not be kept past it; a map copies its keys, so joined
+text is always safe as one. The choice keeps a script free of bookkeeping,
+and gives a long-running program one plain way to stop its joins growing.
+
 ## To come
 
-1. **Scratch memory**: `#temp { ... }`, where everything allocated inside is
-   freed as the block ends; it could later name an allocator to use there.
+1. **Allocators for `#temp`**: a `#temp` block could name where what is
+   allocated inside it comes from, growable arrays and maps included, and
+   free all of it as the block ends.
 2. **Leak reports**: an optional report, at exit, of growable arrays never
    deleted, for programs that should clean up.
 3. **Boards**: a warning, or an opt-in, for growable arrays on boards with a

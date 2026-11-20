@@ -1,0 +1,15 @@
+// What joining strings does not allow.
+void nothing() {}
+
+int main() {
+    string a = "a" + nothing()
+    string b = "b"
+    b += nothing()
+    b -= "x"
+    int n = "1" + 2
+    #temp cout << a << "\n"
+    #tmp {
+        cout << b << n << "\n"
+    }
+    return 0
+}

@@ -354,6 +354,9 @@ static Symbol *resolve_member(Checker *c, Str module, SrcLoc module_loc, Str nam
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint);
 static const Symbol *array_operand(Checker *c, Expr *expr);
 static bool type_owns(TypeKind type);
+static bool is_format(Builtin builtin);
+static Builtin builtin_called(const Checker *c, const Expr *expr);
+static void check_written(Checker *c, Expr *arg, const char *doing);
 static bool report_shared(Checker *c, const Expr *expr, const char *doing);
 static bool is_fresh(const Expr *value);
 static void report_copy(Checker *c, SrcLoc loc, TypeKind type, const char *instead);
@@ -1050,6 +1053,16 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     Expr *left = expr->as.binary.left;
     Expr *right = expr->as.binary.right;
 
+    /* left, right or fixed on either side of "+" joins text, as it does in
+       cout; the other side is then written as text too. */
+    bool left_format = left->kind == EXPR_CALL && is_format(builtin_called(c, left));
+    bool right_format = right->kind == EXPR_CALL && is_format(builtin_called(c, right));
+    if (op == OP_ADD && (left_format || right_format)) {
+        check_written(c, left, "join");
+        check_written(c, right, "join");
+        return TYPE_STRING;
+    }
+
     if (op == OP_AND || op == OP_OR) {
         Expr *sides[2] = {left, right};
         for (int i = 0; i < 2; i++) {
@@ -1083,6 +1096,17 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
 
     if (left->type == TYPE_INVALID || right->type == TYPE_INVALID) {
         return arithmetic ? TYPE_INVALID : TYPE_BOOL;
+    }
+    /* "+" with a string on either side joins the two as text, the other
+       written as cout would write it. */
+    if (op == OP_ADD && (left->type == TYPE_STRING || right->type == TYPE_STRING)) {
+        for (int side = 0; side < 2; side++) {
+            const Expr *part = side ? right : left;
+            if (part->type == TYPE_VOID) {
+                error(c, part->loc, "cannot join a 'void' value to a string");
+            }
+        }
+        return TYPE_STRING;
     }
     bool left_pointer = type_is_pointer(left->type);
     bool right_pointer = type_is_pointer(right->type);
@@ -2353,9 +2377,6 @@ static void check_decl(Checker *c, Stmt *stmt) {
             error(c, init->loc,
                   "a constant's value must be known at compile time; use a variable "
                   "for this");
-        } else if (type_owns(type) && !is_fresh(init)) {
-            report_copy(c, init->loc, type, "make it with '{ ... }', or point to the one "
-                                            "there is");
         }
     }
 
@@ -2363,6 +2384,9 @@ static void check_decl(Checker *c, Stmt *stmt) {
                                 stmt->loc, type);
     symbol->decl = stmt;
     symbol->exported = stmt->exported;
+    /* Given an existing struct that holds growable arrays or maps, the
+       variable is a copy that shares them, read-only, as a parameter is. */
+    symbol->shares = init && type_owns(type) && !is_fresh(init);
     stmt->as.decl.symbol = symbol;
     declare(c, symbol);
     if (!is_const) {
@@ -2600,6 +2624,13 @@ static void check_assign(Checker *c, Stmt *stmt) {
     }
     TypeKind found = check_expr(c, stmt->as.assign.value, expected);
     if (expected == TYPE_INVALID) return;
+    if (compound && op == OP_ADD && expected == TYPE_STRING && !stmt->as.assign.step) {
+        /* "s += v" joins v to the end of s. */
+        if (found == TYPE_VOID) {
+            error(c, stmt->as.assign.value->loc, "cannot join a 'void' value to a string");
+        }
+        return;
+    }
     if (type_owns(expected) && !compound) {
         report_copy(c, stmt->as.assign.value->loc, expected,
                     "change its fields, or point to it with a pointer");
@@ -2616,6 +2647,11 @@ static void check_assign(Checker *c, Stmt *stmt) {
         return;
     }
     bool needs_integer = op == OP_MOD || is_bitwise(op);
+    if (compound && stmt->as.assign.step && !type_is_numeric(expected)) {
+        error(c, stmt->loc, "operator '%s' is not defined for '%s'", op == OP_ADD ? "++" : "--",
+              type_name(expected));
+        return;
+    }
     if (compound && !(needs_integer ? type_is_integer(expected) : type_is_numeric(expected))) {
         error(c, stmt->loc, "operator '%s=' is not defined for '%s'", op_text(op),
               type_name(expected));
@@ -3069,6 +3105,8 @@ static void check_stmt(Checker *c, Stmt *stmt) {
     case STMT_FOR_IN:
         check_for_in(c, stmt);
         break;
+    case STMT_SCRATCH:
+        break; /* made by the parser for #temp, and right as it is */
     case STMT_DEFER: {
         if (!c->defer_seen) c->defer_seen = stmt;
         const Stmt *outer_loop = c->loop;

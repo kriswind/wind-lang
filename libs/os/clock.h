@@ -16,10 +16,10 @@
 
 /* Seconds from some moment fixed while the program runs, on a clock that
    only goes forward: the time between two readings is how long passed. */
-static wind_f64 os_clock(void) {
+static wind_float os_clock(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    return (wind_f64)now.tv_sec + (wind_f64)now.tv_nsec / 1e9;
+    return (wind_float)now.tv_sec + (wind_float)now.tv_nsec / 1e9;
 }
 
 /* Appends today's date, where the program runs, as "2026-11-18". */
@@ -45,11 +45,11 @@ static void os_today(wind_list_char *into) {
 }
 
 /* Waits for the given number of seconds. */
-static void os_sleep(wind_f64 seconds) {
+static void os_sleep(wind_float seconds) {
     if (seconds <= 0) return;
     struct timespec wait;
     wait.tv_sec = (time_t)seconds;
-    wait.tv_nsec = (long)((seconds - (wind_f64)wait.tv_sec) * 1e9);
+    wait.tv_nsec = (long)((seconds - (wind_float)wait.tv_sec) * 1e9);
     while (nanosleep(&wait, &wait) != 0) {
     }
 }

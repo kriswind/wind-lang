@@ -6,7 +6,6 @@ tests/err/semantics.wind:6:9: error: cannot initialize 'int' variable with 'stri
 tests/err/semantics.wind:7:8: error: mismatched types 'i8' and 'int' for operator '+'
 tests/err/semantics.wind:8:13: error: float literal cannot be used as 'int'
 tests/err/semantics.wind:9:10: error: cannot initialize 'bool' variable with 'int'
-tests/err/semantics.wind:10:12: error: operator '+' is not defined for 'string'
 tests/err/semantics.wind:11:11: error: character literal must be a single byte; use a string for more
 tests/err/semantics.wind:12:11: error: empty character literal
 tests/err/semantics.wind:13:9: error: invalid number literal '12abc'

@@ -137,11 +137,7 @@ int main(int argc, string argv[]) {
     for (int i = 1; i < argc; i++) {
         string arg = argv[i]
         bool takes = arg == "--size" || arg == "--runs" || arg == "--only" || arg == "--skip"
-        if (takes && i + 1 >= argc) {
-            char problem[..]
-            append(problem, "missing a value after ", arg)
-            usage(string(problem))
-        }
+        if (takes && i + 1 >= argc) usage("missing a value after " + arg)
         if (arg == "--size") {
             i++
             options.size = argv[i]
@@ -184,11 +180,7 @@ int main(int argc, string argv[]) {
         chosen = clone(known)
     } else {
         for (string name in options.problems) {
-            if (!listed(known, name)) {
-                char problem[..]
-                append(problem, "unknown problem: ", name)
-                usage(string(problem))
-            }
+            if (!listed(known, name)) usage("unknown problem: " + name)
             append(chosen, name)
         }
     }
@@ -224,26 +216,26 @@ int main(int argc, string argv[]) {
         char expected[..]
         bool have_expected = !options.expected && os.read_file(string(expected_path), expected)
         for (int at in order) {
+            Language lang = languages[at]
             char src[..]
-            os.join(src, string(folder), languages[at].file)
+            os.join(src, string(folder), lang.file)
             if (!os.is_file(string(src))) continue
-            char exe[..]
-            append(exe, OUT, "/", problem, "/", languages[at].name)
+            string exe = OUT + "/" + problem + "/" + lang.name
             char out[..]
             char err[..]
-            if (len(languages[at].build) > 0) {
-                os.make_dirs(os.dir_name(string(exe)))
+            if (len(lang.build) > 0) {
+                os.make_dirs(os.dir_name(exe))
                 string command[..]
-                fill(command, languages[at].build, string(src), string(exe))
+                fill(command, lang.build, string(src), exe)
                 if (os.capture(command, "", out, err) != 0) {
                     failures++
-                    cout << "FAIL " << problem << " " << languages[at].name << ": build\n"
+                    cout << "FAIL " << problem << " " << lang.name << ": build\n"
                          << text.trim(string(out)) << text.trim(string(err)) << "\n"
                     continue
                 }
             }
             string command[..]
-            fill(command, languages[at].run, string(src), string(exe))
+            fill(command, lang.run, string(src), exe)
             append(command, options.size)
             float best = -1
             int status = 0
@@ -259,11 +251,11 @@ int main(int argc, string argv[]) {
             }
             if (status != 0) {
                 failures++
-                cout << "FAIL " << problem << " " << languages[at].name << ": exit " << status << "\n"
+                cout << "FAIL " << problem << " " << lang.name << ": exit " << status << "\n"
                      << text.trim(string(out)) << text.trim(string(err)) << "\n"
                 continue
             }
-            if (options.expected && languages[at].name == REFERENCE) {
+            if (options.expected && lang.name == REFERENCE) {
                 os.write_file(string(expected_path), string(out))
                 clear(expected)
                 append(expected, string(out))
@@ -277,13 +269,11 @@ int main(int argc, string argv[]) {
             }
             if (string(out) != string(expected)) {
                 failures++
-                cout << "FAIL " << problem << " " << languages[at].name << ": wrong answer\n--- expected\n"
+                cout << "FAIL " << problem << " " << lang.name << ": wrong answer\n--- expected\n"
                      << string(expected) << "--- printed\n" << string(out)
                 continue
             }
-            char key[..]
-            append(key, problem, "/", languages[at].name)
-            times[string(key)] = best
+            times[problem + "/" + lang.name] = best
         }
     }
 
@@ -308,11 +298,8 @@ bool has_c(int langs[]) {
 
 // The time a language took on a problem, or -1 if there is none.
 float time_of(float times[string], string problem, string name) {
-    char key[..]
-    append(key, problem, "/", name)
-    float t = has(times, string(key)) ? times[string(key)] : -1
-    delete(key)
-    return t
+    string key = problem + "/" + name
+    return has(times, key) ? times[key] : -1
 }
 
 void print_table(string chosen[], int langs[], float times[string], int runs) {
@@ -361,10 +348,8 @@ void print_table(string chosen[], int langs[], float times[string], int runs) {
 // Writes bench/problems/RESULTS.md from a run of every problem.
 void write_results(string chosen[], int langs[], float times[string], int runs) {
     char page[..]
-    char timing[..]
-    append(timing, "the best of up to ", runs, " runs")
     results.heading(page, "Problem set results", "wind run bench/problems/run.wind --size bench",
-                    string(timing))
+                    "the best of up to " + runs + " runs")
     append(page, "\n\nTime at bench size as a multiple of C's, and C's own time in seconds. ",
            "Every program's answer was checked first.\n\n| Problem |")
     for (int at in langs) {
@@ -417,9 +402,10 @@ void write_results(string chosen[], int langs[], float times[string], int runs) 
     }
     append(page, " |\n\nThe mean is the geometric mean of the ratios.\n\n| | Toolchain |\n| --- | --- |\n")
     for (int at in langs) {
-        append(page, "| ", languages[at].label, " | ", languages[at].toolchain)
+        Language lang = languages[at]
+        append(page, "| ", lang.label, " | ", lang.toolchain)
         string command[..]
-        fill(command, languages[at].version, "", "")
+        fill(command, lang.version, "", "")
         char version[..]
         if (results.tool_version(command, "", version)) append(page, " ", string(version))
         append(page, " |\n")

@@ -32,6 +32,9 @@ int main() {
         append(bag.items, 1)
         bag.counts["x"]++
     }
+    Bag named = bags[0]
+    append(named.items, 2)
+    named.counts["y"] = 1
     spoil(bags[0])
     return 0
 }

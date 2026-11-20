@@ -589,6 +589,38 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "    }\n"
         "}\n",
         HEADER_STDDEF, {0}, {0}},
+    [HELPER_SCRATCH] = {
+        "/* Scratch memory: the text that \"+\" on strings makes, kept until the\n"
+        "   #temp block it was made in ends, or the program does. */\n"
+        "static struct {\n"
+        "    void **blocks;\n"
+        "    size_t count;\n"
+        "    size_t cap;\n"
+        "} wind_scratch;\n"
+        "\n"
+        "/* Keeps text in scratch memory, and gives a view of it. */\n"
+        "static wind_string wind_keep(wind_list_char *text, int line) {\n"
+        "    if (wind_scratch.count == wind_scratch.cap) {\n"
+        "        size_t cap = wind_scratch.cap ? wind_scratch.cap * 2 : 64;\n"
+        "        void **grown = realloc(wind_scratch.blocks, cap * sizeof *grown);\n"
+        "        if (!grown) wind_out_of_memory(line);\n"
+        "        wind_scratch.blocks = grown;\n"
+        "        wind_scratch.cap = cap;\n"
+        "    }\n"
+        "    wind_scratch.blocks[wind_scratch.count++] = text->data;\n"
+        "    wind_string kept = { (const char *)text->data, text->len };\n"
+        "    return kept;\n"
+        "}\n"
+        "\n"
+        "static size_t wind_scratch_mark(void) {\n"
+        "    return wind_scratch.count;\n"
+        "}\n"
+        "\n"
+        "/* Frees the scratch memory kept since mark. */\n"
+        "static void wind_scratch_free(size_t mark) {\n"
+        "    while (wind_scratch.count > mark) free(wind_scratch.blocks[--wind_scratch.count]);\n"
+        "}\n",
+        HEADER_STDDEF | HEADER_STDLIB, {HELPER_OUT_OF_MEMORY}, {TYPE_STRING, TYPE_CHAR}},
     [HELPER_STRING_AT] = {
         "static wind_char wind_string_at(wind_string s, long long i, int is_signed, int line) {\n"
         "    return (wind_char)s.data[wind_index(i, is_signed, s.len, line)];\n"
@@ -1401,6 +1433,8 @@ static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
         break;
     case EXPR_BINARY:
         if (expr->as.binary.op == OP_AND || expr->as.binary.op == OP_OR) break;
+        /* Joined strings work out their parts in order themselves. */
+        if (expr->as.binary.op == OP_ADD && expr->type == TYPE_STRING) break;
         count = 2;
         *operands = xmalloc(2 * sizeof **operands);
         (*operands)[0] = expr->as.binary.left;
@@ -1446,10 +1480,16 @@ static void emit_field_element(const Symbol *array, const Expr *field, const Exp
     fputs("; }))", out);
 }
 
+static void emit_joined(const Expr *expr, FILE *out);
+
 static void emit_binary(const Expr *expr, FILE *out) {
     Op op = expr->as.binary.op;
     const Expr *left = expr->as.binary.left;
     const Expr *right = expr->as.binary.right;
+    if (op == OP_ADD && expr->type == TYPE_STRING) {
+        emit_joined(expr, out);
+        return;
+    }
 
     if (left->type == TYPE_STRING && op != OP_EQ && op != OP_NE) {
         used.helpers[HELPER_STRING_COMPARE] = true;
@@ -1571,6 +1611,36 @@ static void emit_written_into(Expr *const *args, size_t count, const char *into,
     if (nul) fputs("wind_put(\"\", 1);\n", out);
     fprintf(out, "wind_sink = wind_outer%d; }", id);
     held.count = mark;
+}
+
+/* Collects the parts that a chain of "+" on strings joins, in order. */
+static void collect_joined(const Expr *expr, const Expr ***parts, size_t *count, size_t *cap) {
+    if (expr->kind == EXPR_BINARY && expr->as.binary.op == OP_ADD && expr->type == TYPE_STRING) {
+        collect_joined(expr->as.binary.left, parts, count, cap);
+        collect_joined(expr->as.binary.right, parts, count, cap);
+        return;
+    }
+    if (*count == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        *parts = xrealloc(*parts, *cap * sizeof **parts);
+    }
+    (*parts)[(*count)++] = expr;
+}
+
+/* Strings joined with "+": every part is worked out, then written as text
+   into a new array of char, which is kept in scratch memory. */
+static void emit_joined(const Expr *expr, FILE *out) {
+    const Expr **parts = NULL;
+    size_t count = 0, cap = 0;
+    collect_joined(expr, &parts, &count, &cap);
+    used.helpers[HELPER_SCRATCH] = true;
+    int id = ++held.next_id;
+    fprintf(out, "__extension__ ({ wind_list_char wind_j%d = {0}; ", id);
+    char into[32];
+    snprintf(into, sizeof into, "&wind_j%d", id);
+    emit_written_into((Expr *const *)parts, count, into, expr->loc.line, false, out);
+    fprintf(out, " wind_keep(&wind_j%d, %d); })", id, expr->loc.line);
+    free(parts);
 }
 
 /* left, right and fixed, as cout or a sink writes them. */
@@ -2613,6 +2683,26 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
             emit_map_assign(stmt, map_entry_of(target), depth, out);
             break;
         }
+        if (stmt->as.assign.compound && target->type == TYPE_STRING) {
+            /* "s += v": the place is found once, and v joined to it. */
+            int id = ++held.next_id;
+            size_t mark = held.count;
+            indent(depth, out);
+            fprintf(out, "{ %s *wind_p%d = &", c_type(TYPE_STRING), id);
+            emit_expr(target, out);
+            fprintf(out, "; *wind_p%d = ", id);
+            hold(target, id, true);
+            const Expr *parts[2] = {target, value};
+            used.helpers[HELPER_SCRATCH] = true;
+            int join = ++held.next_id;
+            fprintf(out, "__extension__ ({ wind_list_char wind_j%d = {0}; ", join);
+            char into[32];
+            snprintf(into, sizeof into, "&wind_j%d", join);
+            emit_written_into((Expr *const *)parts, 2, into, stmt->loc.line, false, out);
+            fprintf(out, " wind_keep(&wind_j%d, %d); }); }\n", join, stmt->loc.line);
+            held.count = mark;
+            break;
+        }
         if (value->kind == EXPR_CALL && value->as.call.builtin == BUILTIN_CLONE) {
             /* The copy is made before the old elements are freed, since it
                may be a copy of them. */
@@ -2843,6 +2933,15 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         fputs("} while (", out);
         emit_expr(stmt->as.loop.cond, out);
         fputs(");\n", out);
+        break;
+    case STMT_SCRATCH:
+        used.helpers[HELPER_SCRATCH] = true;
+        indent(depth, out);
+        if (stmt->as.scratch.free) {
+            fprintf(out, "wind_scratch_free(wind_mark%d);\n", stmt->as.scratch.id);
+        } else {
+            fprintf(out, "size_t wind_mark%d = wind_scratch_mark();\n", stmt->as.scratch.id);
+        }
         break;
     case STMT_DEFER:
         if (deferred.count == deferred.cap) {

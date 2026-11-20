@@ -338,8 +338,10 @@ static bool parse_base_type(Parser *p, TypeKind *out, TypeRef **ref) {
     }
 
     TypeKind base = TYPE_INT;
+    bool is_double = false;
     if (at(p, TOK_TYPE)) {
         base = p->tok.type;
+        is_double = str_eq_cstr(p->tok.text, "double");
         next(p);
     }
     bool valid = !(is_unsigned && is_signed) && shorts <= 1 && longs <= 2 &&
@@ -350,7 +352,7 @@ static bool parse_base_type(Parser *p, TypeKind *out, TypeRef **ref) {
         else *out = is_unsigned ? TYPE_UINT : TYPE_INT;
     } else if (base == TYPE_CHAR && !shorts && !longs) {
         *out = is_unsigned ? TYPE_U8 : TYPE_I8;
-    } else if (base == TYPE_F64 && longs == 1 && !shorts && !is_unsigned && !is_signed) {
+    } else if (is_double && longs == 1 && !shorts && !is_unsigned && !is_signed) {
         *out = TYPE_F128;
     } else {
         valid = false;
@@ -1492,6 +1494,7 @@ static Stmt *new_assign(Parser *p, Token first, Expr *target) {
 static Stmt *new_step(Parser *p, Token first, Expr *target, Token step) {
     Stmt *stmt = new_assign(p, first, target);
     stmt->as.assign.compound = true;
+    stmt->as.assign.step = true;
     stmt->as.assign.op = step.kind == TOK_INC ? OP_ADD : OP_SUB;
     stmt->as.assign.value = new_expr(p, EXPR_INT_LIT, step.loc);
     stmt->as.assign.value->as.int_lit = 1;
@@ -1746,9 +1749,42 @@ static Stmt *parse_setting(Parser *p, bool top_level) {
     return stmt;
 }
 
+/* Parses the block after "#temp": what "+" on strings makes in it is freed
+   as it is left. It becomes a block that notes how much scratch memory
+   there is as it starts, and defers freeing what was made since. */
+static Stmt *parse_temp(Parser *p, Token directive, bool *needs_terminator) {
+    static int next_id;
+    next(p);
+    skip_newlines(p);
+    if (!at(p, TOK_LBRACE)) {
+        error_expected(p, "'{' after '#temp'; it covers a block");
+        return NULL;
+    }
+    Stmt *body = new_stmt(p, STMT_BLOCK, directive.loc);
+    if (!parse_block(p, &body->as.block)) return NULL;
+    *needs_terminator = false;
+    int id = ++next_id;
+    Stmt *mark = new_stmt(p, STMT_SCRATCH, directive.loc);
+    mark->as.scratch.id = id;
+    Stmt *release = new_stmt(p, STMT_SCRATCH, directive.loc);
+    release->as.scratch.id = id;
+    release->as.scratch.free = true;
+    Stmt *later = new_stmt(p, STMT_DEFER, directive.loc);
+    later->as.deferred = release;
+    Block *block = &body->as.block;
+    Stmt **stmts = arena_alloc(p->arena, (block->count + 2) * sizeof *stmts);
+    stmts[0] = mark;
+    stmts[1] = later;
+    for (size_t i = 0; i < block->count; i++) stmts[i + 2] = block->stmts[i];
+    block->stmts = stmts;
+    block->count += 2;
+    return body;
+}
+
 static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) {
     Token directive = p->tok;
     if (is_setting(directive.text)) return parse_setting(p, top_level);
+    if (str_eq_cstr(directive.text, "temp")) return parse_temp(p, directive, needs_terminator);
     BoundsMode bounds = BOUNDS_INHERIT;
     if (str_eq_cstr(directive.text, "no_bounds_check")) bounds = BOUNDS_UNCHECKED;
     if (str_eq_cstr(directive.text, "bounds_check")) bounds = BOUNDS_CHECKED;
@@ -1756,7 +1792,7 @@ static Stmt *parse_directive(Parser *p, bool top_level, bool *needs_terminator) 
     if (bounds == BOUNDS_INHERIT) {
         diag_add(p->diags, SEV_ERROR, directive.loc,
                  "unknown directive '#%.*s'; there are '#no_bounds_check', "
-                 "'#bounds_check', '#target', '#board' and '#module'",
+                 "'#bounds_check', '#temp', '#target', '#board' and '#module'",
                  (int)directive.text.len, directive.text.data);
         return NULL;
     }

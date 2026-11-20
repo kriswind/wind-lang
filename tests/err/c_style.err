@@ -1,6 +1,5 @@
-tests/err/c_style.wind:2:1: error: operator '+=' is not defined for 'string'
-tests/err/c_style.wind:3:1: error: operator '+=' is not defined for 'string'
-tests/err/c_style.wind:5:1: error: operator '+=' is not defined for 'char'
+tests/err/c_style.wind:3:1: error: operator '++' is not defined for 'string'
+tests/err/c_style.wind:5:1: error: operator '++' is not defined for 'char'
 tests/err/c_style.wind:7:1: error: operator '%=' is not defined for 'float'
 tests/err/c_style.wind:9:1: error: cannot assign to constant 'K'
 tests/err/c_style.wind:10:9: error: invalid number literal '1f'

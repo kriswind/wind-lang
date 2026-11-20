@@ -328,6 +328,9 @@ typedef enum {
     /* "defer statement": runs the statement when the enclosing block is
        left, by its end, a return, a break or a continue. */
     STMT_DEFER,
+    /* What "#temp { ... }" is made of: at its start, noting how much
+       scratch memory there is, and deferred, freeing what was made since. */
+    STMT_SCRATCH,
     STMT_LABEL,
     STMT_RETURN,
     STMT_FUNC,
@@ -476,6 +479,7 @@ struct Stmt {
             Expr *target;
             Expr *value;
             bool compound;
+            bool step; /* written "x++" or "x--" */
             Op op;
         } assign;
         /* STMT_EXPR: always a call */
@@ -528,6 +532,11 @@ struct Stmt {
         const Stmt *target;
         /* STMT_DEFER: what runs when the block is left */
         Stmt *deferred;
+        /* STMT_SCRATCH: which #temp block, and whether this is its end */
+        struct {
+            int id;
+            bool free;
+        } scratch;
         /* STMT_GOTO, STMT_LABEL */
         struct {
             Str name;

@@ -99,7 +99,7 @@ for src in tests/std/*.wind; do
 done
 
 # The scripts in bench/ that are written in Wind must check cleanly.
-for src in bench/results.wind bench/problems/run.wind; do
+for src in bench/results.wind bench/run.wind bench/problems/run.wind; do
     total=$((total + 1))
     actual=$("$WIND" check "$src" 2>&1; echo "[exit $?]")
     if [ "$actual" != "[exit 0]" ]; then

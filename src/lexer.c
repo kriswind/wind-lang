@@ -54,7 +54,7 @@ static const struct {
     {"float", TOK_TYPE, TYPE_FLOAT},
     {"f16", TOK_TYPE, TYPE_F16},
     {"f32", TOK_TYPE, TYPE_F32},
-    {"f64", TOK_TYPE, TYPE_F64},
+    {"f64", TOK_TYPE, TYPE_FLOAT},
     {"f128", TOK_TYPE, TYPE_F128},
 
     /* C spellings. "unsigned", "signed", "long" and "short" combine with each
@@ -63,7 +63,7 @@ static const struct {
     {"signed", TOK_KW_SIGNED, TYPE_INVALID},
     {"long", TOK_KW_LONG, TYPE_INVALID},
     {"short", TOK_KW_SHORT, TYPE_INVALID},
-    {"double", TOK_TYPE, TYPE_F64},
+    {"double", TOK_TYPE, TYPE_FLOAT},
     {"int8_t", TOK_TYPE, TYPE_I8},
     {"int16_t", TOK_TYPE, TYPE_I16},
     {"int32_t", TOK_TYPE, TYPE_I32},

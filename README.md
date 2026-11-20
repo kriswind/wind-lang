@@ -160,7 +160,8 @@ wind program.wind one two     # argc is 3
 | Pointers | `T *` for any type `T`; see [Pointers](#pointers) |
 
 - `int`, `uint` and `uintptr` are pointer-sized. `float` is 64-bit.
-- `byte` is another name for `u8`.
+- `byte` is another name for `u8`, and `f64` and C's `double` are other
+  names for `float`: they are the same type, so they mix freely.
 - A `string` is a contiguous array of bytes with an explicit length (a
   pointer and a length, as in Odin). It is not NUL-terminated, so it may
   contain any byte, including `\0`.
@@ -613,12 +614,13 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
   or taken out of a growable array with `pop`, and it cannot be assigned,
   returned, appended from a variable, or kept in a map. Its arrays and maps
   work like any others.
-- Passed to a function, or gone through with `for ... in`, it is a copy that
-  shares those arrays and maps with the original, and is read-only all the
-  way down: nothing in it can be changed, grown or pointed to. The function
-  reads it without copying any elements. A function that changes one takes
-  the array it is in, and its index. While a function runs, it must not grow
-  the array that the struct it was given lives in, which would move it:
+- Passed to a function, gone through with `for ... in`, or given a name of
+  its own, as in `Language lang = languages[i]`, it is a copy that shares
+  those arrays and maps with the original, and is read-only all the way
+  down: nothing in it can be changed, grown or pointed to. It is read
+  without copying any elements. A function that changes one takes the array
+  it is in, and its index. While the copy is in use, the original must not
+  change, and the array it lives in must not grow, which would move it:
 
   ```wind
   struct Language {
@@ -1059,6 +1061,36 @@ cout << right(fixed(t, 3), 8) << "\n"             // a fixed-point column
 - `fixed(x, digits)` writes a number with that many digits after the point,
   rounded.
 
+**Joining strings**
+
+`+` with a string on either side joins the two, the other side written as
+`cout` would write it, so numbers, `bool`s and `char`s join too:
+
+```wind
+string message = "took " + fixed(t, 3) + " s for " + runs + " runs"
+```
+
+`left`, `right` and `fixed` work in a join as they do in `cout`, and
+`s += part` joins `part` to the end of `s`.
+
+The joined text lives in scratch memory, which is kept until the program
+ends. That suits a program that runs and exits; in one that joins strings
+over and over, `#temp { ... }` frees everything joined inside it as the
+block is left, by its end or by a `return`, `break` or `continue`:
+
+```wind
+for (string name in names) {
+    #temp {
+        string path = "build/" + name + ".wind"
+        build(path)
+    }
+}
+```
+
+Text joined inside a `#temp` block must not be kept past it: store a copy
+instead, in an array of `char`. A map copies its keys, so joined text can
+always be a map's key.
+
 **Building text**
 
 An array of `char` that grows is where text is built. Appending any value
@@ -1170,10 +1202,10 @@ twelve kernels, each of which leans on one thing:
 | `list` | pointer chasing: a shuffled linked list of a million nodes |
 
 ```sh
-python3 bench/run.py                       # everything (a few minutes); writes bench/RESULTS.md
-python3 bench/run.py --skip python --skip lua
-python3 bench/run.py --only wind --only c sort hash
-python3 bench/run.py --seconds             # times in place of ratios
+wind run bench/run.wind                       # everything (a few minutes); writes bench/RESULTS.md
+wind run bench/run.wind --skip python --skip lua
+wind run bench/run.wind --only wind --only c sort hash
+wind run bench/run.wind --seconds             # times in place of ratios
 ```
 
 The script builds each program, runs every kernel as its own process, keeps
@@ -1185,7 +1217,7 @@ for a kernel. A language whose toolchain is missing is left out.
 The latest results are in [bench/RESULTS.md](bench/RESULTS.md): each
 language's time relative to C over all twelve kernels, each kernel on its
 own, and the toolchain versions and machine they were measured with.
-`bench/run.py` writes that file whenever it runs every kernel, so running
+`bench/run.wind` writes that file whenever it runs every kernel, so running
 it again on another machine replaces the numbers with that machine's.
 
 ### Reading the numbers

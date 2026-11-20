@@ -1,4 +1,4 @@
-tests/err/maps.wind:5:5: error: a map's keys cannot be 'f64'; they can be integers, 'char', 'bool', enums, pointers or strings
+tests/err/maps.wind:5:5: error: a map's keys cannot be 'float'; they can be integers, 'char', 'bool', enums, pointers or strings
 tests/err/maps.wind:6:5: error: a map's keys cannot be 'Point'; they can be integers, 'char', 'bool', enums, pointers or strings
 tests/err/maps.wind:7:11: error: a map cannot be constant; declare it as a variable
 tests/err/maps.wind:8:18: error: only a map's entries are written 'key: value'; an array lists its elements
@@ -7,7 +7,7 @@ tests/err/maps.wind:14:10: error: a key of map 'ages' must be 'string', found 'i
 tests/err/maps.wind:15:18: error: map 'ages' cannot be used as a value; look up a key with 'ages[key]', or pass it to a map parameter
 tests/err/maps.wind:16:16: error: a value in map 'ages' moves when the map grows, so it cannot be pointed to; keep its key instead
 tests/err/maps.wind:17:5: error: cannot assign to map 'ages' as a whole; assign to its keys
-tests/err/maps.wind:18:11: error: argument 1 of 'needs' must be a map from 'string' to 'int', found one from 'f64' to 'f64'
+tests/err/maps.wind:18:11: error: argument 1 of 'needs' must be a map from 'string' to 'int', found one from 'float' to 'float'
 tests/err/maps.wind:19:12: error: 'append' needs a growable array, and 'ages' is a map
 tests/err/maps.wind:20:12: error: cannot read into map 'ages'; read into a variable, then store it under its key
 tests/err/maps.wind:21:13: error: 'has' takes 2 arguments, but 1 was given
