@@ -69,6 +69,9 @@ struct Symbol {
     TypeKind key_type;
     /* A loop variable of "for (... in ...)", which cannot be assigned. */
     bool loop_bound;
+    /* An array parameter declared "const": a view whose elements cannot be
+       changed through it. */
+    bool read_only;
     /* A parameter or loop variable that holds a copy of a struct with a
        growable array or a map in it. The copy shares those elements with
        the original, so nothing in it can be changed or pointed to. */
@@ -400,6 +403,10 @@ typedef struct {
     bool is_map;      /* declared as "V name[K]" */
     TypeKind key_type;
     TypeRef *key_ref; /* NULL for a built-in type; resolved into key_type */
+    /* Written with "const": for an array, its elements cannot be changed
+       through it, and a constant array can be given for it. */
+    bool is_const;
+    SrcLoc const_loc;
     Symbol *symbol; /* set by unit_analyze */
 } Param;
 

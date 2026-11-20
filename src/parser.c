@@ -1041,6 +1041,8 @@ static bool parse_params(Parser *p, Stmt *stmt) {
             TypeKind type;
             TypeRef *type_ref;
             Token param_name;
+            SrcLoc const_loc = p->tok.loc;
+            bool is_const = accept(p, TOK_KW_CONST);
             if (!parse_type(p, &type, &type_ref)) return false;
             /* C's "(void)" for a function without parameters. */
             if (type == TYPE_VOID && stmt->as.func.param_count == 0 &&
@@ -1055,7 +1057,7 @@ static bool parse_params(Parser *p, Stmt *stmt) {
                 type = TYPE_INVALID;
             }
             Param param = {.type = type, .type_ref = type_ref, .name = param_name.text,
-                           .loc = param_name.loc};
+                           .loc = param_name.loc, .is_const = is_const, .const_loc = const_loc};
             if (accept(p, TOK_LBRACKET)) {
                 if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
                     next(p);

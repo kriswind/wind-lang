@@ -42,7 +42,7 @@ export string trim(string s) {
 }
 
 // Appends the parts to into, with sep between each two.
-export void join(char into[..], string parts[], string sep) {
+export void join(char into[..], const string parts[], string sep) {
     for (int i, string part in parts) {
         if (i > 0) append(into, sep)
         append(into, part)

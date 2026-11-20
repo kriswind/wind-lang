@@ -1,0 +1,35 @@
+// The json library: reading JSON into a document, finding what is in it,
+// and writing it out again.
+import ::json
+
+int main() {
+    json.Doc doc
+    string source = "{\"name\": \"wind\", \"version\": [0, 2.5, -3e2], \"ok\": true, "
+                    + "\"none\": null, \"text\": \"tab\\there \\u00e9 \\ud83d\\ude00 \\\"q\\\"\", "
+                    + "\"nested\": {\"b\": 1, \"a\": {}}}"
+    cout << json.parse(&doc, source) << " " << len(doc.nodes) << "\n"
+    int root = 0
+    cout << json.text_of(&doc, json.find(&doc, root, "name")) << " "
+         << json.number_of(&doc, json.find(&doc, root, "version.1")) << " "
+         << json.number_of(&doc, json.find(&doc, root, "version.2")) << " "
+         << json.truth_of(&doc, json.find(&doc, root, "ok")) << " "
+         << json.count(&doc, json.find(&doc, root, "version")) << " "
+         << json.find(&doc, root, "version.3") << " " << json.find(&doc, root, "missing.key") << "\n"
+    cout << json.text_of(&doc, json.find(&doc, root, "text")) << "\n"
+    char out[..]
+    json.write(out, &doc, root, false)
+    cout << string(out) << "\n"
+    clear(out)
+    json.write(out, &doc, json.find(&doc, root, "nested"), true)
+    cout << string(out) << "\n"
+    clear(out)
+    json.quote(out, "say \"hi\"\n\tback\\slash" + char(1))
+    cout << string(out) << "\n"
+    string bad[5] = {"", "{", "[1,]", "{\"a\" 1}", "true false"}
+    for (string b in bad) cout << json.parse(&doc, b)
+    cout << " " << json.parse(&doc, "  [ ]  ") << json.count(&doc, 0) << "\n"
+    delete(out)
+    delete(doc.nodes)
+    delete(doc.text)
+    return 0
+}

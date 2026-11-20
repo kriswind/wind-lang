@@ -2129,10 +2129,13 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
                 emit_named(named(arg), arg, out);
                 fputs(".len }", out);
             } else {
-                /* A fixed array is passed as a view of all its elements. */
+                /* A fixed array is passed as a view of all its elements. A
+                   constant one goes only to a "const" parameter, which never
+                   writes through the view. */
                 fputs("(", out);
                 emit_slice_type(named(arg)->type, out);
                 fputs("){ ", out);
+                if (named(arg)->kind == SYM_CONST) fprintf(out, "(%s *)", c_type(named(arg)->type));
                 emit_named(named(arg), arg, out);
                 fprintf(out, ", %zu }", named(arg)->length);
             }

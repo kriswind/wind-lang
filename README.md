@@ -42,7 +42,8 @@ make install    # installs wind to ~/.local/bin and its libraries to
 Requires GCC or Clang on a POSIX system. `$CC` selects the C compiler used
 both for building `wind` and by `wind` itself (default `cc`).
 
-`make test` also needs `python3`, which drives the language server test.
+`make test` needs nothing more: its scripts, the language server test
+included, are themselves written in Wind.
 
 ## Libraries
 
@@ -57,10 +58,11 @@ source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
 | `::math` | C's maths functions (`sqrt`, `pow`, `sin`, `atan2`, `floor`, `round`…), `PI` and `E`, and helpers: `min`, `max`, `clamp`, `abs`, `sign`, `gcd`, `lcm`, `is_prime`, `lerp`, `radians`, `degrees` |
 | `::random` | Pseudo-random numbers that a seed makes repeatable on any machine or board: `seed`, `next`, `range`, `unit`, `chance`, `shuffle` |
 | `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`; `split`, `trim`, `join`, `replace`; and `parse_int`, `parse_float`. A folder of four files; `::text/chars` and the others can be imported alone |
-| `::os` | The system a program runs on, for the computer it runs on only: `run` and `capture` other programs, `on_path`; `read_file`, `write_file`, `append_file`, `exists`, `is_file`, `is_dir`, `make_dirs`, `list_dir`, `remove_path`, `current_dir`; `get_env`, `has_env`, `set_env`; `clock`, `today`, `sleep`; and the paths `join`, `dir_name`, `base_name`, `extension`. A folder of parts, each importable alone, as `::os/process` |
+| `::json` | JSON: `parse` it into a document of nodes, `find` by a path such as `"result.items.0.label"`, `item`, `member`, `count`, `text_of`, `number_of`, `truth_of`; and `write` a node out, with its objects' keys in order if asked, and `quote` a string |
+| `::os` | The system a program runs on, for the computer it runs on only: `run` and `capture` other programs, `on_path`, and `start` one to talk to, with `write_to`, `read_from`, `read_line`, `close_input` and `wait`; `read_file`, `write_file`, `append_file`, `exists`, `is_file`, `is_dir`, `make_dirs`, `list_dir`, `remove_path`, `current_dir`; `get_env`, `has_env`, `set_env`; `clock`, `today`, `sleep`; and the paths `join`, `dir_name`, `base_name`, `extension`. A folder of parts, each importable alone, as `::os/process` |
 | `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
 
-`::math`, `::random` and `::text` work on every target, and `::os` on the
+`::math`, `::random`, `::text` and `::json` work on every target, and `::os` on the
 computer the program runs on. Examples that use
 them are in `examples/libraries`, and `examples/arduino/dice.wind` uses
 `::random` and `::math` on a board.
@@ -327,6 +329,26 @@ void clear(int values[]) {
     }
 }
 ```
+
+`const T name[]` is a read-only view: the function can read the elements
+but not change them, through assignment, `&`, `sort`, `reverse` or `cin`,
+and can pass the array on only to another `const` parameter. A constant
+array can be given only to such a parameter:
+
+```wind
+const int PRIMES[4] = {2, 3, 5, 7}
+
+int total(const int values[]) {
+    int sum = 0
+    for (int v in values) sum += v
+    return sum
+}
+
+cout << total(PRIMES)   // 17
+```
+
+`const` on any other parameter changes nothing, since a parameter cannot be
+assigned anyway, so C's `int f(const int n)` reads as it does in C.
 
 **Bounds checks in one place**
 
@@ -1169,8 +1191,6 @@ cout << name << " is " << age << "\n"
   file, which matters once a program has several files.
 - A module cannot export a variable; make it a constant if its value never
   changes, or export a function that returns it.
-- A constant array cannot be passed to a function, because nothing yet marks
-  a parameter as read-only.
 - An index must be an integer of at most 64 bits.
 - Integer division by zero and converting an out-of-range float to an integer
   are not checked.
@@ -1330,6 +1350,8 @@ in `ast.h`, a rule in the parser, a check in `sema.c`, and a case in
 
 Tests live in `tests/ok` (expected stdout in `.out`), `tests/err` (expected
 `wind check` output in `.err`), `tests/arduino` (sketches run against a
-stand-in board on the machine running the tests) and `tests/lsp.py` (a
-scripted LSP session). `tests/libs` is the libraries directory the tests
+stand-in board on the machine running the tests), `tests/stop` (programs
+that must stop with an error), `tests/warn` (expected warnings), `tests/std`
+(programs that use the libraries) and `tests/lsp.wind` (a scripted LSP
+session, written in Wind with `::os` and `::json`). `tests/libs` is the libraries directory the tests
 import from.

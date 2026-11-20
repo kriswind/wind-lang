@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stands in for arduino-cli in tests/lsp.py: two named boards, one of which
+# Stands in for arduino-cli in tests/lsp.wind: two named boards, one of which
 # is connected, and a few thousand more, as many as a real list of installed
 # cores can hold.
 case "$2" in

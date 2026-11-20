@@ -1281,10 +1281,12 @@ static TypeKind check_call(Checker *c, Expr *expr) {
                                              : "");
             } else if (!array) {
                 /* already reported */
-            } else if (array->kind == SYM_CONST) {
+            } else if ((array->kind == SYM_CONST || array->read_only) &&
+                       !func->as.func.params[i].is_const) {
                 error(c, arg->loc,
-                      "constant array '%.*s' cannot be passed to a function, which "
-                      "could change it",
+                      "%s '%.*s' can only be given to an array parameter declared 'const', "
+                      "which cannot change it",
+                      array->kind == SYM_CONST ? "constant array" : "read-only array",
                       NAME(array->name));
             }
             continue;
@@ -1427,10 +1429,9 @@ static TypeKind check_order_builtin(Checker *c, Expr *expr, Builtin which, const
         check_args_anyway(c, expr, 1);
         return TYPE_VOID;
     }
-    if (array->kind == SYM_CONST) {
-        error(c, first->loc, "constant array '%.*s' cannot be put in order, since that "
-                             "changes it",
-              NAME(array->name));
+    if (array->kind == SYM_CONST || array->read_only) {
+        error(c, first->loc, "%s array '%.*s' cannot be put in order, since that changes it",
+              array->kind == SYM_CONST ? "constant" : "read-only", NAME(array->name));
     }
     report_shared(c, first, "changed");
     size_t most = which == BUILTIN_SORT ? 2 : 1;
@@ -1778,6 +1779,13 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
         if (symbol->is_array || symbol->is_slice) {
             /* As a value, an array's name is a pointer to its first
                element. */
+            if (symbol->read_only) {
+                error(c, expr->loc, "read-only array '%.*s' cannot be used as a pointer, "
+                                    "which could change it; index it, or pass it on to a "
+                                    "'const' array parameter",
+                      NAME(expr->as.ident.name));
+                return TYPE_INVALID;
+            }
             if (symbol->kind == SYM_CONST || symbol->type == TYPE_INVALID) {
                 if (symbol->kind == SYM_CONST) {
                     error(c, expr->loc,
@@ -2469,8 +2477,9 @@ static bool require_place(Checker *c, const Expr *expr, bool assigning) {
     case EXPR_INDEX: {
         const Expr *base = expr->as.index.base;
         if (names_array(base) && base->kind == EXPR_IDENT &&
-            base->as.ident.symbol->kind == SYM_CONST) {
-            error(c, base->loc, "cannot %s an element of constant array '%.*s'", what,
+            (base->as.ident.symbol->kind == SYM_CONST || base->as.ident.symbol->read_only)) {
+            error(c, base->loc, "cannot %s an element of %s array '%.*s'", what,
+                  base->as.ident.symbol->kind == SYM_CONST ? "constant" : "read-only",
                   NAME(base->as.ident.symbol->name));
             return false;
         }
@@ -2854,6 +2863,7 @@ static void check_func(Checker *c, Stmt *stmt) {
         Param *param = &stmt->as.func.params[i];
         Symbol *symbol = new_symbol(c, SYM_PARAM, param->name, param->loc, param->type);
         symbol->is_slice = param->is_slice;
+        symbol->read_only = param->is_slice && param->is_const;
         symbol->is_growable = param->is_growable;
         symbol->is_map = param->is_map;
         symbol->key_type = param->key_type;
@@ -3186,9 +3196,9 @@ static void check_stmt(Checker *c, Stmt *stmt) {
                 check_index_value(c, target->index, of);
                 if (!is_array) {
                     error(c, target->loc, "'%.*s' is not an array", NAME(target->name));
-                } else if (symbol->kind == SYM_CONST) {
-                    error(c, target->loc,
-                          "cannot read into an element of constant array '%.*s'",
+                } else if (symbol->kind == SYM_CONST || symbol->read_only) {
+                    error(c, target->loc, "cannot read into an element of %s array '%.*s'",
+                          symbol->kind == SYM_CONST ? "constant" : "read-only",
                           NAME(target->name));
                 } else {
                     accept_read_target(c, target, symbol);
@@ -3844,6 +3854,15 @@ void check_program(Unit *unit) {
                 param->key_type = declared_type(&c, param->key_type, param->key_ref,
                                                 param->loc, param->name);
                 check_key_type(&c, param->key_type, param->loc);
+            }
+            if (param->is_const && (param->is_growable || param->is_map)) {
+                error(&c, param->const_loc, "a %s parameter is there to be changed, so it "
+                                            "cannot be 'const'",
+                      param->is_map ? "map" : "growable array");
+            } else if (param->is_const && !param->is_slice && type_is_pointer(param->type)) {
+                error(&c, param->const_loc, "'const' would not stop changes through pointer "
+                                            "'%.*s'; Wind has no read-only pointers",
+                      NAME(param->name));
             }
 
             if (!stmt->external) continue;

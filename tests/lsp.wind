@@ -1,0 +1,498 @@
+// Drives `wind lsp` over its input and output, and checks its replies.
+//
+// Run from the repository root: wind run tests/lsp.wind
+//
+// Each check compares JSON with the members of objects in the order of
+// their keys, so that two objects holding the same members compare equal
+// whatever order they were written in.
+
+import ::json
+import ::os
+import ::text
+
+const string URI = "file:///test.wind"
+// Line 1 holds an astral character (two UTF-16 units, four bytes) before the
+// use of Name, so byte columns and LSP columns differ.
+const string TEXT = "const string Name = \"v\\n\"\ncout << \"😀é\" << Name << Nope\n"
+
+os.Process server
+json.Doc reply
+json.Doc wanted
+int next_id = 0
+int failures = 0
+
+// s as a JSON string.
+string q(string s) {
+    char quoted[..]
+    json.quote(quoted, s)
+    return "" + string(quoted)
+}
+
+// A range on one line, as LSP writes it.
+string rng(int line, int start, int end) {
+    return "{\"start\":{\"line\":" + line + ",\"character\":" + start + "},\"end\":{\"line\":" + line
+           + ",\"character\":" + end + "}}"
+}
+
+// The parameters that point at a place in a document.
+string place(string uri, int line, int character) {
+    return "{\"textDocument\":{\"uri\":" + q(uri) + "},\"position\":{\"line\":" + line
+           + ",\"character\":" + character + "}}"
+}
+
+string at(int line, int character) { return place(URI, line, character) }
+
+void send(string payload) {
+    os.write_to(&server, "Content-Length: " + len(payload) + "\r\n\r\n" + payload)
+}
+
+// Reads one message from the server into reply, whose top is node 0.
+int read() {
+    int length = -1
+    while (true) {
+        char line[..]
+        if (!os.read_line(&server, line)) {
+            cout << "FAIL server closed the stream\n"
+            exit(1)
+        }
+        string header = string(line)
+        if (len(header) == 0) break
+        int colon = text.index_of(header, ":")
+        if (colon > 0) {
+            char name[..]
+            for (char c in header[:colon]) append(name, text.to_lower(c))
+            if (string(name) == "content-length") {
+                text.parse_int(text.trim(header[colon + 1:]), &length)
+            }
+        }
+    }
+    char body[..]
+    os.read_from(&server, body, length)
+    if (!json.parse(&reply, string(body))) {
+        cout << "FAIL the server sent what is not JSON: " << string(body) << "\n"
+        exit(1)
+    }
+    return 0
+}
+
+void notify(string method, string params) {
+    send("{\"jsonrpc\":\"2.0\",\"method\":" + q(method) + ",\"params\":" + params + "}")
+}
+
+int request(string method, string params) {
+    next_id++
+    send("{\"jsonrpc\":\"2.0\",\"id\":" + next_id + ",\"method\":" + q(method) + ",\"params\":"
+         + params + "}")
+    int top = read()
+    check(method + " id", json.find(&reply, top, "id"), "" + next_id)
+    return top
+}
+
+// What a node of the reply is, as JSON with its objects' keys in order, or
+// "(nothing)" if the reply has no such node.
+string seen(int node) {
+    if (node < 0) return "(nothing)"
+    char written[..]
+    json.write(written, &reply, node, true)
+    return "" + string(written)
+}
+
+void report(string what, string expected, string actual) {
+    if (actual == expected) return
+    failures++
+    cout << "FAIL " << what << "\n  expected " << expected << "\n  actual   " << actual << "\n"
+}
+
+// Checks a node of the reply against expected, which is JSON.
+void check(string what, int node, string expected) {
+    string want = expected
+    if (json.parse(&wanted, expected)) {
+        char written[..]
+        json.write(written, &wanted, 0, true)
+        want = "" + string(written)
+    }
+    report(what, want, seen(node))
+}
+
+void check_text(string what, string actual, string expected) {
+    report(what, expected, actual)
+}
+
+// The reply's result, of a request.
+int result(string method, string params) {
+    return json.find(&reply, request(method, params), "result")
+}
+
+string hover_text(int line, int character) {
+    int value = json.find(&reply, result("textDocument/hover", at(line, character)),
+                          "contents.value")
+    return value < 0 ? "(nothing)" : json.text_of(&reply, value)
+}
+
+// The labels of completion items, in the order given or sorted, as JSON.
+string labels(int items, bool sorted) {
+    string all[..]
+    for (int i = 0; i < json.count(&reply, items); i++) {
+        append(all, json.text_of(&reply, json.find(&reply, json.item(&reply, items, i), "label")))
+    }
+    if (sorted) sort(all)
+    char list[..]
+    append(list, "[")
+    for (int i, string label in all) {
+        if (i > 0) append(list, ",")
+        json.quote(list, label)
+    }
+    append(list, "]")
+    return "" + string(list)
+}
+
+// The item with a label, or -1.
+int item_with(int items, string label) {
+    for (int i = 0; i < json.count(&reply, items); i++) {
+        int item = json.item(&reply, items, i)
+        if (json.text_of(&reply, json.find(&reply, item, "label")) == label) return item
+    }
+    return -1
+}
+
+bool offers(int items, string label) { return item_with(items, label) >= 0 }
+
+// Several facts, as a JSON array of true and false.
+string facts(const bool values[]) {
+    char list[..]
+    append(list, "[")
+    for (int i, bool b in values) append(list, i > 0 ? "," : "", b)
+    append(list, "]")
+    return "" + string(list)
+}
+
+void change(string uri, int version, string contents) {
+    notify("textDocument/didChange", "{\"textDocument\":{\"uri\":" + q(uri) + ",\"version\":"
+                                         + version + "},\"contentChanges\":[{\"text\":" + q(contents)
+                                         + "}]}")
+}
+
+string messages(int diagnostics) {
+    char list[..]
+    append(list, "[")
+    for (int i = 0; i < json.count(&reply, diagnostics); i++) {
+        if (i > 0) append(list, ",")
+        json.quote(list, json.text_of(&reply, json.find(&reply, json.item(&reply, diagnostics, i),
+                                                        "message")))
+    }
+    append(list, "]")
+    return "" + string(list)
+}
+
+struct Entry {
+    string sort
+    int node
+}
+
+int main() {
+    // "::" imports are looked up in tests/libs, and tests/bin holds a
+    // stand-in arduino-cli that reports the boards "#board" is completed
+    // with.
+    char here[..]
+    os.current_dir(here)
+    os.set_env("WIND_LIBS", "tests/libs")
+    os.set_env("PATH", string(here) + "/tests/bin:" + os.get_env("PATH"))
+    string command[2] = {"build/wind", "lsp"}
+    if (!os.start(command, &server)) {
+        cout << "FAIL cannot start build/wind\n"
+        exit(1)
+    }
+
+    int caps = json.find(&reply, result("initialize", "{\"capabilities\":{}}"), "capabilities")
+    check("sync", json.find(&reply, caps, "textDocumentSync"),
+          "{\"openClose\":true,\"change\":1,\"save\":true}")
+    check("completion triggers", json.find(&reply, caps, "completionProvider"),
+          "{\"triggerCharacters\":[\".\",\"\\\"\",\"/\",\":\"]}")
+    notify("initialized", "{}")
+
+    notify("textDocument/didOpen", "{\"textDocument\":{\"uri\":" + q(URI)
+                                       + ",\"languageId\":\"wind\",\"version\":1,\"text\":" + q(TEXT)
+                                       + "}}")
+    int diags = read()
+    check("publish method", json.find(&reply, diags, "method"),
+          "\"textDocument/publishDiagnostics\"")
+    check("publish uri", json.find(&reply, diags, "params.uri"), q(URI))
+    check("diagnostics", json.find(&reply, diags, "params.diagnostics"),
+          "[{\"range\":" + rng(1, 25, 29)
+              + ",\"severity\":1,\"source\":\"wind\",\"message\":\"undefined name 'Nope'\"}]")
+
+    int hover = result("textDocument/hover", at(1, 18))
+    check("hover text", json.find(&reply, hover, "contents.value"),
+          q("```wind\nconst string Name = \"v\\n\"\n```"))
+    check("hover range", json.find(&reply, hover, "range"), rng(1, 17, 21))
+    check("hover on nothing", result("textDocument/hover", at(1, 2)), "null")
+
+    check("definition", result("textDocument/definition", at(1, 21)),
+          "{\"uri\":" + q(URI) + ",\"range\":" + rng(0, 13, 17) + "}")
+
+    int items = result("textDocument/completion", at(1, 5))
+    bool keywords[4] = {offers(items, "const"), offers(items, "if"), offers(items, "goto"),
+                        offers(items, "u128")}
+    check_text("completion has keywords", facts(keywords), "[true,true,true,true]")
+    check_text("completion has constant", "" + offers(items, "Name"), "true")
+    items = result("textDocument/completion", at(0, 0))
+    check_text("completion above declaration", "" + offers(items, "Name"), "false")
+
+    change(URI, 2, "const string Unused = \"x\"\n")
+    check("diagnostics after change", json.find(&reply, read(), "params.diagnostics"),
+          "[{\"range\":" + rng(0, 13, 19)
+              + ",\"severity\":2,\"source\":\"wind\",\"message\":\"constant 'Unused' is never used\"}]")
+
+    string funcs = "const int Limit = 3\nint twice(int n) {\n    int doubled = n * 2\n    return doubled\n"
+                   + "}\nint total = twice(Limit)\nagain:\ncout << total\ngoto again\n"
+    change(URI, 3, funcs)
+    check("diagnostics for valid program", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover function call", hover_text(5, 13), "```wind\nint twice(int n)\n```")
+    check_text("hover parameter", hover_text(2, 18), "```wind\nint n\n```")
+    check_text("hover variable", hover_text(7, 9), "```wind\nint total\n```")
+    check_text("hover constant", hover_text(5, 19), "```wind\nconst int Limit = 3\n```")
+    check_text("hover label", hover_text(8, 6), "```wind\nagain:\n```")
+    check("definition of label", json.find(&reply, result("textDocument/definition", at(8, 6)),
+                                           "range"),
+          rng(6, 0, 5))
+    check("definition of function",
+          json.find(&reply, result("textDocument/definition", at(5, 13)), "range"), rng(1, 4, 9))
+    items = result("textDocument/completion", at(3, 4))
+    bool inside[6] = {offers(items, "n"), offers(items, "doubled"), offers(items, "Limit"),
+                      offers(items, "twice"), offers(items, "total"), offers(items, "again")}
+    check_text("completion inside function", facts(inside), "[true,true,true,true,false,false]")
+    items = result("textDocument/completion", at(8, 0))
+    bool outside[5] = {offers(items, "n"), offers(items, "doubled"), offers(items, "Limit"),
+                       offers(items, "twice"), offers(items, "total")}
+    check_text("completion at top level", facts(outside), "[false,false,true,true,true]")
+
+    change(URI, 4, "u8 level\ncin >> level >> f32 ratio\ncout << level << cin << ratio\n")
+    check("diagnostics for cin", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover cin target", hover_text(1, 8), "```wind\nu8 level\n```")
+    check_text("hover cin declaration", hover_text(1, 22), "```wind\nf32 ratio\n```")
+    check("definition of cin declaration",
+          json.find(&reply, result("textDocument/definition", at(2, 27)), "range"), rng(1, 20, 25))
+    check("definition of cin target",
+          json.find(&reply, result("textDocument/definition", at(1, 8)), "range"), rng(0, 3, 8))
+
+    change(URI, 5, "int nums[3] = {1, 2, 3}\nint first(int values[]) {\n    return values[0]\n}\n"
+                       + "cout << first(nums) << nums[1]\n")
+    check("diagnostics for arrays", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover array", hover_text(4, 16), "```wind\nint nums[3]\n```")
+    check_text("hover array parameter", hover_text(2, 12), "```wind\nint values[]\n```")
+    check_text("hover function with array parameter", hover_text(4, 9),
+               "```wind\nint first(int values[])\n```")
+    check("definition of indexed array",
+          json.find(&reply, result("textDocument/definition", at(4, 24)), "range"), rng(0, 4, 8))
+
+    change(URI, 6, "int total = 0\nfor (int step = 0; step < 3; step++) {\n    total += step\n}\n"
+                       + "cout << total\n")
+    check("diagnostics for loops", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover loop variable", hover_text(2, 15), "```wind\nint step\n```")
+    int in_loop = result("textDocument/completion", at(2, 4))
+    bool step_in = offers(in_loop, "step")
+    bool while_in = offers(in_loop, "while")
+    int after_loop = result("textDocument/completion", at(4, 0))
+    bool scoped[3] = {step_in, offers(after_loop, "step"), while_in}
+    check_text("loop variable is scoped to the loop", facts(scoped), "[true,false,true]")
+
+    change(URI, 7, "int f(int n) {\n    return n\n    cout << \"a\"\n    cout << \"b\"\n}\n"
+                       + "cout << f(1)\nwhile false { cout << 1 }\n")
+    check("unreachable code is tagged and spans lines", json.find(&reply, read(), "params.diagnostics"),
+          "[{\"range\":{\"start\":{\"line\":2,\"character\":4},\"end\":{\"line\":3,\"character\":15}},"
+              + "\"severity\":2,\"source\":\"wind\",\"message\":\"unreachable code: it follows a 'return'\","
+              + "\"tags\":[1]},{\"range\":" + rng(6, 14, 23) + ",\"severity\":2,\"source\":\"wind\","
+              + "\"message\":\"unreachable code: the loop's condition is always false\",\"tags\":[1]}]")
+
+    // A document that imports a file on disk. The document itself is not on
+    // disk; its URI only says where its imports are looked up.
+    string modules = string(here) + "/tests/ok/modules"
+    string util_uri = "file://" + modules + "/util.wind"
+    string main_uri = "file://" + modules + "/unsaved%20main.wind"
+    notify("textDocument/didOpen", "{\"textDocument\":{\"uri\":" + q(main_uri)
+                                       + ",\"languageId\":\"wind\",\"version\":1,\"text\":"
+                                       + q("import \"util.wind\" as u\ncout << u.scaled(u.SCALE) << u.calls\ncout << u.\n")
+                                       + "}}")
+    check_text("diagnostics with an import", messages(json.find(&reply, read(), "params.diagnostics")),
+               "[\"'calls' is private to module 'u'; mark it 'export' there to use it here\","
+                   + "\"expected a name, found end of line\"]")
+    hover = result("textDocument/hover", place(main_uri, 1, 12))
+    check("hover imported function", json.find(&reply, hover, "contents.value"),
+          q("```wind\nexport int scaled(int n)\n```"))
+    hover = result("textDocument/hover", place(main_uri, 1, 20))
+    check("hover imported constant", json.find(&reply, hover, "contents.value"),
+          q("```wind\nexport const int SCALE = 10\n```"))
+    hover = result("textDocument/hover", place(main_uri, 1, 8))
+    check("hover module", json.find(&reply, hover, "contents.value"),
+          q("```wind\nimport \"util.wind\" as u\n```"))
+    check("definition in imported file", result("textDocument/definition", place(main_uri, 1, 12)),
+          "{\"uri\":" + q(util_uri) + ",\"range\":" + rng(6, 11, 17) + "}")
+    check("definition of module", result("textDocument/definition", place(main_uri, 1, 8)),
+          "{\"uri\":" + q(util_uri) + ",\"range\":" + rng(0, 0, 0) + "}")
+    check("definition of module name", result("textDocument/definition", place(main_uri, 0, 22)),
+          "{\"uri\":" + q(util_uri) + ",\"range\":" + rng(0, 0, 0) + "}")
+    items = result("textDocument/completion", place(main_uri, 2, 10))
+    check_text("completion after a module", labels(items, true),
+               "[\"SCALE\",\"UNIT\",\"call_count\",\"scaled\"]")
+    items = result("textDocument/completion", place(main_uri, 1, 0))
+    check_text("completion offers the module", "" + offers(items, "u"), "true")
+    notify("textDocument/didSave", "{\"textDocument\":{\"uri\":" + q(main_uri) + "}}")
+    check("save re-analyzes the first document", json.find(&reply, read(), "params.uri"), q(URI))
+    check_text("save re-analyzes the second document",
+               "" + json.count(&reply, json.find(&reply, read(), "params.diagnostics")), "2")
+    change(main_uri, 2, "import \"ut\nimport \"../mod\ncout << \"import \"\n")
+    read()
+    items = result("textDocument/completion", place(main_uri, 0, 10))
+    check_text("import completion lists the directory's files", labels(items, true),
+               "[\"my-counter.wind\",\"shapes.wind\",\"util.wind\"]")
+    check("import completion replaces what was typed",
+          json.find(&reply, item_with(items, "util.wind"), "textEdit"),
+          "{\"range\":" + rng(0, 8, 10) + ",\"newText\":\"util.wind\"}")
+    items = result("textDocument/completion", place(main_uri, 1, 14))
+    bool paths[5] = {offers(items, "../modules/util.wind"), offers(items, "../hello.wind"),
+                     offers(items, "../modules/"), offers(items, "../hello.out"),
+                     offers(items, "../modules/unsaved main.wind")}
+    check_text("import completion gives whole paths through directories", facts(paths),
+               "[true,true,false,false,false]")
+    check("import completion replaces the whole path",
+          json.find(&reply, item_with(items, "../modules/util.wind"), "textEdit.range"),
+          rng(1, 8, 14))
+    items = result("textDocument/completion", place(main_uri, 2, 16))
+    check_text("no path completion in other strings", "" + offers(items, "util.wind"), "false")
+
+    change(main_uri, 3, "import sh\nimport ::num\nimport ::numbers/r\nimport :\nint x = true ? 1 :\n"
+                            + "import util as u\nextern \"stdio.h\" const i32 EOF\ncout << u.SCALE << EOF\n")
+    read()
+    items = result("textDocument/completion", place(main_uri, 0, 9))
+    check_text("import completion without quotes leaves off .wind", labels(items, true),
+               "[\"my-counter\",\"shapes\",\"util\"]")
+    check("import completion without quotes replaces what was typed",
+          json.find(&reply, item_with(items, "shapes"), "textEdit"),
+          "{\"range\":" + rng(0, 7, 9) + ",\"newText\":\"shapes\"}")
+    items = result("textDocument/completion", place(main_uri, 1, 12))
+    char kinds[..]
+    for (int i = 0; i < json.count(&reply, items); i++) {
+        int item = json.item(&reply, items, i)
+        append(kinds, json.text_of(&reply, json.find(&reply, item, "label")), "=",
+               json.number_of(&reply, json.find(&reply, item, "kind")), " ")
+    }
+    string found[..]
+    text.split(text.trim(string(kinds)), " ", found)
+    sort(found)
+    char kind_list[..]
+    text.join(kind_list, found, " ")
+    check_text("import completion in the libraries directory", string(kind_list),
+               "::carried/sums=17 ::carried=9 ::geometry/area=17 ::geometry/perimeter=17 "
+                   + "::geometry/solids/volume=17 ::geometry/solids=9 ::geometry=9 "
+                   + "::numbers/rounding=17 ::numbers/stats=17 ::numbers=9 ::shelf=17 ::tally=17")
+    items = result("textDocument/completion", place(main_uri, 2, 18))
+    check("import completion inside a library folder",
+          json.find(&reply, item_with(items, "::numbers/rounding"), "textEdit.range"),
+          rng(2, 7, 18))
+    check("nothing after one colon of an import",
+          result("textDocument/completion", place(main_uri, 3, 8)), "[]")
+    check("nothing after the colon of a conditional",
+          result("textDocument/completion", place(main_uri, 4, 18)), "[]")
+    hover = result("textDocument/hover", place(main_uri, 7, 9))
+    check("hover module imported without quotes", json.find(&reply, hover, "contents.value"),
+          q("```wind\nimport util as u\n```"))
+    hover = result("textDocument/hover", place(main_uri, 7, 19))
+    check("hover external constant", json.find(&reply, hover, "contents.value"),
+          q("```wind\nextern \"stdio.h\" const i32 EOF\n```"))
+    notify("textDocument/didClose", "{\"textDocument\":{\"uri\":" + q(main_uri) + "}}")
+    check("diagnostics after closing the importer", json.find(&reply, read(), "params.diagnostics"),
+          "[]")
+
+    change(URI, 8, "enum Color { RED, GREEN }\nstruct Point { int x; int y }\ntypedef Point Spot\n"
+                       + "Spot origin = {0, 0}\nColor c = GREEN\ncout << origin.x << c\n")
+    check("diagnostics for declared types", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover struct", hover_text(1, 9), "```wind\nstruct Point { int x; int y }\n```")
+    check_text("hover enum", hover_text(4, 2), "```wind\nenum Color { RED, GREEN }\n```")
+    check_text("hover enum value", hover_text(4, 12), "```wind\nColor GREEN = 1\n```")
+    check_text("hover typedef", hover_text(3, 2), "```wind\ntypedef Point Spot\n```")
+    check_text("hover variable of declared type", hover_text(5, 10), "```wind\nPoint origin\n```")
+    check("definition of type", json.find(&reply, result("textDocument/definition", at(2, 10)),
+                                          "range"),
+          rng(1, 7, 12))
+    check("definition of enum value",
+          json.find(&reply, result("textDocument/definition", at(4, 12)), "range"), rng(0, 18, 23))
+    items = result("textDocument/completion", at(5, 0))
+    char kinds_of[..]
+    string named[6] = {"Point", "Color", "RED", "Spot", "struct", "typeof"}
+    for (int i, string name in named) {
+        int item = item_with(items, name)
+        append(kinds_of, i > 0 ? "," : "[")
+        if (item < 0) {
+            append(kinds_of, "null")
+        } else {
+            append(kinds_of, json.number_of(&reply, json.find(&reply, item, "kind")))
+        }
+    }
+    append(kinds_of, "]")
+    check_text("completion kinds for types", string(kinds_of), "[22,13,20,22,14,14]")
+
+    change(URI, 9, "struct Node { int value; Node *next }\nNode tail = { 2, NULL }\n"
+                       + "Node head = { 1, &tail }\nNode *at = &head\nint **deep\n"
+                       + "Node *step(Node *from) { return from->next }\nat->next->value = 3\n"
+                       + "cout << step(at).value << (deep == NULL)\n")
+    check("diagnostics for pointers", json.find(&reply, read(), "params.diagnostics"), "[]")
+    check_text("hover self-referential struct", hover_text(1, 2),
+               "```wind\nstruct Node { int value; Node *next }\n```")
+    check_text("hover pointer variable", hover_text(6, 1), "```wind\nNode *at\n```")
+    check_text("hover pointer to pointer", hover_text(7, 28), "```wind\nint **deep\n```")
+    check_text("hover function returning a pointer", hover_text(7, 10),
+               "```wind\nNode *step(Node *from)\n```")
+    check("definition through an assignment target",
+          json.find(&reply, result("textDocument/definition", at(6, 1)), "range"), rng(3, 6, 8))
+    check("definition of a pointer's type",
+          json.find(&reply, result("textDocument/definition", at(5, 13)), "range"), rng(0, 7, 11))
+    items = result("textDocument/completion", at(7, 0))
+    check_text("NULL is offered", "" + offers(items, "NULL"), "true")
+
+    string board = "#target arduino\nint big = 40000\nint small = 400\ncout << big + small\n"
+    change(URI, 10, board)
+    check_text("a document is checked for the target its #target names",
+               messages(json.find(&reply, read(), "params.diagnostics")),
+               "[\"integer literal does not fit in 'int'\"]")
+    char for_c[..]
+    text.replace(for_c, board, "#target arduino", "#target c")
+    change(URI, 11, string(for_c))
+    check("and for c when it says so", json.find(&reply, read(), "params.diagnostics"), "[]")
+
+    change(URI, 12, "#target arduino\n#board rp\n#board \"ard")
+    read()
+    items = result("textDocument/completion", at(1, 9))
+    check_text("#board offers every board", "" + json.count(&reply, items), "5002")
+    Entry entries[..]
+    for (int i = 0; i < json.count(&reply, items); i++) {
+        int item = json.item(&reply, items, i)
+        append(entries, {json.text_of(&reply, json.find(&reply, item, "sortText")), item})
+    }
+    sort(entries, .sort)
+    check("the connected board first", entries[0].node >= 0 ? json.find(&reply, entries[0].node, "label") : -1,
+          "\"rp2040:rp2040:rpipico2w\"")
+    check("its detail names the port", json.find(&reply, entries[0].node, "detail"),
+          "\"Raspberry Pi Pico 2W, connected on /dev/ttyACM0\"")
+    check("then the installed ones", json.find(&reply, entries[1].node, "label"),
+          "\"arduino:avr:uno\"")
+    check("a board replaces what was typed of it",
+          json.find(&reply, entries[0].node, "textEdit.range"), rng(1, 7, 9))
+    items = result("textDocument/completion", at(2, 11))
+    check("and inside quotes", json.find(&reply, json.item(&reply, items, 0), "textEdit.range"),
+          rng(2, 8, 11))
+
+    notify("$/setTrace", "{\"value\":\"off\"}")
+    check("unknown request", json.find(&reply, request("textDocument/formatting", "{}"), "error.code"),
+          "-32601")
+
+    notify("textDocument/didClose", "{\"textDocument\":{\"uri\":" + q(URI) + "}}")
+    check("diagnostics after close", json.find(&reply, read(), "params.diagnostics"), "[]")
+
+    check("shutdown", result("shutdown", "null"), "null")
+    notify("exit", "null")
+    os.close_input(&server)
+    check_text("exit code", "" + os.wait(&server), "0")
+
+    cout << "lsp: " << (failures == 0 ? "ok" : "" + failures + " failure(s)") << "\n"
+    return failures > 0 ? 1 : 0
+}

@@ -10,7 +10,7 @@ import ::text
 // line that holds pick unless that is "": a run of digits and dots with at
 // least one dot, as "16.2.1", or a dated build, as "dev-2026-10". Returns
 // false, appending nothing, if the command cannot be run or prints none.
-export bool tool_version(string command[], string pick, char into[..]) {
+export bool tool_version(const string command[], string pick, char into[..]) {
     char out[..]
     char err[..]
     defer delete(out)
@@ -89,7 +89,7 @@ export void machine(char into[..]) {
     append(into, " ", text.trim(string(out)))
 }
 
-export float geometric_mean(float values[]) {
+export float geometric_mean(const float values[]) {
     float sum = 0
     for (float value in values) sum += math.log(value)
     return math.exp(sum / float(len(values)))

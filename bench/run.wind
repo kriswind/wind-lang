@@ -23,9 +23,9 @@ import ::text
 import results
 
 // What each kernel leans on, in the order they are shown.
-string KERNELS[12] = {"fib", "sieve", "collatz", "gcd", "mandelbrot", "matmul",
+const string KERNELS[12] = {"fib", "sieve", "collatz", "gcd", "mandelbrot", "matmul",
                       "particles", "sort", "queens", "hash", "bytes", "list"}
-string LEANS_ON[12] = {"function calls", "array writes", "integer arithmetic",
+const string LEANS_ON[12] = {"function calls", "array writes", "integer arithmetic",
                        "division in a called function", "float arithmetic",
                        "nested loops over arrays", "structs of floats",
                        "recursion with swaps", "recursion with backtracking",
@@ -136,7 +136,7 @@ string compiler_name(string command) {
 }
 
 // Appends a command to into, with its placeholders filled in.
-void fill(string into[..], string command[]) {
+void fill(string into[..], const string command[]) {
     for (string word in command) {
         string filled = word
         filled = swap(filled, "{wind}", wind)
@@ -157,7 +157,7 @@ string swap(string word, string placeholder, string value) {
     return "" + string(swapped)
 }
 
-bool listed(string names[], string name) {
+bool listed(const string names[], string name) {
     for (string n in names) {
         if (n == name) return true
     }

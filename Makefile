@@ -21,7 +21,7 @@ build:
 
 test: build/wind
 	sh tests/run.sh
-	python3 tests/lsp.py
+	build/wind run tests/lsp.wind
 
 # The libraries are installed where the compiler looks for them beside
 # itself: share/wind/libs under the same prefix.

@@ -170,3 +170,95 @@ static wind_bool os_on_path(wind_string name) {
     free(wanted);
     return found;
 }
+
+/* Starts command[0] with the rest of command as its arguments, with a pipe
+   to its input and one from its output; its error output is this program's
+   own. Sets *pid and the two ends this program keeps: *to, written to reach
+   its input, and *from, read for its output. False if it cannot be
+   started. */
+static wind_bool os_start(wind_slice_string command, wind_int *pid, wind_int *to,
+                          wind_int *from) {
+    if (command.len == 0) return 0;
+    /* A write to a program that has ended fails rather than ending this one. */
+    signal(SIGPIPE, SIG_IGN);
+    int in_pipe[2], out_pipe[2];
+    if (pipe(in_pipe) != 0) return 0;
+    if (pipe(out_pipe) != 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        return 0;
+    }
+    char **argv = malloc((command.len + 1) * sizeof *argv);
+    if (!argv) return 0;
+    for (size_t i = 0; i < command.len; i++) argv[i] = os_cstring(command.data[i]);
+    argv[command.len] = NULL;
+    fflush(stdout);
+    pid_t child = fork();
+    if (child == 0) {
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        execvp(argv[0], argv);
+        fprintf(stderr, "wind: cannot run '%s': %s\n", argv[0], strerror(errno));
+        _exit(127);
+    }
+    for (size_t i = 0; i < command.len; i++) free(argv[i]);
+    free(argv);
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    if (child < 0) {
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        return 0;
+    }
+    *pid = child;
+    *to = in_pipe[1];
+    *from = out_pipe[0];
+    return 1;
+}
+
+/* Writes all of text to a file descriptor. False if it cannot. */
+static wind_bool os_write_fd(wind_int fd, wind_string text) {
+    size_t done = 0;
+    while (done < text.len) {
+        ssize_t wrote = write((int)fd, text.data + done, text.len - done);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) return 0;
+        done += (size_t)wrote;
+    }
+    return 1;
+}
+
+/* Reads from a file descriptor, appending to into, until count bytes have
+   come or there are no more. Returns how many came. */
+static wind_int os_read_fd(wind_int fd, wind_list_char *into, wind_int count) {
+    char buffer[4096];
+    wind_int got = 0;
+    while (got < count) {
+        size_t want = (size_t)(count - got) < sizeof buffer ? (size_t)(count - got) : sizeof buffer;
+        ssize_t read_now = read((int)fd, buffer, want);
+        if (read_now < 0 && errno == EINTR) continue;
+        if (read_now <= 0) break;
+        os_append(into, buffer, (size_t)read_now);
+        got += read_now;
+    }
+    return got;
+}
+
+static void os_close_fd(wind_int fd) {
+    if (fd >= 0) close((int)fd);
+}
+
+/* Waits for a program started with os_start to end, and returns its exit
+   status as os_run does. */
+static wind_int os_wait(wind_int pid) {
+    int status;
+    while (waitpid((pid_t)pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 128 + WTERMSIG(status);
+}

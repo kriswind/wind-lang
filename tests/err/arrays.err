@@ -17,7 +17,7 @@ tests/err/arrays.wind:21:11: error: an index must be an integer of at most 64 bi
 tests/err/arrays.wind:23:11: error: an index must be an integer of at most 64 bits, found 'i128'
 tests/err/arrays.wind:25:18: error: an array parameter is written 'int v[]', without a length, or 'int v[..]' for a growable one
 tests/err/arrays.wind:26:7: error: argument 1 of 'takes' must be an array of 'int', found 'int'
-tests/err/arrays.wind:27:7: error: constant array 'C' cannot be passed to a function, which could change it
+tests/err/arrays.wind:27:7: error: constant array 'C' can only be given to an array parameter declared 'const', which cannot change it
 tests/err/arrays.wind:28:7: error: argument 1 of 'takes' must be an array of 'int', found 'string'
 tests/err/arrays.wind:30:7: error: argument 1 of 'takes' must be an array of 'int', found an array of 'u8'
 tests/err/arrays.wind:31:8: error: cannot read into array 'a' as a whole; read its elements
