@@ -52,23 +52,12 @@ struct Symbol {
        name of its own in the source, and this is its path. */
     SrcLoc loc;
     /* SYM_FUNC: the return type; SYM_TYPE: the type it names;
-       SYM_ENUM_VALUE: its enum; SYM_LABEL, SYM_MODULE: unused; an array: the
-       type of its elements. */
+       SYM_ENUM_VALUE: its enum; SYM_LABEL, SYM_MODULE: unused. An array or
+       a map has a container type: a parameter "T name[]" is a slice, a view
+       of the caller's elements; "T name[..]" and "V name[K]" are the
+       caller's own growable array or map. */
     TypeKind type;
     long long value; /* SYM_ENUM_VALUE */
-    /* An array is either fixed (declared with a length, which it owns) or a
-       slice (an array parameter: a view of someone else's elements, with a
-       length known only at run time). */
-    bool is_array;
-    bool is_slice;
-    /* A growable array, "T name[..]": its elements live on the heap, and
-       it grows as they are appended. As a parameter, it is the caller's
-       own array, which the function may grow. */
-    bool is_growable;
-    /* A map, "V name[K]": type is the values' type and key_type the keys'.
-       As a parameter, it is the caller's own map. */
-    bool is_map;
-    TypeKind key_type;
     /* A loop variable of "for (... in ...)", which cannot be assigned. */
     bool loop_bound;
     /* An array parameter declared "const": a view whose elements cannot be
@@ -78,7 +67,6 @@ struct Symbol {
        growable array or a map in it. The copy shares those elements with
        the original, so nothing in it can be changed or pointed to. */
     bool shares;
-    size_t length; /* fixed arrays only */
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
     /* The file the symbol is declared in. */
@@ -105,16 +93,18 @@ struct Symbol {
     bool address_taken;
 };
 
-/* True for a symbol that is an array of any kind: fixed, a parameter's
-   view, or growable. */
-static inline bool any_array(const Symbol *symbol) {
-    return symbol->is_array || symbol->is_slice || symbol->is_growable;
+/* True for a type that is an array of any kind: fixed, a view, or
+   growable. */
+static inline bool any_array(TypeKind type) {
+    ContainerKind kind = type_container(type);
+    return kind == CONTAINER_ARRAY || kind == CONTAINER_SLICE || kind == CONTAINER_LIST;
 }
 
 /* True for an array whose length is known only when the program runs, and
    which is held as a pointer to its elements and their count. */
-static inline bool runtime_length(const Symbol *symbol) {
-    return symbol->is_slice || symbol->is_growable;
+static inline bool runtime_length(TypeKind type) {
+    ContainerKind kind = type_container(type);
+    return kind == CONTAINER_SLICE || kind == CONTAINER_LIST;
 }
 
 typedef struct {
@@ -143,6 +133,24 @@ typedef struct {
     SrcLoc name_loc;
     Expr *of; /* typeof's operand */
 } TypeRef;
+
+/* What follows a name in a declaration to make it an array or a map:
+   "[n]", "[]", "[..]" or "[K]". A key written as a name is parsed as a
+   length, and found to be a type by the checker. */
+typedef enum {
+    SUFFIX_LENGTH, /* "[n]" */
+    SUFFIX_OPEN,   /* "[]" */
+    SUFFIX_GROWABLE,
+    SUFFIX_MAP, /* "[K]" with K a built-in type */
+} SuffixKind;
+
+typedef struct {
+    SuffixKind kind;
+    SrcLoc loc;
+    Expr *length;
+    TypeKind key;
+    TypeRef *key_ref;
+} Suffix;
 
 /* ---- Expressions ---- */
 
@@ -211,8 +219,12 @@ struct Expr {
     TypeKind type; /* set by unit_analyze */
     /* Written as "( expr )", with nothing outside the parentheses. */
     bool parenthesized;
-    /* A field checked once already, whose type is kept. */
+    /* Checked once already, with the type kept. */
     bool checked;
+    /* A fixed array or a view, standing for a pointer to its first element,
+       and the array's own type; set by unit_analyze. */
+    bool decayed;
+    TypeKind decayed_from;
     union {
         U128 int_lit;
         Str float_lit; /* spelling, without digit separators */
@@ -226,9 +238,6 @@ struct Expr {
             Str module; /* empty when the name is not qualified */
             SrcLoc module_loc;
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
-            /* An array's name standing for a pointer to its first element;
-               set by unit_analyze. */
-            bool decayed;
         } ident;
         struct {
             Op op;
@@ -282,10 +291,12 @@ struct Expr {
             Expr *operand;
         } size_of;
         struct {
-            /* An identifier naming an array, or any string or pointer
-               expression. */
+            /* An array, a map, a string or a pointer. */
             Expr *base;
             Expr *index;
+            /* Of a map, as something that is changed: the key is put in
+               if it is missing. Set by unit_analyze. */
+            bool inserts;
         } index;
         /* EXPR_KEY; index is set by unit_analyze to the field's position */
         struct {
@@ -375,12 +386,11 @@ typedef enum {
 typedef struct {
     Str name;
     SrcLoc loc;
-    TypeKind type; /* field: for a growable array or a map, what it holds */
+    TypeKind type; /* field: as written before any suffixes; then, once
+                      analyzed, the whole type */
     TypeRef *type_ref;
-    bool is_growable; /* field "T name[..]" */
-    bool is_map;      /* field "V name[K]" */
-    TypeKind key_type;
-    TypeRef *key_ref;
+    Suffix *suffixes; /* field: "[n]", "[..]" or "[K]" after its name */
+    size_t suffix_count;
     Expr *value; /* enum name: its explicit value, or NULL */
     Symbol *symbol; /* enum name; set by unit_analyze */
 } Member;
@@ -415,15 +425,14 @@ typedef struct {
 } SwitchCase;
 
 typedef struct {
-    TypeKind type; /* for an array parameter, the type of its elements */
+    /* As written before any suffixes; then, once analyzed, the whole type,
+       a container for "T name[]", "T name[..]" or "V name[K]". */
+    TypeKind type;
     TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
     Str name;
     SrcLoc loc;
-    bool is_slice;  /* declared as "T name[]" */
-    bool is_growable; /* declared as "T name[..]" */
-    bool is_map;      /* declared as "V name[K]" */
-    TypeKind key_type;
-    TypeRef *key_ref; /* NULL for a built-in type; resolved into key_type */
+    Suffix *suffixes;
+    size_t suffix_count;
     /* Written with "const": for an array, its elements cannot be changed
        through it, and a constant array can be given for it. */
     bool is_const;
@@ -475,7 +484,9 @@ struct Stmt {
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
-            TypeKind type; /* for an array, the type of its elements */
+            /* As written before any suffixes; then, once analyzed, the
+               whole type, an array's or a map's included. */
+            TypeKind type;
             TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
             Str name;
             Expr *init; /* NULL for a variable left at its zero value */
@@ -483,19 +494,16 @@ struct Stmt {
             /* Its value could not be parsed, which has been reported. The
                name is declared all the same, so that its uses are not. */
             bool broken;
-            /* "T name[length] = { elems }". Elements left out are zero. */
+            /* An array or a map: "T name[n]", "T name[]" with its length
+               from its elements, "T name[..]", "V name[K]", or several of
+               these, as in "int grid[3][4]". Its starting elements are
+               elems, and a map's entries elems taken in pairs, a key and
+               then its value; elements left out of a fixed array are zero.
+               A growable array may instead start as init. */
             bool is_array;
-            /* "T name[..]", growable; its starting elements are elems, or
-               the copy that init makes with clone(). */
-            bool is_growable;
-            /* "V name[K]", a map; its starting entries are elems taken in
-               pairs, a key and then its value. A key type written as a name
-               is parsed as length, and found to be a type by the checker. */
-            bool is_map;
-            TypeKind key_type;
-            TypeRef *key_ref;
+            Suffix *suffixes;
+            size_t suffix_count;
             bool pairs; /* elems were written "key: value" */
-            Expr *length; /* NULL when the length comes from the element count */
             Expr **elems;
             size_t elem_count;
         } decl;

@@ -6,7 +6,7 @@ tests/err/shared_copies.wind:16:10: error: 'bag' shares its growable arrays and 
 tests/err/shared_copies.wind:17:12: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
 tests/err/shared_copies.wind:18:5: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
 tests/err/shared_copies.wind:19:12: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
-tests/err/shared_copies.wind:20:5: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
+tests/err/shared_copies.wind:20:5: error: cannot assign to parameter 'bag'
 tests/err/shared_copies.wind:21:10: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
 tests/err/shared_copies.wind:22:11: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be changed
 tests/err/shared_copies.wind:23:16: error: 'bag' shares its growable arrays and maps with the 'Bag' it was made from, so nothing in it can be pointed to

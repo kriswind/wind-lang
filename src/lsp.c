@@ -400,9 +400,10 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         } else {
             buf_printf(buf, "struct %s { ", info->short_name);
             for (size_t i = 0; i < info->field_count; i++) {
-                buf_printf(buf, "%s%s%s%.*s", i ? "; " : "", type_name(info->fields[i].type),
-                           type_gap(info->fields[i].type), (int)info->fields[i].name.len,
-                           info->fields[i].name.data);
+                TypeKind base = type_base(info->fields[i].type);
+                buf_printf(buf, "%s%s%s%.*s%s", i ? "; " : "", type_name(base), type_gap(base),
+                           (int)info->fields[i].name.len, info->fields[i].name.data,
+                           type_suffix(info->fields[i].type));
             }
             buf_puts(buf, " }");
         }
@@ -410,26 +411,22 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     }
     case SYM_CONST: {
         const Expr *init = symbol->decl->as.decl.init;
-        buf_printf(buf, "const %s%s%.*s", type_name(symbol->type), type_gap(symbol->type),
-                   len, name);
+        TypeKind base = type_base(symbol->type);
+        buf_printf(buf, "const %s%s%.*s%s", type_name(base), type_gap(base), len, name,
+                   type_suffix(symbol->type));
         if (symbol->decl->external || symbol->decl->as.decl.broken) break;
-        if (symbol->is_array) {
-            buf_printf(buf, "[%zu]", symbol->length);
-            break;
-        }
+        if (type_is_container(symbol->type)) break;
         buf_puts(buf, " = ");
         buf_append(buf, src.data + init->loc.offset, init->loc.len);
         break;
     }
     case SYM_VAR:
-    case SYM_PARAM:
-        buf_printf(buf, "%s%s%.*s", type_name(symbol->type), type_gap(symbol->type), len,
-                   name);
-        if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
-        if (symbol->is_slice) buf_puts(buf, "[]");
-        if (symbol->is_growable) buf_puts(buf, "[..]");
-        if (symbol->is_map) buf_printf(buf, "[%s]", type_name(symbol->key_type));
+    case SYM_PARAM: {
+        TypeKind base = type_base(symbol->type);
+        buf_printf(buf, "%s%s%.*s%s", type_name(base), type_gap(base), len, name,
+                   type_suffix(symbol->type));
         break;
+    }
     case SYM_LABEL:
         buf_printf(buf, "%.*s:", len, name);
         break;
@@ -439,10 +436,9 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
                    name);
         for (size_t i = 0; i < func->as.func.param_count; i++) {
             const Param *param = &func->as.func.params[i];
-            buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(param->type),
-                       type_gap(param->type), (int)param->name.len, param->name.data,
-                       param->is_slice ? "[]" : param->is_growable ? "[..]" : "");
-            if (param->is_map) buf_printf(buf, "[%s]", type_name(param->key_type));
+            TypeKind base = type_base(param->type);
+            buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(base), type_gap(base),
+                       (int)param->name.len, param->name.data, type_suffix(param->type));
         }
         buf_puts(buf, ")");
         break;

@@ -42,12 +42,17 @@ struct Symbol;
 typedef struct {
     Str name;
     SrcLoc loc;
-    TypeKind type; /* for a growable array or a map, the type of what it holds */
-    /* A growable array or a map: what describes it as one, in the form a
-       variable of its kind has. NULL for any other field. */
-    struct Symbol *array;
-    bool is_map;
+    TypeKind type;
 } Field;
+
+/* What holds elements: a type that is one of these is a container. */
+typedef enum {
+    CONTAINER_NONE,
+    CONTAINER_ARRAY, /* "T[n]": n elements, held in place */
+    CONTAINER_SLICE, /* "T[]": a view of elements held elsewhere */
+    CONTAINER_LIST,  /* "T[..]": a growable array, its elements on the heap */
+    CONTAINER_MAP,   /* "V[K]": values found by key */
+} ContainerKind;
 
 typedef struct {
     Str name;
@@ -55,10 +60,20 @@ typedef struct {
 } EnumValue;
 
 typedef struct {
-    /* At most one is set; a struct has neither. */
+    /* At most one is set; a struct has none. */
     bool is_enum;
     bool is_pointer;
-    TypeKind target; /* pointer: the type pointed to */
+    ContainerKind container;
+    /* pointer: the type pointed to; container: the type of its elements,
+       or of a map's values */
+    TypeKind target;
+    TypeKind key;     /* map: the type of its keys */
+    size_t length;    /* array: how many elements it holds */
+    /* A container: the type its elements are built from in the end, and
+       what follows that type's name in its own, as in "[3][4]" for
+       "int[3][4]". */
+    TypeKind base;
+    const char *suffix;
     /* A struct whose fields are not settled yet: it can be pointed to, but
        it has no size and cannot be held by value. */
     bool incomplete;
@@ -84,9 +99,9 @@ typedef struct {
     /* What the generated program needs for the type; maintained by emit_c. */
     bool writer_used;
     bool writer_emitted;
-    bool slice_used;
-    bool list_used;
-    bool array_writer_used;
+    /* The generated program names it, and has its definition. */
+    bool needed;
+    bool defined;
 } TypeInfo;
 
 /* What a program is compiled for, as far as checking it is concerned. */
@@ -137,6 +152,27 @@ TypeKind type_add(bool is_enum, Str name, Str qualifier);
 /* The type "pointer to target", which is one type however often it is asked
    for. target must be a type that a value can have. */
 TypeKind type_pointer_to(TypeKind target);
+/* The containers of a type of element, each one type however often it is
+   asked for. */
+TypeKind type_array_of(TypeKind elem, size_t length);
+TypeKind type_slice_of(TypeKind elem);
+TypeKind type_list_of(TypeKind elem);
+TypeKind type_map_of(TypeKind key, TypeKind value);
+/* What kind of container a type is, or CONTAINER_NONE. */
+ContainerKind type_container(TypeKind type);
+bool type_is_container(TypeKind type);
+/* A container's elements, or a map's values; TYPE_INVALID for any other
+   type. */
+TypeKind type_elem(TypeKind type);
+/* A map's keys; TYPE_INVALID for any other type. */
+TypeKind type_key(TypeKind type);
+/* An array's length; 0 for any other type. */
+size_t type_length(TypeKind type);
+/* For a container, the type its elements are built from in the end, and
+   what follows that type's name in its own: "int" and "[3][4]" for
+   "int[3][4]". For any other type, the type itself and "". */
+TypeKind type_base(TypeKind type);
+const char *type_suffix(TypeKind type);
 /* Computes a struct's size and alignment from its fields, as C lays it out. */
 void type_layout(TypeInfo *info);
 /* How many types the table in use holds; their numbers run from TYPE_COUNT. */

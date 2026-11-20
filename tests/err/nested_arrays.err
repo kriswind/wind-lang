@@ -1,0 +1,11 @@
+tests/err/nested_arrays.wind:1:24: error: a field that is an array needs its length: '[n]', or '[..]' for a growable one
+tests/err/nested_arrays.wind:7:14: error: 'rows[0]' is a growable array; index it, or use it where an array goes, as in 'len(...)' or 'append(...)'
+tests/err/nested_arrays.wind:8:15: error: an element of growable array 'rows[0]' moves when the array grows, so it cannot be pointed to; keep its index instead
+tests/err/nested_arrays.wind:10:12: error: cannot assign 'int' to 'int[2]'
+tests/err/nested_arrays.wind:11:12: error: cannot read into an array or a map as a whole; read its elements
+tests/err/nested_arrays.wind:13:14: error: 'm["a"]' is a growable array; index it, or use it where an array goes, as in 'len(...)' or 'append(...)'
+tests/err/nested_arrays.wind:15:5: error: cannot assign to an element of constant array 'C'
+tests/err/nested_arrays.wind:16:11: error: argument 1 of 'takes' must be an array of 'int[3]', found an array of 'int[2]'
+tests/err/nested_arrays.wind:17:17: error: only the first '[]' can leave out its length
+tests/err/nested_arrays.wind:19:18: error: a growable array has elements of its own; copy those of 'row' with 'clone(row)'
+tests/err/nested_arrays.wind:20:27: error: too many elements: the array has length 2

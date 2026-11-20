@@ -941,6 +941,33 @@ static bool at_statement_keyword(const Parser *p) {
     }
 }
 
+/* Parses the "[n]", "[]", "[..]" and "[K]" that follow a name, as many as
+   there are, into *suffixes. */
+static bool parse_suffixes(Parser *p, Suffix **suffixes, size_t *count) {
+    size_t cap = 0;
+    while (at(p, TOK_LBRACKET)) {
+        next(p);
+        Suffix suffix = {.loc = p->tok.loc};
+        if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
+            next(p);
+            next(p);
+            suffix.kind = SUFFIX_GROWABLE;
+        } else if (at(p, TOK_RBRACKET)) {
+            suffix.kind = SUFFIX_OPEN;
+        } else if (at_type(p)) {
+            if (!parse_type(p, &suffix.key, &suffix.key_ref)) return false;
+            suffix.kind = SUFFIX_MAP;
+        } else {
+            suffix.kind = SUFFIX_LENGTH;
+            suffix.length = parse_expr(p);
+            if (!suffix.length) return false;
+        }
+        if (!expect(p, TOK_RBRACKET, NULL)) return false;
+        ARENA_PUSH(p->arena, *suffixes, *count, cap, suffix);
+    }
+    return true;
+}
+
 /* Called at the "[" of an array declaration, after its type and name. */
 static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *type_ref,
                               Token name) {
@@ -950,25 +977,13 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
     stmt->as.decl.name = name.text;
     stmt->as.decl.is_array = true;
     size_t cap = 0;
-
-    next(p);
-    if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
-        next(p);
-        next(p);
-        stmt->as.decl.is_growable = true;
-    } else if (at_type(p)) {
-        if (!parse_type(p, &stmt->as.decl.key_type, &stmt->as.decl.key_ref)) return NULL;
-        stmt->as.decl.is_map = true;
-    } else if (!at(p, TOK_RBRACKET)) {
-        stmt->as.decl.length = parse_expr(p);
-        if (!stmt->as.decl.length) return NULL;
-    }
-    if (!expect(p, TOK_RBRACKET, NULL)) return NULL;
+    if (!parse_suffixes(p, &stmt->as.decl.suffixes, &stmt->as.decl.suffix_count)) return NULL;
+    SuffixKind outer = stmt->as.decl.suffixes[0].kind;
 
     if (accept(p, TOK_ASSIGN)) {
         skip_newlines(p);
-        if (stmt->as.decl.is_growable && !at(p, TOK_LBRACE)) {
-            /* "= clone(other)", which the checker holds it to. */
+        if (!at(p, TOK_LBRACE)) {
+            /* Such as "= clone(other)", which the checker holds it to. */
             stmt->as.decl.init = parse_expr(p);
             return stmt->as.decl.init ? stmt : NULL;
         }
@@ -977,7 +992,7 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
         /* The entries of a map are "key: value"; the key type of a map
            whose key type is a name is not known yet, so a ":" after the
            first element is what tells. */
-        bool pairs = stmt->as.decl.is_map;
+        bool pairs = outer == SUFFIX_MAP;
         while (!at(p, TOK_RBRACE)) {
             Expr *elem = parse_expr(p);
             if (!elem) return NULL;
@@ -1002,8 +1017,7 @@ static Stmt *parse_array_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *
         }
         if (!expect(p, TOK_RBRACE, NULL)) return NULL;
         stmt->as.decl.pairs = pairs;
-    } else if (kind == STMT_CONST ||
-               (!stmt->as.decl.length && !stmt->as.decl.is_growable && !stmt->as.decl.is_map)) {
+    } else if (kind == STMT_CONST || outer == SUFFIX_OPEN) {
         diag_add(p->diags, SEV_ERROR, name.loc,
                  kind == STMT_CONST ? "a constant array needs its elements: '= { ... }'"
                                     : "an array needs a length or its elements");
@@ -1080,28 +1094,7 @@ static bool parse_params(Parser *p, Stmt *stmt) {
             }
             Param param = {.type = type, .type_ref = type_ref, .name = param_name.text,
                            .loc = param_name.loc, .is_const = is_const, .const_loc = const_loc};
-            if (accept(p, TOK_LBRACKET)) {
-                if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
-                    next(p);
-                    next(p);
-                    param.is_growable = true;
-                } else if (at_type(p) || at(p, TOK_IDENT)) {
-                    if (!parse_type(p, &param.key_type, &param.key_ref)) return false;
-                    param.is_map = true;
-                } else {
-                    param.is_slice = true;
-                }
-                if (!at(p, TOK_RBRACKET)) {
-                    diag_add(p->diags, SEV_ERROR, p->tok.loc,
-                             "an array parameter is written '%s %.*s[]', without a "
-                             "length, or '%s %.*s[..]' for a growable one",
-                             type_name(type), (int)param_name.text.len,
-                             param_name.text.data, type_name(type),
-                             (int)param_name.text.len, param_name.text.data);
-                    return false;
-                }
-                next(p);
-            }
+            if (!parse_suffixes(p, &param.suffixes, &param.suffix_count)) return false;
             ARENA_PUSH(p->arena, stmt->as.func.params, stmt->as.func.param_count, cap,
                        param);
             skip_newlines(p);
@@ -1435,6 +1428,7 @@ static Stmt *parse_for_in(Parser *p, Stmt *stmt, bool parenthesized) {
         if (!expect(p, TOK_IDENT, &name)) return abandon_for(p);
         each->name = name.text;
         each->loc = name.loc;
+        if (!parse_suffixes(p, &each->suffixes, &each->suffix_count)) return abandon_for(p);
         stmt->as.loop.each_count++;
         if (stmt->as.loop.each_count == 2 || !accept(p, TOK_COMMA)) break;
         skip_newlines(p);
@@ -1612,26 +1606,7 @@ static bool parse_struct_body(Parser *p, Stmt *stmt) {
                      (int)name.text.len, name.text.data);
             field.type = TYPE_INVALID;
         }
-        if (accept(p, TOK_LBRACKET)) {
-            if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT) {
-                next(p);
-                next(p);
-                field.is_growable = true;
-            } else if (at_type(p) || at(p, TOK_IDENT)) {
-                if (!parse_type(p, &field.key_type, &field.key_ref)) return false;
-                field.is_map = true;
-            } else {
-                diag_add(p->diags, SEV_ERROR, p->tok.loc,
-                         "a field cannot be an array of a fixed length; '[..]' makes it a "
-                         "growable one");
-                /* Skipped so that the rest of the struct is still read. */
-                while (!at(p, TOK_RBRACKET) && !at(p, TOK_NEWLINE) && !at(p, TOK_RBRACE) &&
-                       !at(p, TOK_EOF)) {
-                    next(p);
-                }
-            }
-            if (!expect(p, TOK_RBRACKET, NULL)) return false;
-        }
+        if (!parse_suffixes(p, &field.suffixes, &field.suffix_count)) return false;
         if (!at(p, TOK_NEWLINE) && !at(p, TOK_SEMI) && !at(p, TOK_COMMA) &&
             !at(p, TOK_RBRACE)) {
             error_expected(p, "the end of the field");

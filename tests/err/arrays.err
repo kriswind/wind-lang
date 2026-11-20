@@ -6,7 +6,7 @@ tests/err/arrays.wind:9:19: error: an element of this array must be 'int', found
 tests/err/arrays.wind:10:6: error: 'bad6' cannot have type 'void'
 tests/err/arrays.wind:11:11: error: a constant array needs its elements: '= { ... }'
 tests/err/arrays.wind:12:9: error: cannot initialize 'int' variable with 'int *'
-tests/err/arrays.wind:13:1: error: cannot assign to array 'a' as a whole; assign its elements
+tests/err/arrays.wind:13:5: error: cannot assign 'int' to 'int[3]' variable 'a'
 tests/err/arrays.wind:14:3: error: index 3 is out of range for an array of length 3
 tests/err/arrays.wind:15:3: error: index -4 is out of range for an array of length 3
 tests/err/arrays.wind:17:1: error: cannot assign to an element of constant array 'C'

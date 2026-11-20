@@ -1,5 +1,5 @@
-tests/err/maps.wind:5:5: error: a map's keys cannot be 'float'; they can be integers, 'char', 'bool', enums, pointers or strings
-tests/err/maps.wind:6:5: error: a map's keys cannot be 'Point'; they can be integers, 'char', 'bool', enums, pointers or strings
+tests/err/maps.wind:5:13: error: a map's keys cannot be 'float'; they can be integers, 'char', 'bool', enums, pointers or strings
+tests/err/maps.wind:6:13: error: a map's keys cannot be 'Point'; they can be integers, 'char', 'bool', enums, pointers or strings
 tests/err/maps.wind:7:11: error: a map cannot be constant; declare it as a variable
 tests/err/maps.wind:8:18: error: only a map's entries are written 'key: value'; an array lists its elements
 tests/err/maps.wind:11:24: error: an external function cannot take a map

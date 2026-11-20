@@ -22,7 +22,10 @@ This note records what was chosen and why, and what is still to come.
 | Where memory comes from | one heap (`malloc`/`realloc`/`free`) | no hidden context parameter in every function, so the generated C stays plain |
 | Pointers into elements | `&xs[i]` is an error, and so is using `xs` as a pointer | elements move when the array grows; this rules out the dangling pointer that C and Odin allow. It can be relaxed later without breaking programs |
 | Copying | `ys = xs` is an error; `ys = clone(xs)` copies | two arrays never share elements, so one can never free the other's |
-| Structs that hold them | a struct with a growable array or a map field, or a field of such a struct, cannot be copied into a variable: it is made with `{ ... }` or taken out with `pop`, and not assigned or returned | the same rule as above: a copy would share the elements |
+| Structs that hold them | a struct with a growable array or a map field, or a field of such a struct, cannot be copied: it is made with `{ ... }` or taken out with `pop`, and not returned | the same rule as above: a copy would share the elements |
+| Arrays of arrays | any array or map can hold arrays and maps: `int grid[3][4]`, `int rows[..][..]`, `int groups[string][..]`; suffixes read as in C, the first outermost | each kind of array is a type of its own, so they combine as C's arrays do, and the same rules apply at every level |
+| Growable arrays inside others | stored only when new: `{ ... }`, `clone(...)` or `pop(...)`; deleting the outer array frees only its own elements | a copy would share the inner elements; freeing stays explicit, as in Odin |
+| Map values that are arrays | changing one, as `append(groups[k], v)` does, puts the key in if it is missing; reading one that is missing gives an empty value | as Go's `m[k] = append(m[k], v)`, without writing the key twice |
 | Passing them | as a parameter or a `for ... in` variable, such a struct is a copy that shares its arrays and maps and is read-only all the way down | the function reads it without copying elements, and cannot change, free or point into what it shares; as in Go and Odin, it must not grow the array the original lives in during the call |
 | Errors | an index out of range and `pop` on an empty array stop the program in checked builds; running out of memory always does | the same checks, and the same switch, as fixed arrays |
 | Use after `delete` | safe: `delete` leaves the array empty, so a later index is out of range and a later `append` starts afresh | follows from the two rules above, at no cost |
@@ -30,7 +33,10 @@ This note records what was chosen and why, and what is still to come.
 ## The generated C
 
 A growable array of `T` is a struct `wind_list_T { T *data; size_t len;
-size_t cap; }`, defined only when used. Its first two fields are those of
+size_t cap; }`, defined only when used. A fixed array of `T` is a struct
+holding a C array, `wind_arrayN_T { T v[N]; }`, so that one held in a
+growable array, a map or a struct is copied and initialized as any struct
+is; its layout is the C array's. Its first two fields are those of
 the slice struct an array parameter is, so indexing, `len` and bounds checks
 are shared with array parameters. A growable parameter is a pointer to the
 caller's struct. `append` grows through one helper, `wind_grow`, which

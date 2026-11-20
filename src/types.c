@@ -147,16 +147,149 @@ TypeKind type_pointer_to(TypeKind target) {
     return (TypeKind)(TYPE_COUNT + table->count - 1);
 }
 
+/* The stem of names derived from a type in the generated C. */
+static const char *stem_of(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info ? info->c_stem : type_name(type);
+}
+
+static char *format_two(const char *fmt, const char *a, const char *b) {
+    int len = snprintf(NULL, 0, fmt, a, b);
+    char *out = arena_alloc(table->arena, (size_t)len + 1);
+    snprintf(out, (size_t)len + 1, fmt, a, b);
+    return out;
+}
+
+/* Finds or makes a container of elem; key and length as its kind has
+   them, and zero otherwise. */
+static TypeKind container_of(ContainerKind kind, TypeKind elem, TypeKind key, size_t length) {
+    for (size_t i = 0; i < table->count; i++) {
+        const TypeInfo *known = table->items[i];
+        if (known->container == kind && known->target == elem && known->key == key &&
+            known->length == length) {
+            return (TypeKind)(TYPE_COUNT + i);
+        }
+    }
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    info->container = kind;
+    info->target = elem;
+    info->key = key;
+    info->length = length;
+    /* "int[3][4]" is an array of 3 "int[4]": this container's part of the
+       name comes before its elements' part. */
+    const TypeInfo *inner = type_info(elem);
+    bool nested = inner && inner->container;
+    info->base = nested ? inner->base : elem;
+    char own[64];
+    switch (kind) {
+    case CONTAINER_ARRAY:
+        snprintf(own, sizeof own, "[%zu]", length);
+        break;
+    case CONTAINER_SLICE:
+        snprintf(own, sizeof own, "[]");
+        break;
+    case CONTAINER_LIST:
+        snprintf(own, sizeof own, "[..]");
+        break;
+    default:
+        snprintf(own, sizeof own, "[%s]", type_name(key));
+        break;
+    }
+    info->suffix = format_two("%s%s", own, nested ? inner->suffix : "");
+    info->name = format_two("%s%s", type_name(info->base), info->suffix);
+    info->short_name = info->name;
+    const char *elem_stem = stem_of(elem);
+    char count[32];
+    snprintf(count, sizeof count, "%zu", length);
+    switch (kind) {
+    case CONTAINER_ARRAY:
+        info->c_stem = format_two("array%s_%s", count, elem_stem);
+        info->c_name = format_text("wind_%s", info->c_stem);
+        info->size = type_size(elem) * length;
+        info->align = type_align(elem);
+        break;
+    case CONTAINER_SLICE:
+        info->c_stem = format_text("slice_%s", elem_stem);
+        info->c_name = format_text("wind_slice_%s", elem_stem);
+        info->size = 2 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    case CONTAINER_LIST:
+        info->c_stem = format_text("list_%s", elem_stem);
+        info->c_name = format_text("wind_list_%s", elem_stem);
+        info->size = 3 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    default:
+        /* Three pointers and five counts, whatever it holds. */
+        info->c_stem = format_two("map_%s_%s", stem_of(key), elem_stem);
+        info->c_name = "wind_map";
+        info->size = 8 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    }
+    info->writer_name = format_text("wind_write_%s", info->c_stem);
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+TypeKind type_array_of(TypeKind elem, size_t length) {
+    return container_of(CONTAINER_ARRAY, elem, TYPE_INVALID, length);
+}
+
+TypeKind type_slice_of(TypeKind elem) {
+    return container_of(CONTAINER_SLICE, elem, TYPE_INVALID, 0);
+}
+
+TypeKind type_list_of(TypeKind elem) {
+    return container_of(CONTAINER_LIST, elem, TYPE_INVALID, 0);
+}
+
+TypeKind type_map_of(TypeKind key, TypeKind value) {
+    return container_of(CONTAINER_MAP, value, key, 0);
+}
+
+ContainerKind type_container(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info ? info->container : CONTAINER_NONE;
+}
+
+bool type_is_container(TypeKind type) {
+    return type_container(type) != CONTAINER_NONE;
+}
+
+TypeKind type_elem(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->target : TYPE_INVALID;
+}
+
+TypeKind type_key(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container == CONTAINER_MAP ? info->key : TYPE_INVALID;
+}
+
+size_t type_length(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container == CONTAINER_ARRAY ? info->length : 0;
+}
+
+TypeKind type_base(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->base : type;
+}
+
+const char *type_suffix(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->suffix : "";
+}
+
 void type_layout(TypeInfo *info) {
     size_t size = 0, align = 1;
-    size_t word = types_platform()->pointer_size;
     for (size_t i = 0; i < info->field_count; i++) {
         const Field *field = &info->fields[i];
-        /* A growable array is a pointer and two counts; a map, three
-           pointers and five counts. */
-        size_t field_align = field->array ? word : type_align(field->type);
-        size_t field_size = !field->array ? type_size(field->type) : field->is_map ? 8 * word
-                                                                                  : 3 * word;
+        size_t field_align = type_align(field->type);
+        size_t field_size = type_size(field->type);
         if (field_align > align) align = field_align;
         size = (size + field_align - 1) / field_align * field_align;
         size += field_size;
@@ -167,7 +300,7 @@ void type_layout(TypeInfo *info) {
 
 bool type_is_struct(TypeKind type) {
     const TypeInfo *info = type_info(type);
-    return info && !info->is_enum && !info->is_pointer;
+    return info && !info->is_enum && !info->is_pointer && !info->container;
 }
 
 bool type_is_enum(TypeKind type) {

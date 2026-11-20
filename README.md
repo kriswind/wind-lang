@@ -396,12 +396,52 @@ int sum(int values[]) {           // the whole function
   error.
 - `NULL` checks on pointers are not affected.
 
-An array is not a value in itself. Its name can be indexed, measured,
-printed, and passed to an array parameter, but one array cannot be assigned
-to another, compared with `==`, or returned from a function. Used any other
-way, the name is a pointer to the array's first element; see
-[Pointers](#pointers). Arrays have one dimension, and their elements cannot
-themselves be arrays.
+An array of a fixed length is a value, as a struct is: `b = a` copies the
+elements of `a` into `b`, an array of the same type, and so does
+`int b[3] = a`. It is indexed, measured, printed, and passed to an array
+parameter, but not compared with `==` or returned from a function. Used any
+other way, an array is a pointer to its first element; see
+[Pointers](#pointers).
+
+**Arrays of arrays**
+
+The elements of an array can themselves be arrays, of any kind, and arrays
+can be fields of structs and values of maps. Suffixes read as in C, the
+first one outermost:
+
+```wind
+int grid[3][4]                  // 3 rows, each an array of 4 ints
+grid[2][1] = 7
+cout << len(grid) << len(grid[0]) << "\n"   // 34
+const int UNIT[2][2] = {{1, 0}, {0, 1}}
+
+struct Board { int cells[3][3]; string moves[..] }
+
+int rows[..][..]                // a growable array of growable arrays
+append(rows, {1, 2, 3})
+append(rows[0], 4)              // grows the first row
+int points[..][2]               // a growable array of pairs
+append(points, {3, 4})
+int groups[string][..]          // a map whose values are growable arrays
+append(groups["even"], 2, 4)    // puts "even" in, empty, and appends
+```
+
+- Only the first `[]` may leave its length out: `int g[][2] = {{1, 2}, {3,
+  4}}` has 2 rows. A parameter `int g[][4]` takes any array of rows of 4,
+  fixed or growable.
+- Something that holds a growable array or a map is not copied, since the
+  copy would share its elements: a growable array is appended or stored as
+  `{ ... }`, `clone(...)` or `pop(...)`, all of which make one of its own.
+  `rows[1] = clone(rows[0])` replaces the elements of `rows[1]`.
+- An inner array is reached through the outer one each time it is used, so
+  nothing can point into an array whose elements move: `&rows[0][1]` is an
+  error, as is `&points[0]`. Elements of fixed arrays of fixed arrays can be
+  pointed to.
+- Changing a map's value, as `append(groups["odd"], 1)` does, puts its key
+  in if it is missing; reading one that is missing, as in
+  `len(groups["none"])`, gives an empty value and puts nothing in.
+- Deleting an array of growable arrays frees only its own elements: delete
+  the inner ones first if they should be freed too.
 
 **Growable arrays**
 
@@ -460,8 +500,9 @@ delete(ages)                    // frees it; the map is empty again
 - Keys can be integers, `char`, `bool`, enums, pointers and strings. A
   string key is copied into the map, so the map never holds text that is
   gone.
-- Values can be of any type, structs included: `stock["tea"].count -= 1`
-  changes one field of the value stored under `"tea"`.
+- Values can be of any type, structs and arrays included:
+  `stock["tea"].count -= 1` changes one field of the value stored under
+  `"tea"`.
 - A parameter declared `V name[K]` is given the caller's own map, which the
   function can change.
 - A value in a map moves as the map grows, so none can be pointed to, and a
@@ -676,15 +717,15 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
 **Structs**
 
 - Fields are separated by `;`, `,` or a newline. A field can be of any type,
-  including another struct, a growable array (`string build[..]`) or a map
-  (`f64 times[string]`), but not an array of a fixed length.
+  including another struct, an array of a fixed length (`int cells[9]`), a
+  growable array (`string build[..]`) or a map (`f64 times[string]`).
 - A struct is a value, as in C: assigning it, passing it or returning it
   copies it. A variable declared without a value has every field zero.
 - A struct that holds a growable array or a map, itself or in a struct field,
   cannot be copied into a variable, since the copy would share its
   elements. It is made with `{ ... }`, where its arrays and maps start empty,
-  or taken out of a growable array with `pop`, and it cannot be assigned,
-  returned, appended from a variable, or kept in a map. Its arrays and maps
+  or taken out of a growable array with `pop`, and it cannot be returned,
+  or assigned, appended or stored in a map from a variable. Its arrays and maps
   work like any others.
 - Passed to a function, gone through with `for ... in`, or given a name of
   its own, as in `Language lang = languages[i]`, it is a copy that shares
@@ -1236,8 +1277,9 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
-- A struct field cannot be an array of a fixed length, and a struct or an enum
-  cannot be read with `cin`; read into the fields.
+- A struct or an enum cannot be read with `cin`; read into the fields. `cin`
+  reads into one element of a one-dimensional array, as in `cin >> xs[i]`,
+  not into an array of arrays.
 - There is no `void *` and no pointer to a function, and memory is
   allocated only by growable arrays and maps: a pointer points to a
   variable, an element or a field. `cin` reads into a variable, not through a pointer.
