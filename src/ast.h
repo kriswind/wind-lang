@@ -58,6 +58,9 @@ struct Symbol {
        caller's own growable array or map. */
     TypeKind type;
     long long value; /* SYM_ENUM_VALUE */
+    /* A variable declared "static" in a function, which lives as long as
+       the program, as one at the top level does. */
+    bool is_static;
     /* A loop variable of "for (... in ...)", which cannot be assigned. */
     bool loop_bound;
     /* An array parameter declared "const": a view whose elements cannot be
@@ -132,6 +135,9 @@ typedef struct {
     SrcLoc module_loc;
     SrcLoc name_loc;
     Expr *of; /* typeof's operand */
+    /* "ret (*)(params)", a pointer to a function, as written; NULL for any
+       other type. */
+    struct FuncSig *sig;
 } TypeRef;
 
 /* What follows a name in a declaration to make it an array or a map:
@@ -260,6 +266,10 @@ struct Expr {
                functions on growable arrays, whose first argument is the
                array; symbol is then NULL. */
             Builtin builtin;
+            /* A call through a pointer to a function: what gives the
+               pointer, as in "(*f)(x)", "s.on_click(x)" or "f(x)" for a
+               variable f; symbol is then NULL. */
+            Expr *callee;
         } call;
         struct {
             TypeKind to;
@@ -440,6 +450,15 @@ typedef struct {
     Symbol *symbol; /* set by unit_analyze */
 } Param;
 
+/* What a pointer to a function points to, as written: "ret (*name)(params)",
+   where a parameter's name may be left out. */
+typedef struct FuncSig {
+    TypeKind ret;
+    TypeRef *ret_ref;
+    Param *params;
+    size_t param_count;
+} FuncSig;
+
 /* A variable that "cin" reads into: an existing one, or one that the read
    itself declares ("cin >> int n"). */
 typedef struct {
@@ -479,6 +498,9 @@ struct Stmt {
     /* The C library a program that uses it must be linked with, as in
        'link "m"' for -lm, or empty. */
     Str link;
+    /* STMT_VAR inside a function, declared "static": one variable for the
+       whole program, which keeps its value from one call to the next. */
+    bool is_static;
     /* Set by a directive in front of the statement; covers all of it. */
     BoundsMode bounds;
     union {

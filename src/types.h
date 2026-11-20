@@ -63,6 +63,11 @@ typedef struct {
     /* At most one is set; a struct has none. */
     bool is_enum;
     bool is_pointer;
+    /* A pointer to a function: target is what it returns, and params what
+       it takes. */
+    bool is_function;
+    TypeKind *params;
+    size_t param_count;
     ContainerKind container;
     /* pointer: the type pointed to; container: the type of its elements,
        or of a map's values */
@@ -152,6 +157,10 @@ TypeKind type_add(bool is_enum, Str name, Str qualifier);
 /* The type "pointer to target", which is one type however often it is asked
    for. target must be a type that a value can have. */
 TypeKind type_pointer_to(TypeKind target);
+/* "ret (*)(params)": a pointer to a function, one type however often it is
+   asked for. */
+TypeKind type_function_of(TypeKind ret, const TypeKind *params, size_t count);
+bool type_is_function(TypeKind type);
 /* The containers of a type of element, each one type however often it is
    asked for. */
 TypeKind type_array_of(TypeKind elem, size_t length);

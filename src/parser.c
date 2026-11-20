@@ -145,6 +145,10 @@ typedef struct {
     /* Where a "*" sits that starts the body of the if or while being
        parsed, and so is not a multiplication; NO_OFFSET if there is none. */
     size_t body_star;
+    /* Where a "(" sits that starts the body of the if or while being
+       parsed, right after its condition's ")", and so does not call what
+       the condition is; NO_OFFSET if there is none. */
+    size_t body_paren;
     /* A statement of the file that is not a setting has been read. */
     bool past_settings;
     Arena *arena;
@@ -780,6 +784,18 @@ static Expr *parse_postfix(Parser *p) {
     Expr *expr = parse_primary(p);
     while (expr) {
         carry_on(p);
+        if (at(p, TOK_LPAREN) && expr->kind != EXPR_IDENT &&
+            p->tok.loc.offset != p->body_paren) {
+            /* A call through a pointer to a function: "(*f)(x)",
+               "p->on_click(x)", "table[i](x)". */
+            Token name = {.loc = expr->loc};
+            Expr *call = parse_call(p, name);
+            if (!call) return NULL;
+            call->as.call.callee = expr;
+            call->loc = span(expr->loc, p->prev);
+            expr = call;
+            continue;
+        }
         if (!at(p, TOK_LBRACKET) && !at(p, TOK_DOT) && !at(p, TOK_ARROW)) break;
         if (at(p, TOK_LBRACKET)) {
             expr = parse_index(p, expr);
@@ -934,11 +950,79 @@ static bool at_statement_keyword(const Parser *p) {
     case TOK_KW_IMPORT:
     case TOK_KW_EXPORT:
     case TOK_KW_EXTERN:
+    case TOK_KW_STATIC:
     case TOK_DIRECTIVE:
         return true;
     default:
         return false;
     }
+}
+
+/* True at C's "(*" that starts the name of a pointer to a function. */
+static bool at_function_declarator(Parser *p) {
+    return at(p, TOK_LPAREN) && peek_kind(p, 1) == TOK_STAR;
+}
+
+static bool parse_suffixes(Parser *p, Suffix **suffixes, size_t *count);
+
+/* Called at the "(" of "ret (*name)(params)", with *type and *ref the
+   return type already parsed: parses the rest, with the name in *name, and
+   makes *type and *ref the pointer to a function. Where named is false the
+   name may be left out, as in a parameter list of one. */
+static bool parse_function_declarator(Parser *p, TypeKind *type, TypeRef **ref, Token *name,
+                                      bool named) {
+    SrcLoc loc = p->tok.loc;
+    next(p);
+    if (!expect(p, TOK_STAR, NULL)) return false;
+    if (named) {
+        if (!expect(p, TOK_IDENT, name)) return false;
+    } else if (at(p, TOK_IDENT)) {
+        *name = p->tok;
+        next(p);
+    }
+    if (!expect(p, TOK_RPAREN, NULL)) return false;
+    FuncSig *sig = arena_alloc(p->arena, sizeof *sig);
+    memset(sig, 0, sizeof *sig);
+    sig->ret = *type;
+    sig->ret_ref = *ref;
+    if (!expect(p, TOK_LPAREN, NULL)) return false;
+    skip_newlines(p);
+    size_t cap = 0;
+    while (!at(p, TOK_RPAREN)) {
+        Param param = {.loc = p->tok.loc};
+        if (!parse_type(p, &param.type, &param.type_ref)) return false;
+        /* C's "(void)" for one that takes nothing. */
+        if (param.type == TYPE_VOID && !param.type_ref && sig->param_count == 0 &&
+            at(p, TOK_RPAREN)) {
+            break;
+        }
+        Token param_name = {0};
+        if (at_function_declarator(p)) {
+            if (!parse_function_declarator(p, &param.type, &param.type_ref, &param_name, false)) {
+                return false;
+            }
+        } else if (at(p, TOK_IDENT)) {
+            param_name = p->tok;
+            next(p);
+        }
+        if (param_name.text.len) {
+            param.name = param_name.text;
+            param.loc = param_name.loc;
+        }
+        if (!parse_suffixes(p, &param.suffixes, &param.suffix_count)) return false;
+        ARENA_PUSH(p->arena, sig->params, sig->param_count, cap, param);
+        skip_newlines(p);
+        if (!accept(p, TOK_COMMA)) break;
+        skip_newlines(p);
+    }
+    if (!expect(p, TOK_RPAREN, NULL)) return false;
+    TypeRef *made = arena_alloc(p->arena, sizeof *made);
+    memset(made, 0, sizeof *made);
+    made->loc = loc;
+    made->sig = sig;
+    *type = TYPE_INVALID;
+    *ref = made;
+    return true;
 }
 
 /* Parses the "[n]", "[]", "[..]" and "[K]" that follow a name, as many as
@@ -1085,7 +1169,13 @@ static bool parse_params(Parser *p, Stmt *stmt) {
                 at(p, TOK_RPAREN)) {
                 break;
             }
-            if (!expect(p, TOK_IDENT, &param_name)) return false;
+            if (at_function_declarator(p)) {
+                if (!parse_function_declarator(p, &type, &type_ref, &param_name, true)) {
+                    return false;
+                }
+            } else if (!expect(p, TOK_IDENT, &param_name)) {
+                return false;
+            }
             if (type == TYPE_VOID) {
                 diag_add(p->diags, SEV_ERROR, param_name.loc,
                          "'%.*s' cannot have type 'void'", (int)param_name.text.len,
@@ -1224,6 +1314,29 @@ static bool compound_assign_op(TokenKind kind, Op *op);
    before the line or the header ends, that "*" starts the body: returns its
    offset. Returns NO_OFFSET otherwise. Looks ahead without consuming
    anything. */
+/* Called at the start of a condition: if it opens with a parenthesis whose
+   closing one is followed by another, returns that one's offset, the start
+   of the body, as in "if (ready) (*count)++". Returns NO_OFFSET otherwise.
+   Looks ahead without consuming anything. */
+static size_t body_paren(Parser *p) {
+    if (!at(p, TOK_LPAREN)) return NO_OFFSET;
+    Lexer lexer = p->lexer;
+    size_t count = p->diags->count;
+    size_t error_count = p->diags->error_count;
+    int depth = 1;
+    Token tok = p->tok;
+    while (depth > 0) {
+        tok = lexer_next(&lexer);
+        if (tok.kind == TOK_EOF) break;
+        if (tok.kind == TOK_LPAREN) depth++;
+        if (tok.kind == TOK_RPAREN) depth--;
+    }
+    if (depth == 0) tok = lexer_next(&lexer);
+    p->diags->count = count;
+    p->diags->error_count = error_count;
+    return depth == 0 && tok.kind == TOK_LPAREN ? tok.loc.offset : NO_OFFSET;
+}
+
 static size_t body_star(Parser *p) {
     if (!at(p, TOK_LPAREN)) return NO_OFFSET;
     Lexer lexer = p->lexer;
@@ -1319,9 +1432,11 @@ static bool parse_body(Parser *p, Block *block, bool braces_optional) {
 static Expr *parse_condition(Parser *p) {
     p->cond_start = p->tok.loc.offset;
     p->body_star = body_star(p);
+    p->body_paren = body_paren(p);
     Expr *cond = parse_expr(p);
     p->cond_start = NO_OFFSET;
     p->body_star = NO_OFFSET;
+    p->body_paren = NO_OFFSET;
     return cond;
 }
 
@@ -1598,7 +1713,13 @@ static bool parse_struct_body(Parser *p, Stmt *stmt) {
         Member field = {0};
         Token name;
         if (!parse_type(p, &field.type, &field.type_ref)) return false;
-        if (!expect(p, TOK_IDENT, &name)) return false;
+        if (at_function_declarator(p)) {
+            if (!parse_function_declarator(p, &field.type, &field.type_ref, &name, true)) {
+                return false;
+            }
+        } else if (!expect(p, TOK_IDENT, &name)) {
+            return false;
+        }
         field.name = name.text;
         field.loc = name.loc;
         if (field.type == TYPE_VOID) {
@@ -1696,7 +1817,14 @@ static Stmt *parse_type_decl(Parser *p, bool top_level, bool *needs_terminator) 
     } else {
         stmt->as.type.kind = TYPE_DECL_ALIAS;
         if (!parse_type(p, &stmt->as.type.type, &stmt->as.type.type_ref)) return NULL;
-        if (!expect(p, TOK_IDENT, &name)) return NULL;
+        if (at_function_declarator(p)) {
+            if (!parse_function_declarator(p, &stmt->as.type.type, &stmt->as.type.type_ref,
+                                           &name, true)) {
+                return NULL;
+            }
+        } else if (!expect(p, TOK_IDENT, &name)) {
+            return NULL;
+        }
     }
     stmt->loc = name.loc;
     stmt->as.type.name = name.text;
@@ -1713,6 +1841,10 @@ static Stmt *parse_type_decl(Parser *p, bool top_level, bool *needs_terminator) 
 static Stmt *parse_typed_decl(Parser *p, StmtKind kind, TypeKind type, TypeRef *type_ref,
                               bool top_level, bool *needs_terminator) {
     Token name;
+    if (at_function_declarator(p)) {
+        if (!parse_function_declarator(p, &type, &type_ref, &name, true)) return NULL;
+        return parse_decl_rest(p, kind, type, type_ref, name);
+    }
     if (!expect(p, TOK_IDENT, &name)) return NULL;
     if (kind == STMT_VAR && at(p, TOK_LPAREN)) {
         *needs_terminator = false;
@@ -2187,6 +2319,31 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         return target ? parse_assign_rest(p, tok, target) : NULL;
     case TOK_KW_EXTERN:
         return parse_extern(p, top_level, needs_terminator);
+    case TOK_KW_STATIC: {
+        /* C's "static": at the top level, where what is not exported is
+           the file's own already, it changes nothing; in a function, it
+           makes a variable that lasts. */
+        next(p);
+        SrcLoc start = p->tok.loc;
+        stmt = parse_statement(p, top_level, needs_terminator);
+        if (!stmt) return NULL;
+        bool declares = stmt->kind == STMT_VAR || stmt->kind == STMT_GROUP ||
+                        (top_level && (stmt->kind == STMT_FUNC || stmt->kind == STMT_CONST));
+        if (!declares) {
+            diag_add(p->diags, SEV_ERROR, start,
+                     "'static' goes in front of a variable's declaration%s",
+                     top_level ? " or a function's" : "");
+            return NULL;
+        }
+        if (stmt->kind == STMT_GROUP) {
+            for (size_t i = 0; i < stmt->as.block.count; i++) {
+                stmt->as.block.stmts[i]->is_static = !top_level;
+            }
+        } else {
+            stmt->is_static = !top_level && stmt->kind == STMT_VAR;
+        }
+        return stmt;
+    }
     case TOK_KW_IMPORT: {
         next(p);
         stmt = new_stmt(p, STMT_IMPORT, tok.loc);
@@ -2312,7 +2469,12 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
         TokenKind second = peek_kind(p, 1);
         bool qualified = second == TOK_DOT && peek_kind(p, 2) == TOK_IDENT;
         TokenKind after = qualified ? peek_kind(p, 3) : second;
-        if (after == TOK_IDENT || after == TOK_STAR) {
+        int next_at = qualified ? 4 : 2;
+        bool declarator = after == TOK_LPAREN && peek_kind(p, next_at) == TOK_STAR &&
+                          peek_kind(p, next_at + 1) == TOK_IDENT &&
+                          peek_kind(p, next_at + 2) == TOK_RPAREN &&
+                          peek_kind(p, next_at + 3) == TOK_LPAREN;
+        if (after == TOK_IDENT || after == TOK_STAR || declarator) {
             if (!parse_type(p, &type, &type_ref)) return NULL;
             return parse_typed_decl(p, STMT_VAR, type, type_ref, top_level,
                                     needs_terminator);
@@ -2512,7 +2674,7 @@ static bool parse_block(Parser *p, Block *block) {
 
 Program parse_program(Str src, Arena *arena, Diags *diags) {
     Parser p = {.arena = arena, .diags = diags, .cond_start = NO_OFFSET,
-                .body_star = NO_OFFSET};
+                .body_star = NO_OFFSET, .body_paren = NO_OFFSET};
     lexer_init(&p.lexer, src, arena, diags);
     next(&p);
 

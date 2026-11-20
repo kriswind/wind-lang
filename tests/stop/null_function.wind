@@ -1,0 +1,11 @@
+// Calling through a NULL pointer to a function stops the program with the
+// line, in a checked build.
+void hello() { cout << "hello\n" }
+
+int main() {
+    void (*greet)() = hello
+    greet()
+    greet = NULL
+    greet()
+    return 0
+}

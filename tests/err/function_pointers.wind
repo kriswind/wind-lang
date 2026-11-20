@@ -1,0 +1,14 @@
+typedef int (*BinOp)(int, int)
+int add(int a, int b) { return a + b }
+int neg(int a) { return -a }
+int main() {
+    BinOp op = neg
+    BinOp ok = add
+    int n = 3
+    n(1)
+    cout << ok(1) << ok(1, "x") << "\n"
+    cout << ok << "\n"
+    int *p = add
+    BinOp z = NULL + 1
+    return add
+}

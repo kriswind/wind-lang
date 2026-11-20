@@ -440,7 +440,10 @@ static TypeKind resolve_base_type(Checker *c, const TypeRef *ref) {
 
 /* Finds the type that a type written with a name or typeof stands for.
    Returns TYPE_INVALID, with the problem reported, if there is none. */
+static TypeKind signature_type(Checker *c, const FuncSig *sig);
+
 static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
+    if (ref->sig) return signature_type(c, ref->sig);
     TypeKind type = resolve_base_type(c, ref);
     if (type == TYPE_VOID && ref->depth) {
         error(c, ref->loc, "a pointer to 'void' is not supported; point to a type");
@@ -924,12 +927,16 @@ static TypeKind check_place(Checker *c, Expr *expr, bool assigning);
 /* True for a type that can be tested for truth: bool, and a pointer, which
    is true unless it is NULL. */
 static bool is_truth(TypeKind type) {
-    return type == TYPE_BOOL || type_is_pointer(type);
+    return type == TYPE_BOOL || type_is_pointer(type) || type_is_function(type);
 }
 
 static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
     Expr *operand = expr->as.unary.operand;
     if (expr->as.unary.op == OP_ADDR) {
+        const Symbol *named = operand->kind == EXPR_IDENT && !operand->as.ident.module.len
+                                  ? lookup(c, operand->as.ident.name)
+                                  : NULL;
+        if (named && named->kind == SYM_FUNC) return check_expr(c, operand, TYPE_INVALID);
         TypeKind type = check_place(c, operand, false);
         if (type == TYPE_INVALID) return TYPE_INVALID;
         const Expr *mover = moving_part(operand);
@@ -958,6 +965,9 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
     if (expr->as.unary.op == OP_DEREF) {
         TypeKind type = check_expr(c, operand, TYPE_INVALID);
         if (type == TYPE_INVALID) return TYPE_INVALID;
+        /* "*f" of a pointer to a function is the function, which C reads as
+           the pointer again. */
+        if (type_is_function(type)) return type;
         if (!type_is_pointer(type)) {
             error(c, operand->loc, "operator '*' needs a pointer, found '%s'",
                   type_name(type));
@@ -1144,8 +1154,60 @@ static TypeKind check_ternary(Checker *c, Expr *expr, TypeKind hint) {
 
 static TypeKind check_cast(Checker *c, Expr *expr);
 
+/* The type of a pointer to a function: what it returns, and takes. */
+static TypeKind function_type(Checker *c, const Stmt *func) {
+    size_t count = func->as.func.param_count;
+    TypeKind *params = arena_alloc(c->arena, (count ? count : 1) * sizeof *params);
+    for (size_t i = 0; i < count; i++) params[i] = func->as.func.params[i].type;
+    return type_function_of(func->as.func.ret, params, count);
+}
+
+static TypeKind check_args(Checker *c, Expr *expr, Str name, const Param *params,
+                           size_t param_count, bool known, TypeKind ret);
+
+/* A call through a pointer to a function, which callee gives. */
+static TypeKind check_pointer_call(Checker *c, Expr *expr, Expr *callee) {
+    expr->as.call.callee = callee;
+    TypeKind type = check_expr(c, callee, TYPE_INVALID);
+    const TypeInfo *info = type_info(type);
+    if (!type_is_function(type)) {
+        if (type != TYPE_INVALID) {
+            error(c, callee->loc, "%s is a '%s', not a function", quoted(c, callee),
+                  type_name(type));
+        }
+        check_args(c, expr, (Str){0}, NULL, 0, false, TYPE_INVALID);
+        return TYPE_INVALID;
+    }
+    Param *params = arena_alloc(c->arena, (info->param_count ? info->param_count : 1) *
+                                              sizeof *params);
+    memset(params, 0, (info->param_count ? info->param_count : 1) * sizeof *params);
+    for (size_t i = 0; i < info->param_count; i++) params[i].type = info->params[i];
+    Str name = callee->kind == EXPR_IDENT ? callee->as.ident.name
+               : callee->kind == EXPR_FIELD ? callee->as.field.name
+                                            : (Str){"the function", 12};
+    return check_args(c, expr, name, params, info->param_count, true, info->target);
+}
+
 static TypeKind check_call(Checker *c, Expr *expr) {
     Str name = expr->as.call.name;
+    if (expr->as.call.callee) return check_pointer_call(c, expr, expr->as.call.callee);
+    /* "a.f(x)" calls a pointer to a function that a struct holds, unless a
+       is a module; "f(x)" one that a variable holds. */
+    const Symbol *owner = expr->as.call.module.len ? lookup(c, expr->as.call.module) : NULL;
+    const Symbol *local = expr->as.call.module.len ? NULL : lookup(c, name);
+    if ((owner && owner->kind != SYM_MODULE) ||
+        (local && local->kind != SYM_FUNC && local->kind != SYM_TYPE &&
+         type_is_function(local->type))) {
+        Expr *callee = arena_alloc(c->arena, sizeof *callee);
+        memset(callee, 0, sizeof *callee);
+        callee->kind = EXPR_IDENT;
+        callee->loc = expr->as.call.module.len ? expr->as.call.module_loc : expr->as.call.name_loc;
+        callee->as.ident.name = name;
+        callee->as.ident.name_loc = expr->as.call.name_loc;
+        callee->as.ident.module = expr->as.call.module;
+        callee->as.ident.module_loc = expr->as.call.module_loc;
+        return check_pointer_call(c, expr, callee);
+    }
     Symbol *symbol = expr->as.call.module.len
                          ? resolve_member(c, expr->as.call.module, expr->as.call.module_loc,
                                           name, expr->as.call.name_loc)
@@ -1174,19 +1236,28 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         func = symbol->decl;
     }
 
+    return check_args(c, expr, name, func ? func->as.func.params : NULL,
+                      func ? func->as.func.param_count : 0, func != NULL,
+                      func ? func->as.func.ret : TYPE_INVALID);
+}
+
+/* Checks a call's arguments against the parameters, when they are known,
+   and returns what the call gives. */
+static TypeKind check_args(Checker *c, Expr *expr, Str name, const Param *params,
+                           size_t param_count, bool known, TypeKind ret) {
     size_t count = expr->as.call.count;
-    if (func && count != func->as.func.param_count) {
+    if (known && count != param_count) {
         error(c, expr->loc, "'%.*s' takes %zu argument%s, but %zu %s given", NAME(name),
-              func->as.func.param_count, func->as.func.param_count == 1 ? "" : "s",
+              param_count, param_count == 1 ? "" : "s",
               count, count == 1 ? "was" : "were");
     }
     for (size_t i = 0; i < count; i++) {
         Expr *arg = expr->as.call.args[i];
-        bool has_param = func && i < func->as.func.param_count;
-        TypeKind expected = has_param ? func->as.func.params[i].type : TYPE_INVALID;
+        bool has_param = known && i < param_count;
+        TypeKind expected = has_param ? params[i].type : TYPE_INVALID;
         ContainerKind wanted = type_container(expected);
         if (has_param && wanted != CONTAINER_NONE) {
-            const Param *param = &func->as.func.params[i];
+            const Param *param = &params[i];
             TypeKind found = check_operand(c, arg);
             ContainerKind kind = type_container(found);
             if (found == TYPE_INVALID) continue;
@@ -1264,7 +1335,7 @@ static TypeKind check_call(Checker *c, Expr *expr) {
                   NAME(name), type_name(expected), type_name(type));
         }
     }
-    return func ? func->as.func.ret : TYPE_INVALID;
+    return known ? ret : TYPE_INVALID;
 }
 
 /* The built-in functions on growable arrays, by name. */
@@ -1325,8 +1396,15 @@ static bool is_growable_operand(Checker *c, Expr *arg, TypeKind type, const char
 static void check_written(Checker *c, Expr *arg, const char *doing) {
     Builtin which = arg->kind == EXPR_CALL ? builtin_called(c, arg) : BUILTIN_NONE;
     if (!is_format(which)) {
-        if (check_operand(c, arg) == TYPE_VOID) {
+        TypeKind type = check_operand(c, arg);
+        if (type == TYPE_VOID) {
             error(c, arg->loc, "cannot %s a 'void' value", doing);
+        } else if (type_is_function(type) && arg->kind == EXPR_IDENT && arg->as.ident.symbol &&
+                   arg->as.ident.symbol->kind == SYM_FUNC) {
+            error(c, arg->loc, "'%.*s' is a function; call it with '()'",
+                  NAME(arg->as.ident.name));
+        } else if (type_is_function(type)) {
+            error(c, arg->loc, "cannot %s a pointer to a function", doing);
         }
         return;
     }
@@ -1711,7 +1789,7 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
     case EXPR_BOOL_LIT:
         return TYPE_BOOL;
     case EXPR_NULL:
-        if (!type_is_pointer(hint)) {
+        if (!type_is_pointer(hint) && !type_is_function(hint)) {
             error(c, expr->loc, "nothing here tells NULL which pointer type it is; use it "
                                 "with a pointer, as in 'int *p = NULL'");
             return TYPE_INVALID;
@@ -1748,9 +1826,10 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
                              : resolve(c, expr->as.ident.name, expr->loc);
         if (!symbol) return TYPE_INVALID;
         if (symbol->kind == SYM_FUNC) {
-            error(c, expr->loc, "'%.*s' is a function; call it with '()'",
-                  NAME(expr->as.ident.name));
-            return TYPE_INVALID;
+            /* A pointer to the function. */
+            symbol->used = true;
+            expr->as.ident.symbol = symbol;
+            return function_type(c, symbol->decl);
         }
         if (symbol->kind == SYM_TYPE) {
             symbol->used = true;
@@ -2316,6 +2395,22 @@ static TypeKind apply_suffixes(Checker *c, TypeKind type, Suffix *suffixes, size
     return type;
 }
 
+/* The type of a pointer to a function, as written: "ret (*)(params)". */
+static TypeKind signature_type(Checker *c, const FuncSig *sig) {
+    TypeKind ret = sig->ret_ref ? resolve_type(c, sig->ret_ref) : sig->ret;
+    TypeKind *params = arena_alloc(c->arena, (sig->param_count ? sig->param_count : 1) *
+                                                 sizeof *params);
+    bool valid = ret != TYPE_INVALID;
+    for (size_t i = 0; i < sig->param_count; i++) {
+        Param *param = &sig->params[i];
+        TypeKind type = declared_type(c, param->type, param->type_ref, param->loc, param->name);
+        params[i] = apply_suffixes(c, type, param->suffixes, param->suffix_count,
+                                   SUFFIXES_PARAM, 0, param->name);
+        if (params[i] == TYPE_INVALID) valid = false;
+    }
+    return valid ? type_function_of(ret, params, sig->param_count) : TYPE_INVALID;
+}
+
 /* Checks the entries a map declaration starts with, "key: value, ...". */
 static void check_map_entries(Checker *c, Stmt *stmt, TypeKind type) {
     if (stmt->as.decl.elem_count && !stmt->as.decl.pairs) {
@@ -2393,14 +2488,30 @@ static void check_array_decl(Checker *c, Stmt *stmt) {
         }
     }
 
+    if (stmt->is_static && type != TYPE_INVALID) {
+        bool constant = !stmt->as.decl.init;
+        for (size_t i = 0; constant && i < count; i++) {
+            constant = is_constant(stmt->as.decl.elems[i]);
+        }
+        if (kind == CONTAINER_LIST || kind == CONTAINER_MAP ? stmt->as.decl.init || count
+                                                             : !constant) {
+            error(c, stmt->loc, "a static %s starts out once, before the program runs, so %s",
+                  kind == CONTAINER_MAP ? "map" : "array",
+                  kind == CONTAINER_LIST || kind == CONTAINER_MAP
+                      ? "it starts empty; add to it in the function"
+                      : "its elements must be known at compile time");
+        }
+    }
     Symbol *symbol = new_symbol(c, is_const ? SYM_CONST : SYM_VAR, stmt->as.decl.name,
                                 stmt->loc, type);
     symbol->decl = stmt;
     symbol->exported = stmt->exported;
+    symbol->is_static = stmt->is_static;
     stmt->as.decl.symbol = symbol;
     declare(c, symbol);
     if (!is_const) {
-        list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+        list_push(c, symbol->global || symbol->is_static ? &c->unit->program.globals : c->locals,
+                  symbol);
     }
     /* A local array lives on the stack, which a large one overflows with
        no message at all: a machine with 64-bit pointers usually gives a
@@ -2440,7 +2551,8 @@ static void check_crossing_to(Checker *c, TypeKind type, SrcLoc loc, const char 
                               bool carried) {
     if (carried && type == TYPE_STRING) return;
     if (type == TYPE_INVALID || type == TYPE_VOID || type_is_numeric(type) ||
-        type == TYPE_BOOL || type == TYPE_CHAR || type_is_enum(type) || type_is_pointer(type)) {
+        type == TYPE_BOOL || type == TYPE_CHAR || type_is_enum(type) || type_is_pointer(type) ||
+        type_is_function(type)) {
         return;
     }
     error(c, loc, "%s cannot have type '%s'; C has no matching type%s", what, type_name(type),
@@ -2480,17 +2592,23 @@ static void check_decl(Checker *c, Stmt *stmt) {
         }
     }
 
+    if (stmt->is_static && init && type != TYPE_INVALID && !is_constant(init)) {
+        error(c, init->loc, "a static variable starts out once, before the program runs, so "
+                            "its value must be known at compile time");
+    }
     Symbol *symbol = new_symbol(c, is_const ? SYM_CONST : SYM_VAR, stmt->as.decl.name,
                                 stmt->loc, type);
     symbol->decl = stmt;
     symbol->exported = stmt->exported;
+    symbol->is_static = stmt->is_static;
     /* Given an existing struct that holds growable arrays or maps, the
        variable is a copy that shares them, read-only, as a parameter is. */
     symbol->shares = init && type_owns(type) && !is_fresh(init);
     stmt->as.decl.symbol = symbol;
     declare(c, symbol);
     if (!is_const) {
-        list_push(c, symbol->global ? &c->unit->program.globals : c->locals, symbol);
+        list_push(c, symbol->global || symbol->is_static ? &c->unit->program.globals : c->locals,
+                  symbol);
     }
 }
 

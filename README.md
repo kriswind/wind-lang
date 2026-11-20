@@ -692,6 +692,48 @@ report("square", square(7))
 - Parameters cannot be assigned to (the elements of an array parameter can).
 - A function sees every other function, and the constants and variables
   declared directly at the top level above it.
+- A variable declared `static` in a function is one variable for the whole
+  program, which keeps its value from one call to the next, as in C. It
+  starts out once, before the program runs, so its value must be known at
+  compile time; a static growable array or map starts empty. At the top
+  level, `static` changes nothing: what a file does not export is its own
+  already.
+
+  ```wind
+  int next_id() {
+      static int count = 0
+      count++
+      return count
+  }
+  ```
+
+**Pointers to functions**
+
+A function's name used as a value, with or without `&`, is a pointer to the
+function, which can be kept, passed and called. Its type is written as in C,
+and a `typedef` gives it a name:
+
+```wind
+typedef int (*BinOp)(int, int)
+
+int add(int a, int b) { return a + b }
+int apply(int (*op)(int, int), int a, int b) { return op(a, b) }
+
+BinOp op = add
+cout << op(2, 3) << apply(add, 4, 5) << "\n"
+struct Button { string label; void (*on_click)(string) }
+BinOp table[string] = {"+": add}
+cout << table["+"](1, 2) << "\n"
+```
+
+- A pointer to a function can be held in a variable, a field, an array or
+  a map, compared with `==`, tested as a condition, and set to `NULL`. It
+  is called with `f(x)` or, as in C, `(*f)(x)`; a parameter's name in its
+  type may be left out.
+- Its type must match the function's exactly: what it returns and each
+  parameter, arrays and maps included.
+- Calling through `NULL` stops the program with a message naming the line,
+  unless bounds checks are off. A pointer to a function cannot be printed.
 
 ### Structs, enums and type names
 
@@ -1280,7 +1322,7 @@ cout << name << " is " << age << "\n"
 - A struct or an enum cannot be read with `cin`; read into the fields. `cin`
   reads into one element of a one-dimensional array, as in `cin >> xs[i]`,
   not into an array of arrays.
-- There is no `void *` and no pointer to a function, and memory is
+- There is no `void *`, and memory is
   allocated only by growable arrays and maps: a pointer points to a
   variable, an element or a field. `cin` reads into a variable, not through a pointer.
 - A constant cannot take its value from a field of another constant.

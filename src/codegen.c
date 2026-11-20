@@ -1453,9 +1453,12 @@ static size_t unordered_operands(const Expr *expr, const Expr ***operands) {
     case EXPR_CALL:
         /* A built-in function works out its arguments in order itself. */
         if (expr->as.call.builtin) break;
-        count = expr->as.call.count;
-        *operands = xmalloc((count ? count : 1) * sizeof **operands);
-        for (size_t i = 0; i < count; i++) (*operands)[i] = expr->as.call.args[i];
+        /* A pointer to a function is found before its arguments are. */
+        *operands = xmalloc((expr->as.call.count + 1) * sizeof **operands);
+        if (expr->as.call.callee) (*operands)[count++] = expr->as.call.callee;
+        for (size_t i = 0; i < expr->as.call.count; i++) {
+            (*operands)[count++] = expr->as.call.args[i];
+        }
         break;
     case EXPR_INIT:
         count = expr->as.init.count;
@@ -2230,22 +2233,31 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
            declaration may differ in what it points to (char against the
            unsigned char of Wind, or const), and Wind has already checked
            them against the extern declaration. */
-        bool external = expr->as.call.symbol->decl->external &&
-                        !expr->as.call.symbol->decl->carried.len;
+        const Expr *callee = expr->as.call.callee;
+        const Stmt *func = callee ? NULL : expr->as.call.symbol->decl;
+        const TypeInfo *pointer = callee ? type_info(callee->type) : NULL;
+        bool external = func && func->external && !func->carried.len;
         bool cast_result = external && type_is_pointer(expr->type);
         if (cast_result) fprintf(out, "((%s)(void *)", c_type(expr->type));
-        emit_symbol(expr->as.call.symbol, out);
+        if (!callee) {
+            emit_symbol(expr->as.call.symbol, out);
+        } else if (bounds_checked) {
+            /* Calling through NULL stops the program with the line. */
+            emit_checked_pointer(callee, out);
+        } else {
+            emit_whole(callee, out);
+        }
         fputs("(", out);
-        const Stmt *func = expr->as.call.symbol->decl;
         for (size_t i = 0; i < expr->as.call.count; i++) {
             const Expr *arg = expr->as.call.args[i];
+            TypeKind param = callee ? pointer->params[i] : func->as.func.params[i].type;
             if (i) fputs(", ", out);
             if (external && type_is_pointer(arg->type)) {
                 fputs("(void *)", out);
                 emit_expr(arg, out);
-            } else if (!type_is_container(func->as.func.params[i].type)) {
+            } else if (!type_is_container(param)) {
                 emit_expr(arg, out);
-            } else if (type_container(func->as.func.params[i].type) != CONTAINER_SLICE) {
+            } else if (type_container(param) != CONTAINER_SLICE) {
                 /* The function is given the caller's own growable array or
                    map, to change. */
                 fputs("&", out);
@@ -2802,6 +2814,7 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         }
         break;
     case STMT_VAR:
+        if (stmt->is_static) break; /* see emit_variables */
         indent(depth, out);
         if (stmt->as.decl.is_array) {
             emit_array_decl(stmt, depth, out);
@@ -3256,12 +3269,30 @@ static void emit_array_decl(const Stmt *stmt, int depth, FILE *out) {
     fputs(";\n", out);
 }
 
+static void emit_static_value(const Expr *expr, FILE *out);
+
+/* Declares variables, each zero; a static one in a function starts out as
+   its declaration says, once, as C's does. */
 static void emit_variables(const SymbolList *variables, const char *prefix, FILE *out) {
     for (size_t i = 0; i < variables->count; i++) {
         const Symbol *variable = variables->items[i];
         fprintf(out, "%s%s ", prefix, c_type(variable->type));
         emit_symbol(variable, out);
-        fputs(" = {0};\n", out);
+        const Stmt *decl = variable->is_static ? variable->decl : NULL;
+        if (decl && decl->as.decl.is_array && decl->as.decl.elem_count) {
+            fputs(" = { { ", out);
+            for (size_t j = 0; j < decl->as.decl.elem_count; j++) {
+                if (j) fputs(", ", out);
+                emit_static_value(decl->as.decl.elems[j], out);
+            }
+            fputs(" } };\n", out);
+        } else if (decl && !decl->as.decl.is_array && decl->as.decl.init) {
+            fputs(" = ", out);
+            emit_static_value(decl->as.decl.init, out);
+            fputs(";\n", out);
+        } else {
+            fputs(" = {0};\n", out);
+        }
     }
 }
 
@@ -3572,6 +3603,20 @@ static void define_type(TypeKind type, FILE *out) {
     if (info->is_pointer) {
         name_type(info->target, out);
         fprintf(out, "typedef %s *%s;\n", type_c_name(info->target), info->c_name);
+        return;
+    }
+    if (info->is_function) {
+        /* As the functions it points to are declared: a growable array or a
+           map is taken as a pointer to the caller's own. */
+        name_type(info->target, out);
+        for (size_t i = 0; i < info->param_count; i++) name_type(info->params[i], out);
+        fprintf(out, "typedef %s (*%s)(", type_c_name(info->target), info->c_name);
+        for (size_t i = 0; i < info->param_count; i++) {
+            ContainerKind kind = type_container(info->params[i]);
+            fprintf(out, "%s%s%s", i ? ", " : "", type_c_name(info->params[i]),
+                    kind == CONTAINER_LIST || kind == CONTAINER_MAP ? " *" : "");
+        }
+        fputs(info->param_count ? ");\n" : "void);\n", out);
         return;
     }
     switch (info->container) {

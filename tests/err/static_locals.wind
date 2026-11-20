@@ -1,0 +1,6 @@
+int f(int n) {
+    static int a = n
+    static int b[..] = {1}
+    static return 1
+}
+int main() { return f(1) }

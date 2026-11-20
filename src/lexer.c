@@ -37,6 +37,7 @@ static const struct {
     {"typeof", TOK_KW_TYPEOF, TYPE_INVALID},
     {"export", TOK_KW_EXPORT, TYPE_INVALID},
     {"extern", TOK_KW_EXTERN, TYPE_INVALID},
+    {"static", TOK_KW_STATIC, TYPE_INVALID},
     {"void", TOK_TYPE, TYPE_VOID},
     {"bool", TOK_TYPE, TYPE_BOOL},
     {"string", TOK_TYPE, TYPE_STRING},
@@ -141,6 +142,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_TYPEOF: return "'typeof'";
     case TOK_KW_EXPORT: return "'export'";
     case TOK_KW_EXTERN: return "'extern'";
+    case TOK_KW_STATIC: return "'static'";
     case TOK_KW_UNSIGNED: return "'unsigned'";
     case TOK_KW_SIGNED: return "'signed'";
     case TOK_KW_LONG:   return "'long'";

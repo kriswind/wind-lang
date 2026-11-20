@@ -300,7 +300,49 @@ void type_layout(TypeInfo *info) {
 
 bool type_is_struct(TypeKind type) {
     const TypeInfo *info = type_info(type);
-    return info && !info->is_enum && !info->is_pointer && !info->container;
+    return info && !info->is_enum && !info->is_pointer && !info->container &&
+           !info->is_function;
+}
+
+TypeKind type_function_of(TypeKind ret, const TypeKind *params, size_t count) {
+    for (size_t i = 0; i < table->count; i++) {
+        const TypeInfo *known = table->items[i];
+        if (!known->is_function || known->target != ret || known->param_count != count) continue;
+        bool same = true;
+        for (size_t j = 0; j < count && same; j++) same = known->params[j] == params[j];
+        if (same) return (TypeKind)(TYPE_COUNT + i);
+    }
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    info->is_function = true;
+    info->target = ret;
+    info->param_count = count;
+    info->params = arena_alloc(table->arena, (count ? count : 1) * sizeof *info->params);
+    if (count) memcpy(info->params, params, count * sizeof *params);
+    /* "int (*)(int, string)", as C writes it. */
+    size_t len = strlen(type_name(ret)) + 8;
+    for (size_t j = 0; j < count; j++) len += strlen(type_name(params[j])) + 2;
+    char *name = arena_alloc(table->arena, len + 1);
+    int at = snprintf(name, len + 1, "%s (*)(", type_name(ret));
+    for (size_t j = 0; j < count; j++) {
+        at += snprintf(name + at, len + 1 - (size_t)at, "%s%s", j ? ", " : "", type_name(params[j]));
+    }
+    snprintf(name + at, len + 1 - (size_t)at, ")");
+    info->name = info->short_name = name;
+    char stem[32];
+    snprintf(stem, sizeof stem, "fn%zu", table->count);
+    info->c_stem = format_text("%s", stem);
+    info->c_name = format_text("wind_%s", stem);
+    info->writer_name = "wind_write_pointer";
+    info->size = platform->pointer_size;
+    info->align = platform->pointer_size;
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+bool type_is_function(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_function;
 }
 
 bool type_is_enum(TypeKind type) {

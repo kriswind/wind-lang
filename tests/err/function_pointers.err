@@ -1,0 +1,8 @@
+tests/err/function_pointers.wind:5:16: error: cannot initialize 'int (*)(int, int)' variable with 'int (*)(int)'
+tests/err/function_pointers.wind:8:5: error: 'n' is not a function
+tests/err/function_pointers.wind:9:13: error: 'ok' takes 2 arguments, but 1 was given
+tests/err/function_pointers.wind:9:28: error: argument 2 of 'ok' must be 'int', found 'string'
+tests/err/function_pointers.wind:10:13: error: cannot print a pointer to a function
+tests/err/function_pointers.wind:11:14: error: cannot initialize 'int *' variable with 'int (*)(int, int)'
+tests/err/function_pointers.wind:12:15: error: nothing here tells NULL which pointer type it is; use it with a pointer, as in 'int *p = NULL'
+tests/err/function_pointers.wind:13:12: error: 'main' returns 'int', found 'int (*)(int, int)'
