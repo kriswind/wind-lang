@@ -8,5 +8,4 @@ tests/err/const_params.wind:13:12: error: read-only array 'values' can only be g
 tests/err/const_params.wind:14:12: error: cannot read into an element of read-only array 'values'
 tests/err/const_params.wind:18:11: error: a growable array parameter is there to be changed, so it cannot be 'const'
 tests/err/const_params.wind:19:13: error: a map parameter is there to be changed, so it cannot be 'const'
-tests/err/const_params.wind:20:12: error: 'const' would not stop changes through pointer 'p'; Wind has no read-only pointers
 tests/err/const_params.wind:23:12: error: constant array 'FIXED' can only be given to an array parameter declared 'const', which cannot change it

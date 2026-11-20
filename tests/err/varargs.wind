@@ -1,0 +1,11 @@
+extern "stdio.h" { int printf(const char *format, ...) }
+int mine(int n, ...) { return n }
+struct P { int x }
+int main() {
+    string s = "x"
+    P p
+    printf()
+    printf("%s", s, p)
+    int (*f)(const char *) = printf
+    return 0
+}

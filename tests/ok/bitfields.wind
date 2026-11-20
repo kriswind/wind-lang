@@ -1,0 +1,38 @@
+// Bitfields, packed as C packs them, assigned and changed in place.
+enum Mode { OFF, SLOW, FAST }
+
+struct Flags {
+    u8 ready : 1
+    u8 mode : 3
+    u8 level : 4
+    u16 count : 12
+    bool on : 1
+}
+
+struct Mixed {
+    u8 tag
+    u32 low : 4
+    u32 high : 28
+    i8 delta
+}
+
+struct Packet { Mode mode : 2; int size }
+
+int main() {
+    Flags f = {1, 5, 15, 4000, true}
+    cout << f << " " << sizeof(Flags) << " " << sizeof(Mixed) << " " << sizeof(Packet) << "\n"
+    f.count += 100
+    f.level++
+    f.mode <<= 1
+    f.count /= 3
+    Flags *pf = &f
+    pf->ready = 0
+    pf->mode = 7
+    Flags many[2]
+    many[1].level = 9
+    many[1].level--
+    Packet p = {FAST, 10}
+    p.mode = SLOW
+    cout << f << " " << many[1].level << " " << p << "\n"
+    return 0
+}

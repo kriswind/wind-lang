@@ -32,6 +32,7 @@ static const struct {
     {"sizeof", TOK_KW_SIZEOF, TYPE_INVALID},
     {"import", TOK_KW_IMPORT, TYPE_INVALID},
     {"struct", TOK_KW_STRUCT, TYPE_INVALID},
+    {"union", TOK_KW_UNION, TYPE_INVALID},
     {"enum", TOK_KW_ENUM, TYPE_INVALID},
     {"typedef", TOK_KW_TYPEDEF, TYPE_INVALID},
     {"typeof", TOK_KW_TYPEOF, TYPE_INVALID},
@@ -137,6 +138,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_SIZEOF: return "'sizeof'";
     case TOK_KW_IMPORT: return "'import'";
     case TOK_KW_STRUCT: return "'struct'";
+    case TOK_KW_UNION:  return "'union'";
     case TOK_KW_ENUM:   return "'enum'";
     case TOK_KW_TYPEDEF: return "'typedef'";
     case TOK_KW_TYPEOF: return "'typeof'";

@@ -43,6 +43,7 @@ typedef struct {
     Str name;
     SrcLoc loc;
     TypeKind type;
+    int bits; /* a bitfield, "u8 ready : 1": how many bits it has; 0 otherwise */
 } Field;
 
 /* What holds elements: a type that is one of these is a container. */
@@ -63,6 +64,7 @@ typedef struct {
     /* At most one is set; a struct has none. */
     bool is_enum;
     bool is_pointer;
+    bool read_only; /* pointer: "const T *", which cannot change what it points to */
     /* A pointer to a function: target is what it returns, and params what
        it takes. */
     bool is_function;
@@ -79,6 +81,9 @@ typedef struct {
        "int[3][4]". */
     TypeKind base;
     const char *suffix;
+    /* A struct whose fields share one place, as C's union's do: it is as
+       large as the largest of them. */
+    bool is_union;
     /* A struct whose fields are not settled yet: it can be pointed to, but
        it has no size and cannot be held by value. */
     bool incomplete;
@@ -157,6 +162,10 @@ TypeKind type_add(bool is_enum, Str name, Str qualifier);
 /* The type "pointer to target", which is one type however often it is asked
    for. target must be a type that a value can have. */
 TypeKind type_pointer_to(TypeKind target);
+/* "const T *": a pointer through which what it points to cannot be
+   changed. */
+TypeKind type_read_only_pointer_to(TypeKind target);
+bool type_is_read_only_pointer(TypeKind type);
 /* "ret (*)(params)": a pointer to a function, one type however often it is
    asked for. */
 TypeKind type_function_of(TypeKind ret, const TypeKind *params, size_t count);

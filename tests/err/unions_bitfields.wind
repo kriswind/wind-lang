@@ -1,0 +1,18 @@
+struct Bad {
+    float f : 3
+    u8 big : 9
+    int zero : 0
+    string s : 1
+    u8 ok : 2
+    int n : len("abc") + count
+}
+int count = 2
+union Holder { int xs[..]; int n }
+union U { int a; float b }
+int main() {
+    Bad b
+    u8 *p = &b.ok
+    cin >> b.ok
+    U u = {1, 2.0}
+    return 0
+}

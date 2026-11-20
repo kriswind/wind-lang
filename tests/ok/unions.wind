@@ -1,0 +1,27 @@
+// Unions, whose fields share one place, as C's do.
+union Bits {
+    f32 number
+    u32 raw
+    u8 bytes[4]
+}
+
+typedef union { int i; char c } Small
+
+union Payload { int whole; float real }
+
+struct Token {
+    int kind
+    Payload value
+}
+
+int main() {
+    Bits b = {1.0}
+    cout << b.raw << " " << sizeof(Bits) << " " << b.bytes[3] << "\n"
+    b.raw = 0x40490fdb
+    cout << b.number << "\n"
+    Small s = {.c = 'A'}
+    cout << s.c << " " << sizeof(Small) << "\n"
+    Token t = {1, {.real = 2.5}}
+    cout << t.value.real << " " << sizeof(Token) << "\n"
+    return 0
+}

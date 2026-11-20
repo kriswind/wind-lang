@@ -1,0 +1,9 @@
+tests/err/unions_bitfields.wind:2:11: error: a bitfield is an integer, a 'bool' or an enum, not 'float'
+tests/err/unions_bitfields.wind:3:14: error: a bitfield of 'u8' has from 1 to 8 bits, not 9
+tests/err/unions_bitfields.wind:4:16: error: a bitfield of 'int' has from 1 to 64 bits, not 0
+tests/err/unions_bitfields.wind:5:12: error: a bitfield is an integer, a 'bool' or an enum, not 'string'
+tests/err/unions_bitfields.wind:7:26: error: undefined name 'count'
+tests/err/unions_bitfields.wind:10:20: error: a union's fields share one place, so none can hold a growable array or a map, which would be lost or shared
+tests/err/unions_bitfields.wind:14:14: error: 'ok' is a bitfield, which has no address of its own
+tests/err/unions_bitfields.wind:15:14: error: 'ok' is a bitfield, which cannot be read into; read into a variable, then assign it
+tests/err/unions_bitfields.wind:16:15: error: a union holds one of its fields at a time, so it is given one value

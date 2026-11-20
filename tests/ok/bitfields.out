@@ -1,0 +1,2 @@
+Flags{ready = 1, mode = 5, level = 15, count = 4000, on = true} 4 12 16
+Flags{ready = 0, mode = 7, level = 0, count = 1, on = true} 8 Packet{mode = SLOW, size = 10}

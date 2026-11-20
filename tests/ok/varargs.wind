@@ -1,0 +1,18 @@
+// External functions that take C's '...', called with any number of values
+// after their parameters.
+extern "stdio.h" {
+    int printf(const char *format, ...)
+    int snprintf(char *into, uintptr size, const char *format, ...)
+}
+
+int main() {
+    printf("%d + %d = %d\n", 2, 3, 2 + 3)
+    printf("%s has %d letters and %.2f\n", "wind", 4, 0.5)
+    printf("no values\n")
+    string name = "ada"
+    printf("hello %s, %c\n", cstring(name), 'x')
+    u8 buffer[32]
+    int n = snprintf((char *)&buffer[0], 32, "%05d", 42)
+    printf("%s %d\n", (char *)&buffer[0], n)
+    return 0
+}

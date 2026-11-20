@@ -398,7 +398,7 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
             }
             buf_puts(buf, " }");
         } else {
-            buf_printf(buf, "struct %s { ", info->short_name);
+            buf_printf(buf, "%s %s { ", info->is_union ? "union" : "struct", info->short_name);
             for (size_t i = 0; i < info->field_count; i++) {
                 TypeKind base = type_base(info->fields[i].type);
                 buf_printf(buf, "%s%s%s%.*s%s", i ? "; " : "", type_name(base), type_gap(base),

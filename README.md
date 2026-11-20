@@ -806,6 +806,15 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
 - Structs cannot be compared with `==`; compare their fields.
 - `cout` prints a struct as `Name{field = value, ...}`.
 - `sizeof` gives the size C would lay the struct out in.
+- `union Name { ... }` is a struct whose fields share one place, as in C: it
+  is as large as its largest field, `{ ... }` gives it one value, and
+  reading a field other than the one last set reads the same bytes as that
+  type. A union's field cannot hold a growable array or a map. `cout`
+  prints every field.
+- A field of an integer, `bool` or enum type can be a bitfield, as in C:
+  `u8 ready : 1` holds 1 bit, packed with its neighbours as GCC and Clang
+  pack them. It is read and assigned like any field, wrapping at its
+  width, but has no address, and `cin` cannot read into it.
 
 **Enums**
 
@@ -898,8 +907,20 @@ cout << *n << " " << n[1] << " " << n - &nums[0] << "\n"   // 3 4 2
 - A pointer can be tested directly, as in C: `if (p)`, `while (at)`, `!p`,
   `p && p->next`, `p ? a : b`. It counts as true unless it is `NULL`. It is
   still not a `bool`: `bool ok = p` is an error; write `p != NULL`.
-- A pointer converts only explicitly: to another pointer type, `(u8 *)p`,
-  and to and from `uintptr`.
+- A pointer converts explicitly to another pointer type, `(u8 *)p`, and to
+  and from `uintptr`. Two conversions are made without being written, as C
+  makes them: any pointer to `void *`, and `T *` to `const T *`.
+- `void *` points to something of a type it does not say, as in C. Any
+  pointer goes where one is wanted, and it is compared, tested and passed;
+  what it points to is reached only after converting it back:
+  `Point *p = (Point *)any`.
+- `const T *` is a pointer through which what it points to cannot be
+  changed: `*p = 1`, `p->x = 1` and passing it where a `T *` goes are
+  errors, though `p` itself can be moved to point elsewhere. A pointer
+  taken to something reached through one is `const` too. A parameter
+  `const char *text` takes any `char *`, as C's own functions do. A
+  `const T *` declared with a value known at compile time, as in `const
+  char *GREETING = "hi"`, is a constant as well.
 - `cout` prints a pointer as its address, or `NULL`; a `char *` prints as
   text, as described below.
 - `*p++` is an error, because C reads it as moving `p`. Write `(*p)++` to
@@ -1071,6 +1092,16 @@ putchar(i32('!'))
   `i32` on a 64-bit machine. Pointers are passed as they are, whatever they
   point to, so `char *` can be given to a C function that takes `const
   char *`.
+- A function whose parameters end with C's `...`, as `int printf(const
+  char *format, ...)`, takes any number of values after them: numbers,
+  characters, enums and pointers, with a string literal there passed as C's
+  kind of string. Only an external function can take `...`, and it can
+  only be called, not used as a pointer to a function.
+
+  ```wind
+  extern "stdio.h" { int printf(const char *format, ...) }
+  printf("%s has %d letters\n", "wind", 4)
+  ```
 - `export extern` makes the declaration part of what a module offers, and
   `export extern "header" { ... }` exports the whole block, which is how
   `::vendor/arduino` is written. `export` goes only before the block, not
@@ -1322,9 +1353,10 @@ cout << name << " is " << age << "\n"
 - A struct or an enum cannot be read with `cin`; read into the fields. `cin`
   reads into one element of a one-dimensional array, as in `cin >> xs[i]`,
   not into an array of arrays.
-- There is no `void *`, and memory is
-  allocated only by growable arrays and maps: a pointer points to a
-  variable, an element or a field. `cin` reads into a variable, not through a pointer.
+- Memory is allocated only by growable arrays and maps, unless C's own
+  functions are called for it: a pointer points to a variable, an element
+  or a field. `cin` reads into a variable, not through a pointer.
+- A struct or union is declared on its own, not inside another's field.
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.

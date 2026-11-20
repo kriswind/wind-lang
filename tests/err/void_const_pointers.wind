@@ -1,0 +1,18 @@
+struct Point { int x; int y }
+void change(int *p) { *p = 1 }
+int main() {
+    int x = 1
+    const int *cp = &x
+    *cp = 2
+    int *back = cp
+    change(cp)
+    void *any = &x
+    *any = 3
+    any[0] = 1
+    any = any + 1
+    const Point *pt = NULL
+    pt->x = 4
+    int *forced = (int *)cp
+    int *p2 = any
+    return 0
+}

@@ -226,7 +226,7 @@ static bool is_type_word(TokenKind kind) {
    one: it reads as any other identifier. */
 static bool at_type(const Parser *p) {
     return is_type_word(p->tok.kind) || at(p, TOK_KW_TYPEOF) || at(p, TOK_KW_STRUCT) ||
-           at(p, TOK_KW_ENUM);
+           at(p, TOK_KW_UNION) || at(p, TOK_KW_ENUM);
 }
 
 /* The kind of the token "ahead" places after the current one, newlines
@@ -287,7 +287,7 @@ static bool at_named_pointer_type(Parser *p);
 static bool parse_base_type(Parser *p, TypeKind *out, TypeRef **ref) {
     *out = TYPE_INVALID;
     *ref = NULL;
-    if (at(p, TOK_KW_STRUCT) || at(p, TOK_KW_ENUM)) {
+    if (at(p, TOK_KW_STRUCT) || at(p, TOK_KW_UNION) || at(p, TOK_KW_ENUM)) {
         /* C's "struct Name"; the keyword adds nothing here. */
         next(p);
         if (!at(p, TOK_IDENT)) {
@@ -380,15 +380,44 @@ static bool parse_type(Parser *p, TypeKind *out, TypeRef **ref) {
     while (at(p, TOK_STAR)) {
         if (*ref) {
             (*ref)->depth++;
-        } else if (*out == TYPE_VOID) {
-            diag_add(p->diags, SEV_ERROR, p->tok.loc,
-                     "a pointer to 'void' is not supported; point to a type");
-            next(p);
-            return false;
         } else {
             *out = type_pointer_to(*out);
         }
         next(p);
+    }
+    return true;
+}
+
+/* True for a type just parsed that has a "*" in it. */
+static bool parsed_pointer(TypeKind type, const TypeRef *ref) {
+    return ref ? ref->depth > 0 : type_is_pointer(type);
+}
+
+/* Makes a pointer type just parsed after "const" read-only: as in C, the
+   innermost pointer is the one that cannot change what it points to. */
+static void make_read_only(TypeKind *type, TypeRef *ref) {
+    if (ref) {
+        ref->read_only = true;
+        return;
+    }
+    int depth = 0;
+    TypeKind base = *type;
+    while (type_is_pointer(base)) {
+        base = type_target(base);
+        depth++;
+    }
+    *type = type_read_only_pointer_to(base);
+    for (int i = 1; i < depth; i++) *type = type_pointer_to(*type);
+}
+
+/* Parses a type that may be written after "const". Sets *read_only if it
+   was, and the type is not a pointer, which "const" made read-only. */
+static bool parse_type_const(Parser *p, TypeKind *type, TypeRef **ref, bool *was_const) {
+    *was_const = accept(p, TOK_KW_CONST);
+    if (!parse_type(p, type, ref)) return false;
+    if (*was_const && parsed_pointer(*type, *ref)) {
+        make_read_only(type, *ref);
+        *was_const = false;
     }
     return true;
 }
@@ -567,7 +596,7 @@ static bool at_c_cast(Parser *p) {
     /* A declared type: "(Name)", "(module.Name)" or "(struct Name)". With
        the keyword or a "*" it can be nothing else; without them, the
        parentheses could also hold a variable, so a value has to follow. */
-    bool keyword = kind == TOK_KW_STRUCT || kind == TOK_KW_ENUM;
+    bool keyword = kind == TOK_KW_STRUCT || kind == TOK_KW_UNION || kind == TOK_KW_ENUM;
     if (keyword) kind = peek_kind(p, ++ahead);
     if (kind != TOK_IDENT) return false;
     kind = peek_kind(p, ++ahead);
@@ -990,7 +1019,8 @@ static bool parse_function_declarator(Parser *p, TypeKind *type, TypeRef **ref, 
     size_t cap = 0;
     while (!at(p, TOK_RPAREN)) {
         Param param = {.loc = p->tok.loc};
-        if (!parse_type(p, &param.type, &param.type_ref)) return false;
+        bool was_const;
+        if (!parse_type_const(p, &param.type, &param.type_ref, &was_const)) return false;
         /* C's "(void)" for one that takes nothing. */
         if (param.type == TYPE_VOID && !param.type_ref && sig->param_count == 0 &&
             at(p, TOK_RPAREN)) {
@@ -1161,9 +1191,27 @@ static bool parse_params(Parser *p, Stmt *stmt) {
             TypeKind type;
             TypeRef *type_ref;
             Token param_name;
+            if (at(p, TOK_DOT) && peek_kind(p, 1) == TOK_DOT && peek_kind(p, 2) == TOK_DOT) {
+                /* C's "...", which ends the parameters. */
+                SrcLoc dots = p->tok.loc;
+                next(p);
+                next(p);
+                next(p);
+                stmt->as.func.variadic = true;
+                skip_newlines(p);
+                if (!at(p, TOK_RPAREN)) {
+                    diag_add(p->diags, SEV_ERROR, dots, "'...' comes after every parameter");
+                    return false;
+                }
+                break;
+            }
             SrcLoc const_loc = p->tok.loc;
             bool is_const = accept(p, TOK_KW_CONST);
             if (!parse_type(p, &type, &type_ref)) return false;
+            if (is_const && parsed_pointer(type, type_ref)) {
+                make_read_only(&type, type_ref);
+                is_const = false;
+            }
             /* C's "(void)" for a function without parameters. */
             if (type == TYPE_VOID && stmt->as.func.param_count == 0 &&
                 at(p, TOK_RPAREN)) {
@@ -1712,7 +1760,14 @@ static bool parse_struct_body(Parser *p, Stmt *stmt) {
         if (at(p, TOK_RBRACE) || at(p, TOK_EOF)) break;
         Member field = {0};
         Token name;
-        if (!parse_type(p, &field.type, &field.type_ref)) return false;
+        bool was_const;
+        SrcLoc const_loc = p->tok.loc;
+        if (!parse_type_const(p, &field.type, &field.type_ref, &was_const)) return false;
+        if (was_const) {
+            diag_add(p->diags, SEV_ERROR, const_loc,
+                     "a field cannot be 'const' on its own; 'const' goes with a pointer, "
+                     "as in 'const char *name'");
+        }
         if (at_function_declarator(p)) {
             if (!parse_function_declarator(p, &field.type, &field.type_ref, &name, true)) {
                 return false;
@@ -1728,6 +1783,10 @@ static bool parse_struct_body(Parser *p, Stmt *stmt) {
             field.type = TYPE_INVALID;
         }
         if (!parse_suffixes(p, &field.suffixes, &field.suffix_count)) return false;
+        if (accept(p, TOK_COLON)) {
+            field.bits = parse_expr(p);
+            if (!field.bits) return false;
+        }
         if (!at(p, TOK_NEWLINE) && !at(p, TOK_SEMI) && !at(p, TOK_COMMA) &&
             !at(p, TOK_RBRACE)) {
             error_expected(p, "the end of the field");
@@ -1779,7 +1838,7 @@ static bool parse_enum_body(Parser *p, Stmt *stmt) {
 /* True at "struct" or "enum" when it starts a declaration of the type,
    and not the use of one as in "struct Point p". */
 static bool at_type_body(Parser *p) {
-    if (!at(p, TOK_KW_STRUCT) && !at(p, TOK_KW_ENUM)) return false;
+    if (!at(p, TOK_KW_STRUCT) && !at(p, TOK_KW_UNION) && !at(p, TOK_KW_ENUM)) return false;
     TokenKind next_kind = peek_kind(p, 1);
     return next_kind == TOK_LBRACE ||
            (next_kind == TOK_IDENT && peek_kind(p, 2) == TOK_LBRACE);
@@ -1795,6 +1854,7 @@ static Stmt *parse_type_decl(Parser *p, bool top_level, bool *needs_terminator) 
     if (at_type_body(p)) {
         bool is_enum = at(p, TOK_KW_ENUM);
         stmt->as.type.kind = is_enum ? TYPE_DECL_ENUM : TYPE_DECL_STRUCT;
+        stmt->as.type.is_union = at(p, TOK_KW_UNION);
         next(p);
         bool has_tag = at(p, TOK_IDENT);
         Token tag = p->tok;
@@ -1811,7 +1871,7 @@ static Stmt *parse_type_decl(Parser *p, bool top_level, bool *needs_terminator) 
             *needs_terminator = false;
         } else {
             diag_add(p->diags, SEV_ERROR, keyword.loc, "this %s needs a name",
-                     is_enum ? "enum" : "struct");
+                     is_enum ? "enum" : stmt->as.type.is_union ? "union" : "struct");
             return NULL;
         }
     } else {
@@ -2012,6 +2072,11 @@ static Stmt *parse_external(Parser *p, Str header, Str link) {
     TypeRef *type_ref;
     Token name;
     if (!parse_type(p, &type, &type_ref)) return NULL;
+    if (is_const && parsed_pointer(type, type_ref)) {
+        /* "const char *name(...)" returns a read-only pointer. */
+        make_read_only(&type, type_ref);
+        is_const = !(at(p, TOK_IDENT) && peek_kind(p, 1) == TOK_LPAREN);
+    }
     if (!expect(p, TOK_IDENT, &name)) return NULL;
     Stmt *stmt;
     if (is_const) {
@@ -2304,6 +2369,9 @@ static Stmt *parse_statement(Parser *p, bool top_level, bool *needs_terminator) 
             return parse_group(p, tok.loc, top_level, parse_constant);
         }
         if (!parse_type(p, &type, &type_ref)) return NULL;
+        /* "const T *p": a pointer that cannot change what it points to; a
+           constant too if its value is known at compile time. */
+        if (parsed_pointer(type, type_ref)) make_read_only(&type, type_ref);
         return parse_typed_decl(p, STMT_CONST, type, type_ref, top_level, needs_terminator);
     case TOK_INC:
     case TOK_DEC: {

@@ -370,8 +370,19 @@ static void check_condition(Checker *c, Expr *cond);
 static bool is_format(Builtin builtin);
 static Builtin builtin_called(const Checker *c, const Expr *expr);
 static void check_written(Checker *c, Expr *arg, const char *doing);
-static bool report_shared(Checker *c, const Expr *expr, const char *doing);
 static bool is_fresh(const Expr *value);
+static bool through_read_only(const Expr *expr);
+
+/* The bitfield a checked field expression names, or NULL. */
+static const Field *bitfield_of(const Expr *expr) {
+    if (expr->kind != EXPR_FIELD || expr->as.field.index < 0) return NULL;
+    TypeKind base = expr->as.field.base->type;
+    if (expr->as.field.through_pointer) base = type_target(base);
+    const TypeInfo *info = type_info(base);
+    if (!info || (size_t)expr->as.field.index >= info->field_count) return NULL;
+    const Field *field = &info->fields[expr->as.field.index];
+    return field->bits ? field : NULL;
+}
 static void report_copy(Checker *c, SrcLoc loc, TypeKind type, const char *instead);
 
 /* If expr is the name of a type, possibly one that a module exports,
@@ -445,11 +456,9 @@ static TypeKind signature_type(Checker *c, const FuncSig *sig);
 static TypeKind resolve_type(Checker *c, const TypeRef *ref) {
     if (ref->sig) return signature_type(c, ref->sig);
     TypeKind type = resolve_base_type(c, ref);
-    if (type == TYPE_VOID && ref->depth) {
-        error(c, ref->loc, "a pointer to 'void' is not supported; point to a type");
-        return TYPE_INVALID;
+    for (int i = 0; i < ref->depth && type != TYPE_INVALID; i++) {
+        type = i == 0 && ref->read_only ? type_read_only_pointer_to(type) : type_pointer_to(type);
     }
-    for (int i = 0; i < ref->depth && type != TYPE_INVALID; i++) type = type_pointer_to(type);
     return type;
 }
 
@@ -479,6 +488,12 @@ static TypeKind check_place_fields(Checker *c, TypeKind type, PlaceField *fields
         fields[i].index = type_field_index(info, fields[i].name);
         if (fields[i].index < 0) {
             error(c, fields[i].loc, "struct '%s' has no field '%.*s'", info->name,
+                  NAME(fields[i].name));
+            return TYPE_INVALID;
+        }
+        if (info->fields[fields[i].index].bits) {
+            error(c, fields[i].loc, "'%.*s' is a bitfield, which cannot be read into; read "
+                                    "into a variable, then assign it",
                   NAME(fields[i].name));
             return TYPE_INVALID;
         }
@@ -554,6 +569,10 @@ static TypeKind check_init(Checker *c, Expr *expr, TypeKind hint) {
             check_operand(c, expr->as.init.items[i].value);
         }
         return TYPE_INVALID;
+    }
+    if (info->is_union && expr->as.init.count > 1) {
+        error(c, expr->as.init.items[1].value->loc,
+              "a union holds one of its fields at a time, so it is given one value");
     }
     size_t position = 0;
     for (size_t i = 0; i < expr->as.init.count; i++) {
@@ -712,6 +731,11 @@ static TypeKind check_index(Checker *c, Expr *expr) {
     } else if (type_is_pointer(type)) {
         /* "p[n]" is the element n places on from the one p points to. */
         result = type_target(type);
+        if (result == TYPE_VOID) {
+            error(c, base->loc, "a 'void *' points to nothing of a known type; convert it "
+                                "first, as in '(int *)p'");
+            result = TYPE_INVALID;
+        }
     } else if (type != TYPE_INVALID) {
         error(c, base->loc, "cannot index a value of type '%s'; only arrays, "
                             "strings and pointers have elements",
@@ -939,6 +963,11 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         if (named && named->kind == SYM_FUNC) return check_expr(c, operand, TYPE_INVALID);
         TypeKind type = check_place(c, operand, false);
         if (type == TYPE_INVALID) return TYPE_INVALID;
+        if (bitfield_of(operand)) {
+            error(c, operand->loc, "'%.*s' is a bitfield, which has no address of its own",
+                  NAME(operand->as.field.name));
+            return TYPE_INVALID;
+        }
         const Expr *mover = moving_part(operand);
         if (mover && type_container(mover->type) == CONTAINER_MAP) {
             error(c, operand->loc, "a value in map %s moves when the map grows, so it cannot "
@@ -960,7 +989,8 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         if (root->kind == EXPR_IDENT && root->as.ident.symbol) {
             ((Symbol *)root->as.ident.symbol)->address_taken = true;
         }
-        return type_pointer_to(type);
+        return through_read_only(operand) ? type_read_only_pointer_to(type)
+                                          : type_pointer_to(type);
     }
     if (expr->as.unary.op == OP_DEREF) {
         TypeKind type = check_expr(c, operand, TYPE_INVALID);
@@ -971,6 +1001,11 @@ static TypeKind check_unary(Checker *c, Expr *expr, TypeKind hint) {
         if (!type_is_pointer(type)) {
             error(c, operand->loc, "operator '*' needs a pointer, found '%s'",
                   type_name(type));
+            return TYPE_INVALID;
+        }
+        if (type_target(type) == TYPE_VOID) {
+            error(c, operand->loc, "a 'void *' points to nothing of a known type; convert it "
+                                   "first, as in '*(int *)p'");
             return TYPE_INVALID;
         }
         return type_target(type);
@@ -1023,6 +1058,8 @@ static void check_shift_amount(Checker *c, Expr *amount) {
 static bool is_offset(TypeKind type) {
     return type_is_integer(type) && type != TYPE_I128 && type != TYPE_U128;
 }
+
+static bool converts_to(TypeKind from, TypeKind to);
 
 static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     Op op = expr->as.binary.op;
@@ -1095,12 +1132,23 @@ static TypeKind check_binary(Checker *c, Expr *expr, TypeKind hint) {
     if ((left_pointer || right_pointer) && (op == OP_ADD || op == OP_SUB)) {
         /* A pointer moves by a count of elements, and two pointers of one
            type are that many elements apart. */
+        if ((left_pointer && type_target(left->type) == TYPE_VOID) ||
+            (right_pointer && type_target(right->type) == TYPE_VOID)) {
+            error(c, expr->loc, "a 'void *' points to nothing of a known size, so it cannot "
+                                "be moved; convert it first, as in '(u8 *)p'");
+            return TYPE_INVALID;
+        }
         if (left_pointer && is_offset(right->type)) return left->type;
         if (right_pointer && op == OP_ADD && is_offset(left->type)) return right->type;
         if (op == OP_SUB && left->type == right->type) return TYPE_INT;
         error(c, expr->loc, "operator '%s' is not defined for '%s' and '%s'", op_text(op),
               type_name(left->type), type_name(right->type));
         return TYPE_INVALID;
+    }
+    /* Two pointers compare when one converts to the other's type. */
+    if ((op == OP_EQ || op == OP_NE) &&
+        (converts_to(left->type, right->type) || converts_to(right->type, left->type))) {
+        return TYPE_BOOL;
     }
     if (left->type != right->type) {
         error(c, expr->loc, "mismatched types '%s' and '%s' for operator '%s'%s",
@@ -1164,6 +1212,27 @@ static TypeKind function_type(Checker *c, const Stmt *func) {
 
 static TypeKind check_args(Checker *c, Expr *expr, Str name, const Param *params,
                            size_t param_count, bool known, TypeKind ret);
+
+/* Checks the values a call gives after the parameters of a function that
+   ends with "...", which C takes as they are: numbers, characters, enums
+   and pointers. A string literal there is C's kind of string. The checked
+   values are then left out of the call's own count. */
+static void check_variadic_args(Checker *c, Expr *expr, const Stmt *func) {
+    size_t fixed = func->as.func.param_count;
+    if (expr->as.call.count < fixed) return; /* check_args reports it */
+    for (size_t i = fixed; i < expr->as.call.count; i++) {
+        Expr *arg = expr->as.call.args[i];
+        TypeKind type = check_expr(c, arg, type_read_only_pointer_to(TYPE_CHAR));
+        if (type == TYPE_STRING) {
+            error(c, arg->loc, "a string cannot go through '...', which takes C's strings; "
+                               "pass 'cstring(...)'");
+        } else if (type == TYPE_VOID || type_is_struct(type) || type_is_container(type)) {
+            error(c, arg->loc, "a '%s' cannot go through '...', which takes numbers, "
+                               "characters and pointers",
+                  type_name(type));
+        }
+    }
+}
 
 /* A call through a pointer to a function, which callee gives. */
 static TypeKind check_pointer_call(Checker *c, Expr *expr, Expr *callee) {
@@ -1236,6 +1305,7 @@ static TypeKind check_call(Checker *c, Expr *expr) {
         func = symbol->decl;
     }
 
+    if (func && func->as.func.variadic) check_variadic_args(c, expr, func);
     return check_args(c, expr, name, func ? func->as.func.params : NULL,
                       func ? func->as.func.param_count : 0, func != NULL,
                       func ? func->as.func.ret : TYPE_INVALID);
@@ -1246,7 +1316,16 @@ static TypeKind check_call(Checker *c, Expr *expr) {
 static TypeKind check_args(Checker *c, Expr *expr, Str name, const Param *params,
                            size_t param_count, bool known, TypeKind ret) {
     size_t count = expr->as.call.count;
-    if (known && count != param_count) {
+    /* The values after the parameters of a call to a function that ends
+       with "..." are checked already. */
+    bool variadic = known && expr->as.call.symbol && expr->as.call.symbol->decl &&
+                    expr->as.call.symbol->decl->kind == STMT_FUNC &&
+                    expr->as.call.symbol->decl->as.func.variadic;
+    if (variadic && count >= param_count) count = param_count;
+    if (variadic && count < param_count) {
+        error(c, expr->loc, "'%.*s' takes at least %zu argument%s, but %zu %s given", NAME(name),
+              param_count, param_count == 1 ? "" : "s", count, count == 1 ? "was" : "were");
+    } else if (known && count != param_count) {
         error(c, expr->loc, "'%.*s' takes %zu argument%s, but %zu %s given", NAME(name),
               param_count, param_count == 1 ? "" : "s",
               count, count == 1 ? "was" : "were");
@@ -1316,6 +1395,9 @@ static TypeKind check_args(Checker *c, Expr *expr, Str name, const Param *params
                       type_is_pointer(found) ? "; a pointer does not know how many elements "
                                                "it points to, and an array does"
                                              : "");
+            } else if (through_read_only(arg) && !param->is_const) {
+                error(c, arg->loc, "this array is reached through a 'const' pointer, so it can "
+                                   "only be given to an array parameter declared 'const'");
             } else if (root && (root->kind == SYM_CONST || root->read_only) &&
                        !param->is_const) {
                 error(c, arg->loc,
@@ -1825,6 +1907,12 @@ static TypeKind check_expr_kind(Checker *c, Expr *expr, TypeKind hint) {
                                               expr->as.ident.name, expr->as.ident.name_loc)
                              : resolve(c, expr->as.ident.name, expr->loc);
         if (!symbol) return TYPE_INVALID;
+        if (symbol->kind == SYM_FUNC && symbol->decl->as.func.variadic) {
+            error(c, expr->loc, "'%.*s' takes '...', so it can only be called, not used as "
+                                "a value",
+                  NAME(expr->as.ident.name));
+            return TYPE_INVALID;
+        }
         if (symbol->kind == SYM_FUNC) {
             /* A pointer to the function. */
             symbol->used = true;
@@ -2004,11 +2092,22 @@ static TypeKind as_value(Checker *c, Expr *expr, TypeKind type) {
               quoted(c, expr), quoted(c, mover));
         return TYPE_INVALID;
     }
-    if (report_shared(c, expr, "pointed to")) return TYPE_INVALID;
+    if (!through_read_only(expr) && report_shared(c, expr, "pointed to")) return TYPE_INVALID;
     if (type_elem(type) == TYPE_INVALID) return TYPE_INVALID;
     expr->decayed = true;
     expr->decayed_from = type;
-    return type_pointer_to(type_elem(type));
+    return through_read_only(expr) ? type_read_only_pointer_to(type_elem(type))
+                                   : type_pointer_to(type_elem(type));
+}
+
+/* True if a value of type from may go where one of type to is wanted with
+   no conversion written: any pointer as a "void *", and a pointer as a
+   read-only one to what it points to, as C allows. */
+static bool converts_to(TypeKind from, TypeKind to) {
+    if (from == to || !type_is_pointer(from) || !type_is_pointer(to)) return false;
+    bool loses = type_is_read_only_pointer(from) && !type_is_read_only_pointer(to);
+    if (type_target(to) == TYPE_VOID) return !loses;
+    return type_is_read_only_pointer(to) && type_target(from) == type_target(to);
 }
 
 static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint) {
@@ -2024,7 +2123,7 @@ static TypeKind check_expr(Checker *c, Expr *expr, TypeKind hint) {
     expr->type = type;
     if (type_is_container(type) && !want_array) type = expr->type = as_value(c, expr, type);
     if (expr->kind == EXPR_FIELD) expr->checked = true;
-    return type;
+    return converts_to(type, hint) ? hint : type;
 }
 
 /* If the operand of len() has a length known at compile time, sets *length
@@ -2579,6 +2678,13 @@ static void check_decl(Checker *c, Stmt *stmt) {
        declaration cannot refer to itself. */
     if (init) {
         TypeKind found = check_expr(c, init, type);
+        /* "const T *p = &x" is C's pointer that cannot change what it points
+           to, a variable; it is a constant as well when its value is one. */
+        if (is_const && type_is_read_only_pointer(type) && !stmt->exported && !stmt->external &&
+            !is_constant(init)) {
+            stmt->kind = STMT_VAR;
+            is_const = false;
+        }
         if (is_const) init = stmt->as.decl.init = settle_constant(init);
         if (type == TYPE_INVALID) {
             /* the type's own problem is already reported */
@@ -2627,9 +2733,41 @@ static const Symbol *place_owner(const Expr *expr) {
     }
 }
 
+/* True if a place, an array or a map is reached through a read-only
+   pointer, "const T *", and so cannot be changed. */
+static bool through_read_only(const Expr *expr) {
+    for (;;) {
+        switch (expr->kind) {
+        case EXPR_FIELD:
+            if (expr->as.field.through_pointer) {
+                return type_is_read_only_pointer(expr->as.field.base->type);
+            }
+            expr = expr->as.field.base;
+            break;
+        case EXPR_INDEX:
+            if (type_is_pointer(expr->as.index.base->type)) {
+                return type_is_read_only_pointer(expr->as.index.base->type);
+            }
+            if (!type_is_container(expr->as.index.base->type)) return false;
+            expr = expr->as.index.base;
+            break;
+        case EXPR_UNARY:
+            return expr->as.unary.op == OP_DEREF &&
+                   type_is_read_only_pointer(expr->as.unary.operand->type);
+        default:
+            return false;
+        }
+    }
+}
+
 /* Reports, and returns true for, a place, an array or a map that is part of
    a copy that shares its elements: doing is what was to be done to it. */
 static bool report_shared(Checker *c, const Expr *expr, const char *doing) {
+    if (through_read_only(expr) && strcmp(doing, "pointed to") != 0) {
+        error(c, expr->loc, "this is reached through a 'const' pointer, so it cannot be %s",
+              doing);
+        return true;
+    }
     const Symbol *owner = place_owner(expr);
     if (!owner || !owner->shares) return false;
     error(c, expr->loc, "'%.*s' shares its growable arrays and maps with the '%s' it was "
@@ -3867,11 +4005,39 @@ static Str type_qualifier(const Checker *c) {
 static void declare_struct(Checker *c, Stmt *stmt) {
     TypeKind type = type_add(false, stmt->as.type.name, type_qualifier(c));
     type_info(type)->incomplete = true;
+    type_info(type)->is_union = stmt->as.type.is_union;
     stmt->as.type.type = type;
     stmt->as.type.symbol = declare_type_name(c, stmt, stmt->as.type.name, stmt->loc, type);
     if (stmt->as.type.tag.len) {
         declare_type_name(c, stmt, stmt->as.type.tag, stmt->as.type.tag_loc, type);
     }
+}
+
+/* The width of a bitfield, "u8 ready : 1", checked: of an integer, a bool
+   or an enum, as many bits as it can hold at most. 0 if it is wrong. */
+static int bitfield_width(Checker *c, Member *member) {
+    long long width;
+    TypeKind type = member->type;
+    TypeKind found = check_expr(c, member->bits, TYPE_INT);
+    size_t most = type == TYPE_BOOL ? 1 : type_size(type) * 8;
+    if (type == TYPE_INVALID || found == TYPE_INVALID) return 0;
+    if (!(type_is_integer(type) || type == TYPE_BOOL || type_is_enum(type)) ||
+        type == TYPE_I128 || type == TYPE_U128) {
+        error(c, member->loc, "a bitfield is an integer, a 'bool' or an enum, not '%s'",
+              type_name(type));
+        return 0;
+    }
+    if (!type_is_integer(found) || !eval_const_int(member->bits, &width)) {
+        error(c, member->bits->loc, "a bitfield's width must be an integer known at compile "
+                                    "time");
+        return 0;
+    }
+    if (width < 1 || (size_t)width > most) {
+        error(c, member->bits->loc, "a bitfield of '%s' has from 1 to %zu bits, not %lld",
+              type_name(type), most, width);
+        return 0;
+    }
+    return (int)width;
 }
 
 static void check_struct_decl(Checker *c, Stmt *stmt) {
@@ -3901,7 +4067,13 @@ static void check_struct_decl(Checker *c, Stmt *stmt) {
         if (member_repeats(c, stmt, i, "field")) continue;
         member->type = apply_suffixes(c, member->type, member->suffixes, member->suffix_count,
                                       SUFFIXES_FIELD, 0, member->name);
-        Field field = {member->name, member->loc, member->type};
+        if (stmt->as.type.is_union && type_owns(member->type)) {
+            error(c, member->loc, "a union's fields share one place, so none can hold a "
+                                  "growable array or a map, which would be lost or shared");
+            member->type = TYPE_INVALID;
+        }
+        Field field = {member->name, member->loc, member->type, 0};
+        if (member->bits) field.bits = bitfield_width(c, member);
         fields[kept++] = field;
     }
     TypeInfo *info = type_info(stmt->as.type.type);
@@ -4266,6 +4438,10 @@ void check_program(Unit *unit) {
         if (type_owns(stmt->as.func.ret)) {
             report_copy(&c, stmt->loc, stmt->as.func.ret,
                         "fill one the caller points to instead");
+        }
+        if (stmt->as.func.variadic && !stmt->external) {
+            error(&c, stmt->loc, "only an external function can take '...'; a Wind function "
+                                 "takes an array of the values instead");
         }
         for (size_t j = 0; j < stmt->as.func.param_count; j++) {
             Param *param = &stmt->as.func.params[j];

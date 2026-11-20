@@ -1,0 +1,39 @@
+// 'void *', which any pointer converts to, and 'const T *', a pointer that
+// cannot change what it points to; both cross into C as C's own.
+struct Point { int x; int y }
+
+extern "string.h" {
+    void *memset(void *dest, int value, uintptr count)
+    uintptr strlen(const char *s)
+}
+
+int sum(const int *values, int count) {
+    int total = 0
+    for (int i = 0; i < count; i++) total += values[i]
+    return total
+}
+
+int length_of(const Point *p) { return p->x * p->x + p->y * p->y }
+
+const char *GREETING = "hi"
+
+int main() {
+    int xs[4] = {1, 2, 3, 4}
+    cout << sum(xs, 4) << " " << sum(&xs[1], 2) << "\n"
+    Point pt = {3, 4}
+    cout << length_of(&pt) << "\n"
+    void *any = &pt
+    Point *back = (Point *)any
+    back->x = 30
+    cout << pt << " " << (any == back) << "\n"
+    memset(xs, 0, sizeof(xs))
+    cout << xs << " " << strlen(GREETING) << " " << string(GREETING) << "\n"
+    const int *view = &xs[0]
+    const int *again = view
+    view = &xs[2]
+    cout << *view << (again != view) << "\n"
+    const Point *cp = &pt
+    const int *px = &cp->y
+    cout << *px << "\n"
+    return 0
+}

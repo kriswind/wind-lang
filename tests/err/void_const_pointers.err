@@ -1,0 +1,8 @@
+tests/err/void_const_pointers.wind:6:5: error: this is reached through a 'const' pointer, so it cannot be changed
+tests/err/void_const_pointers.wind:7:17: error: cannot initialize 'int *' variable with 'const int *'
+tests/err/void_const_pointers.wind:8:12: error: argument 1 of 'change' must be 'int *', found 'const int *'
+tests/err/void_const_pointers.wind:10:6: error: a 'void *' points to nothing of a known type; convert it first, as in '*(int *)p'
+tests/err/void_const_pointers.wind:11:5: error: a 'void *' points to nothing of a known type; convert it first, as in '(int *)p'
+tests/err/void_const_pointers.wind:12:11: error: a 'void *' points to nothing of a known size, so it cannot be moved; convert it first, as in '(u8 *)p'
+tests/err/void_const_pointers.wind:14:5: error: this is reached through a 'const' pointer, so it cannot be changed
+tests/err/void_const_pointers.wind:16:15: error: cannot initialize 'int *' variable with 'void *'

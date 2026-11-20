@@ -124,27 +124,46 @@ static char *format_text(const char *fmt, const char *text) {
     return out;
 }
 
-TypeKind type_pointer_to(TypeKind target) {
+static TypeKind pointer_of(TypeKind target, bool read_only) {
     for (size_t i = 0; i < table->count; i++) {
         const TypeInfo *known = table->items[i];
-        if (known->is_pointer && known->target == target) return (TypeKind)(TYPE_COUNT + i);
+        if (known->is_pointer && known->target == target && known->read_only == read_only) {
+            return (TypeKind)(TYPE_COUNT + i);
+        }
     }
     const TypeInfo *pointee = type_info(target);
     TypeInfo *info = arena_alloc(table->arena, sizeof *info);
     memset(info, 0, sizeof *info);
     info->is_pointer = true;
+    info->read_only = read_only;
     info->target = target;
-    /* "int *", and "int **" for a pointer to that. */
+    /* "int *", and "int **" for a pointer to that; "const int *" for one
+       that cannot change it. */
     info->name = format_text(pointee && pointee->is_pointer ? "%s*" : "%s *",
                              type_name(target));
+    if (read_only) info->name = format_text("const %s", info->name);
     info->short_name = info->name;
-    info->c_stem = format_text("p_%s", pointee ? pointee->c_stem : type_name(target));
+    info->c_stem = format_text(read_only ? "cp_%s" : "p_%s",
+                               pointee ? pointee->c_stem : type_name(target));
     info->c_name = format_text("wind_%s", info->c_stem);
     info->writer_name = "wind_write_pointer";
     info->size = platform->pointer_size;
     info->align = platform->pointer_size;
     ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
     return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+TypeKind type_pointer_to(TypeKind target) {
+    return pointer_of(target, false);
+}
+
+TypeKind type_read_only_pointer_to(TypeKind target) {
+    return pointer_of(target, true);
+}
+
+bool type_is_read_only_pointer(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_pointer && info->read_only;
 }
 
 /* The stem of names derived from a type in the generated C. */
@@ -286,11 +305,27 @@ const char *type_suffix(TypeKind type) {
 
 void type_layout(TypeInfo *info) {
     size_t size = 0, align = 1;
+    /* Bits used so far, for bitfields, which GCC and Clang pack into units
+       of their own type, starting a new unit where one would not fit. */
+    size_t bit = 0;
     for (size_t i = 0; i < info->field_count; i++) {
         const Field *field = &info->fields[i];
         size_t field_align = type_align(field->type);
         size_t field_size = type_size(field->type);
         if (field_align > align) align = field_align;
+        if (info->is_union) {
+            if (field_size > size) size = field_size;
+            continue;
+        }
+        if (field->bits) {
+            size_t unit = field_size * 8;
+            if (!bit) bit = size * 8;
+            if (bit / unit != (bit + (size_t)field->bits - 1) / unit) bit = (bit + unit - 1) / unit * unit;
+            bit += (size_t)field->bits;
+            size = (bit + 7) / 8;
+            continue;
+        }
+        bit = 0;
         size = (size + field_align - 1) / field_align * field_align;
         size += field_size;
     }

@@ -130,6 +130,9 @@ typedef struct {
 typedef struct {
     SrcLoc loc;
     int depth; /* how many "*" follow: 2 for "Name **" */
+    /* Written after "const": the innermost of the pointers is read-only,
+       as in C's "const Name *". */
+    bool read_only;
     Str name; /* empty for typeof */
     Str module; /* set for "module.Name" */
     SrcLoc module_loc;
@@ -401,6 +404,7 @@ typedef struct {
     TypeRef *type_ref;
     Suffix *suffixes; /* field: "[n]", "[..]" or "[K]" after its name */
     size_t suffix_count;
+    Expr *bits; /* field: the width of a bitfield, "u8 ready : 1", or NULL */
     Expr *value; /* enum name: its explicit value, or NULL */
     Symbol *symbol; /* enum name; set by unit_analyze */
 } Member;
@@ -620,12 +624,16 @@ struct Stmt {
             Block body;
             Symbol *symbol;
             SymbolList locals; /* variables declared anywhere in the body */
+            /* An external function whose parameters end with C's "...":
+               it takes any number of values after them. */
+            bool variadic;
         } func;
         /* STMT_TYPE: "struct Name { fields }", "enum Name { names }" or
            "typedef type Name". C's "typedef struct Tag { ... } Name" declares
            one type under both names. */
         struct {
             TypeDeclKind kind;
+            bool is_union; /* TYPE_DECL_STRUCT written "union" */
             Str name;
             Str tag; /* the second name, or empty */
             SrcLoc tag_loc;

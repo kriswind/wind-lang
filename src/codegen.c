@@ -263,7 +263,7 @@ static const HelperInfo helpers[HELPER_COUNT] = {
     [HELPER_DEREF] = {
         "/* Returns the pointer it is given, or stops the program if that is\n"
         "   NULL. */\n"
-        "static void *wind_deref(void *p, int line) {\n"
+        "static void *wind_deref(const void *p, int line) {\n"
         "    if (!p) {\n"
         "        wind_flush();\n"
         "        wind_error(\"wind: line \");\n"
@@ -271,7 +271,7 @@ static const HelperInfo helpers[HELPER_COUNT] = {
         "        wind_error(\": a NULL pointer was used\\n\");\n"
         "        wind_stop();\n"
         "    }\n"
-        "    return p;\n"
+        "    return (void *)p;\n"
         "}\n",
         0, {HELPER_FLUSH, HELPER_ERROR_NUMBER, HELPER_STOP}, {0}},
     [HELPER_SINK] = {
@@ -1178,13 +1178,8 @@ static const char *elements_of(TypeKind type) {
 
 static void hold(const Expr *expr, int id, bool through);
 
-/* Emits a pointer, checked for NULL, as a pointer of its own type again. */
-static void emit_checked_pointer(const Expr *pointer, FILE *out) {
-    used.helpers[HELPER_DEREF] = true;
-    fprintf(out, "((%s)wind_deref(", c_type(pointer->type));
-    emit_expr(pointer, out);
-    fprintf(out, ", %d))", pointer->loc.line);
-}
+static void emit_checked_pointer(const Expr *pointer, FILE *out);
+
 
 static void emit_element(const Expr *base, const Expr *index, FILE *out);
 
@@ -1331,6 +1326,22 @@ static void emit_element(const Expr *base, const Expr *index, FILE *out) {
         fprintf(out, "%zu", type_length(type));
     }
     fprintf(out, ", %d)]", index->loc.line);
+}
+
+/* Emits a pointer, checked for NULL, as a pointer of its own type again. */
+static void emit_checked_pointer(const Expr *pointer, FILE *out) {
+    used.helpers[HELPER_DEREF] = true;
+    if (type_is_function(pointer->type)) {
+        /* Kept apart from data pointers, which C does not convert it to. */
+        int id = ++held.next_id;
+        fprintf(out, "__extension__ ({ %s wind_f%d = ", c_type(pointer->type), id);
+        emit_expr(pointer, out);
+        fprintf(out, "; if (!wind_f%d) wind_deref(0, %d); wind_f%d; })", id, pointer->loc.line, id);
+        return;
+    }
+    fprintf(out, "((%s)wind_deref(", c_type(pointer->type));
+    emit_expr(pointer, out);
+    fprintf(out, ", %d))", pointer->loc.line);
 }
 
 static bool has_call(const Expr *expr) {
@@ -2250,8 +2261,14 @@ static void emit_expr_kind(const Expr *expr, FILE *out) {
         fputs("(", out);
         for (size_t i = 0; i < expr->as.call.count; i++) {
             const Expr *arg = expr->as.call.args[i];
-            TypeKind param = callee ? pointer->params[i] : func->as.func.params[i].type;
             if (i) fputs(", ", out);
+            if (func && i >= func->as.func.param_count) {
+                /* After "...": as C takes it, pointers as "void *". */
+                if (type_is_pointer(arg->type)) fputs("(void *)", out);
+                emit_expr(arg, out);
+                continue;
+            }
+            TypeKind param = callee ? pointer->params[i] : func->as.func.params[i].type;
             if (external && type_is_pointer(arg->type)) {
                 fputs("(void *)", out);
                 emit_expr(arg, out);
@@ -2788,6 +2805,56 @@ static void emit_switch(const Stmt *stmt, int depth, FILE *out) {
     }
 }
 
+/* The bitfield a field expression names, or NULL. */
+static const Field *bitfield_of(const Expr *expr) {
+    if (expr->kind != EXPR_FIELD || expr->as.field.index < 0) return NULL;
+    TypeKind base = expr->as.field.base->type;
+    if (expr->as.field.through_pointer) base = type_target(base);
+    const TypeInfo *info = type_info(base);
+    if (!info || (size_t)expr->as.field.index >= info->field_count) return NULL;
+    const Field *field = &info->fields[expr->as.field.index];
+    return field->bits ? field : NULL;
+}
+
+/* Assigns a bitfield, which has no address: the struct it is part of is
+   found once, through a pointer, and the field reached from that. */
+static void emit_bitfield_assign(const Stmt *stmt, int depth, FILE *out) {
+    const Expr *target = stmt->as.assign.target;
+    const Expr *value = stmt->as.assign.value;
+    const Expr *base = target->as.field.base;
+    TypeKind type = target->type;
+    Op op = stmt->as.assign.op;
+    int id = ++held.next_id;
+    TypeKind holder = target->as.field.through_pointer ? type_target(base->type) : base->type;
+    indent(depth, out);
+    fprintf(out, "{ %s *wind_b%d = ", c_type(holder), id);
+    if (target->as.field.through_pointer) {
+        emit_checked_pointer(base, out);
+    } else {
+        fputs("&", out);
+        emit_whole(base, out);
+    }
+    char field[160];
+    int length = snprintf(field, sizeof field, "wind_b%d->f_", id);
+    snprintf(field + length, sizeof field - (size_t)length, "%.*s",
+             (int)target->as.field.name.len, target->as.field.name.data);
+    fprintf(out, "; %s = ", field);
+    if (!stmt->as.assign.compound) {
+        emit_expr(value, out);
+    } else if (checked_division(op, type, value)) {
+        emit_division(op, type, NULL, field, value, stmt->loc.line, out);
+    } else if (op_is_shift(op)) {
+        emit_shift_start(op, type, out);
+        fputs(field, out);
+        emit_shift_end(value, out);
+    } else {
+        fprintf(out, "((%s)(%s %s ", c_type(type), field, op_text(op));
+        emit_expr(value, out);
+        fputs("))", out);
+    }
+    fputs("; }\n", out);
+}
+
 static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
     switch (stmt->kind) {
     case STMT_BLOCK:
@@ -2834,6 +2901,10 @@ static void emit_stmt_kind(const Stmt *stmt, int depth, FILE *out) {
         const Expr *value = stmt->as.assign.value;
         if (map_entry_of(target)) {
             emit_map_assign(stmt, map_entry_of(target), depth, out);
+            break;
+        }
+        if (bitfield_of(target)) {
+            emit_bitfield_assign(stmt, depth, out);
             break;
         }
         if (stmt->as.assign.compound && checked_division(stmt->as.assign.op, target->type,
@@ -3467,11 +3538,11 @@ static void emit_data(const Unit *unit, FILE *out) {
 static void emit_external_prototype(const Stmt *func, FILE *out) {
     fprintf(out, "%s %.*s(", c_type(func->as.func.ret), (int)func->as.func.name.len,
             func->as.func.name.data);
-    if (func->as.func.param_count == 0) fputs("void", out);
+    if (func->as.func.param_count == 0 && !func->as.func.variadic) fputs("void", out);
     for (size_t i = 0; i < func->as.func.param_count; i++) {
         fprintf(out, "%s%s", i ? ", " : "", c_type(func->as.func.params[i].type));
     }
-    fputs(");\n", out);
+    fputs(func->as.func.variadic ? ", ...);\n" : ");\n", out);
 }
 
 static void emit_prototypes(const Unit *unit, FILE *out) {
@@ -3602,7 +3673,8 @@ static void define_type(TypeKind type, FILE *out) {
     if (info->is_enum) return;
     if (info->is_pointer) {
         name_type(info->target, out);
-        fprintf(out, "typedef %s *%s;\n", type_c_name(info->target), info->c_name);
+        fprintf(out, "typedef %s%s *%s;\n", info->read_only ? "const " : "",
+                type_c_name(info->target), info->c_name);
         return;
     }
     if (info->is_function) {
@@ -3652,10 +3724,11 @@ static void define_type(TypeKind type, FILE *out) {
         break;
     }
     for (size_t j = 0; j < info->field_count; j++) define_type(info->fields[j].type, out);
-    fprintf(out, "struct %s {\n", info->c_name);
+    fprintf(out, "%s %s {\n", info->is_union ? "union" : "struct", info->c_name);
     for (size_t j = 0; j < info->field_count; j++) {
         fprintf(out, "    %s ", type_c_name(info->fields[j].type));
         emit_field_name(info->fields[j].name, out);
+        if (info->fields[j].bits) fprintf(out, " : %d", info->fields[j].bits);
         fputs(";\n", out);
     }
     fputs("};\n", out);
@@ -3716,7 +3789,8 @@ static void emit_declared_types(FILE *out) {
             used.headers |= HEADER_STDINT;
             fprintf(out, "typedef int32_t %s;\n", info->c_name);
         } else if (type_is_struct(type)) {
-            fprintf(out, "typedef struct %s %s;\n", info->c_name, info->c_name);
+            fprintf(out, "typedef %s %s %s;\n", info->is_union ? "union" : "struct",
+                    info->c_name, info->c_name);
         }
     }
     /* Printing a value may print values of types that nothing else

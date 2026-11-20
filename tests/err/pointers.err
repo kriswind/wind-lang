@@ -1,4 +1,3 @@
-tests/err/pointers.wind:5:6: error: a pointer to 'void' is not supported; point to a type
 tests/err/pointers.wind:6:1: error: unknown type 'Missing'
 tests/err/pointers.wind:8:15: error: cannot take the address of parameter 'n'
 tests/err/pointers.wind:9:15: error: cannot take the address of array 'values' as a whole; '&values[0]' points to its first element
@@ -53,9 +52,7 @@ tests/err/pointers.wind:73:7: error: '++' after '*' is unclear: put the '*' in p
 tests/err/pointers.wind:74:7: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
 tests/err/pointers.wind:75:12: error: a 'int *' cannot be read from input
 tests/err/pointers.wind:76:17: error: a 'int *' cannot be read from input
-tests/err/pointers.wind:77:21: error: a constant's value must be known at compile time; use a variable for this
 tests/err/pointers.wind:78:22: error: field 'next' is 'Node *', found 'Point *'
-tests/err/pointers.wind:79:28: error: a pointer to 'void' is not supported; point to a type
 tests/err/pointers.wind:80:5: error: cannot index a value of type 'int'; only arrays, strings and pointers have elements
 tests/err/pointers.wind:81:11: error: '->' needs a pointer to a struct, found 'int *'
 tests/err/pointers.wind:82:5: error: expected a statement, found '&'
@@ -69,7 +66,6 @@ tests/err/pointers.wind:91:20: error: 'cstring' needs a string, found 'int'
 tests/err/pointers.wind:92:12: error: 'cstring' takes 1 argument, but 0 were given
 tests/err/pointers.wind:93:13: error: cannot convert 'int *' to 'string'
 tests/err/pointers.wind:94:12: error: cannot convert 'string' to 'char *'; cstring() makes a copy that ends with a '\0'
-tests/err/pointers.wind:95:24: error: a constant's value must be known at compile time; use a variable for this
 tests/err/pointers.wind:96:25: error: a constant's value must be known at compile time; use a variable for this
 tests/err/pointers.wind:98:8: error: operator '==' would compare where the two arrays are, not what they hold; compare their elements in a loop
 tests/err/pointers.wind:99:8: error: condition must be 'bool' or a pointer, found 'int'

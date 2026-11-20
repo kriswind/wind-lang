@@ -39,6 +39,7 @@ typedef enum {
     TOK_KW_SIZEOF,
     TOK_KW_IMPORT,
     TOK_KW_STRUCT,
+    TOK_KW_UNION,
     TOK_KW_ENUM,
     TOK_KW_TYPEDEF,
     TOK_KW_TYPEOF,

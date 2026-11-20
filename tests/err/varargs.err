@@ -1,0 +1,5 @@
+tests/err/varargs.wind:2:5: error: only an external function can take '...'; a Wind function takes an array of the values instead
+tests/err/varargs.wind:7:5: error: 'printf' takes at least 1 argument, but 0 were given
+tests/err/varargs.wind:8:18: error: a string cannot go through '...', which takes C's strings; pass 'cstring(...)'
+tests/err/varargs.wind:8:21: error: a 'P' cannot go through '...', which takes numbers, characters and pointers
+tests/err/varargs.wind:9:30: error: 'printf' takes '...', so it can only be called, not used as a value
