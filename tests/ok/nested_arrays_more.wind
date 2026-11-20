@@ -1,0 +1,22 @@
+// Constant arrays of arrays, maps of fixed arrays, putting nested arrays in
+// order, and pointers into a fixed array of arrays.
+const int SQUARES[2][2] = {{1, 4}, {9, 16}}
+int counts[string][3]
+int main() {
+    int grid[2][3]
+    int rows[..][..]
+    int *p = grid[1]
+    p[0] = 7
+    cout << grid << " " << SQUARES << " " << SQUARES[1][1] << " " << len(SQUARES[0]) << "\n"
+    counts["a"][1] = 5
+    counts["b"][2] += 2
+    cout << counts << " " << counts["zz"] << "\n"
+    append(rows, {3, 1, 2})
+    sort(rows[0])
+    reverse(grid[1])
+    cout << rows << grid << "\n"
+    int *bad = &grid[1][2]
+    *bad = 1
+    cout << grid[1] << " " << sizeof(grid) << " " << sizeof(SQUARES[0]) << "\n"
+    return 0
+}

@@ -1,0 +1,12 @@
+import modules/nowhere
+import ::nothing/here
+import "::nothing/here"
+import modules/broken
+import ::numbers/stats as
+import
+import ::numbers/rounding as r
+import modules/good
+import modules/good as again
+int main() {
+    return r.divide(again.answer(), 1)
+}

@@ -1,0 +1,14 @@
+#target arduino
+#board arduino:avr:uno
+
+// A board program laid out as a C program: main runs once at the start, and
+// a pointer that is NULL stops the program when it is used.
+struct Node { int value; Node *next }
+
+int main() {
+    Node last = { 2, NULL }
+    Node first = { 1, &last }
+    cout << first.next->value << "\n"
+    cout << last.next->value << "\n"
+    return 0
+}

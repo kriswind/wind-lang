@@ -1,0 +1,9 @@
+// Converting a float to an integer type that cannot hold it stops the
+// program; one that fits is truncated toward zero.
+int main() {
+    f64 x = 299.75
+    cout << u16(x) << "\n"
+    cout << i8(-x / 3) << "\n"
+    cout << u8(x) << "\n"
+    return 0
+}

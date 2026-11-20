@@ -1,0 +1,13 @@
+// A library that carries its C: sums.h, beside this file, is written for
+// Wind and takes its values as they are.
+extern "sums.h" {
+    int c_sum(string words[], char into[..])
+    string c_greeting()
+}
+
+export int sum(string words[], char into[..]) {
+    reserve(into, 64)
+    return c_sum(words, into)
+}
+
+export string greeting() { return c_greeting() }

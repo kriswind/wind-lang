@@ -1,0 +1,42 @@
+// A line that starts with an operator, ".", "->", or the "<<" of a cout,
+// carries on the line before. "*" and "&" do so only with a space after
+// them, since "*p = 7" starts a statement of its own.
+
+struct Point {
+    int x
+    int y
+}
+
+int main() {
+    int a = 1
+    int b = 2
+    int total = a
+        + b
+        * 10
+        - 4
+    bool both = a > 0
+        && b > 0
+        || false
+    Point pt = {3, 4}
+    Point *pp = &pt
+    int far = pp
+        ->x
+    int sum = pt
+        .y
+    int *q = &a
+    int product = b
+        * *q
+    *q = 7
+    cout << total << " " << both
+         << " " << far
+         << " " << sum << " " << product << " " << a << "\n"
+    int mixed = (a
+        + b)
+    int masked = b
+        & 3
+    int pick = a > 3
+        ? 1
+        : 2
+    cout << mixed << " " << masked << " " << pick << "\n"
+    return 0
+}

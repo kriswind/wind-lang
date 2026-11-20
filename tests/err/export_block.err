@@ -1,0 +1,5 @@
+tests/err/export_block.wind:5:9: error: a variable cannot be exported; make it a constant if its value never changes, or export a function that returns it
+tests/err/export_block.wind:6:5: error: this is already exported by the block's 'export'
+tests/err/export_block.wind:7:12: error: only a function, a constant or a type can be exported
+tests/err/export_block.wind:12:19: error: 'weight' is private to module 'shelf'; mark it 'export' there to use it here
+tests/err/export_block.wind:13:5: error: 'export' can only be used at the top level of a file

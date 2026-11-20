@@ -1,0 +1,12 @@
+#target c
+#target arduino
+#board arduino:avr:uno
+#board "arduino:avr:mega"
+#board
+import settings/for_board
+import settings/names_board
+#target c
+int main() {
+    #target c
+    return 0
+}

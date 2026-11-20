@@ -1,0 +1,40 @@
+// What a copy that shares growable arrays or maps cannot do: change them.
+struct Bag {
+    string name
+    int items[..]
+    int counts[string]
+}
+
+void grow(int into[..]) { append(into, 1) }
+void count(int into[string]) { into["a"] = 1 }
+
+void spoil(Bag bag) {
+    bag.name = "changed"
+    bag.items[0] = 9
+    append(bag.items, 4)
+    int last = pop(bag.items)
+    sort(bag.items)
+    delete(bag.items)
+    bag.counts["k"] = 2
+    remove(bag.counts, "k")
+    bag.items = clone(bag.items)
+    grow(bag.items)
+    count(bag.counts)
+    int *at = &bag.items[0]
+    Bag copy = bag
+    cout << last << at << has(bag.counts, "k") << "\n"
+}
+
+int main() {
+    Bag bags[..]
+    append(bags, {"a"})
+    for (Bag bag in bags) {
+        append(bag.items, 1)
+        bag.counts["x"]++
+    }
+    Bag named = bags[0]
+    append(named.items, 2)
+    named.counts["y"] = 1
+    spoil(bags[0])
+    return 0
+}

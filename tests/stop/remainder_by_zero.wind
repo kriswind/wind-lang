@@ -1,0 +1,10 @@
+// "%=" by zero stops the program as "/" does.
+int main() {
+    int a = 17
+    int b = 0
+    a %= 5
+    cout << a << "\n"
+    a %= b
+    cout << a << "\n"
+    return 0
+}

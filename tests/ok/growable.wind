@@ -1,0 +1,77 @@
+// Growable arrays: "T name[..]" starts empty, or with the elements given,
+// and grows as values are appended.
+
+struct Point {
+    int x
+    int y
+}
+
+int scores[..]
+
+int sum(int values[]) {
+    int total = 0
+    for (int i = 0; i < len(values); i++) total += values[i]
+    return total
+}
+
+// A growable parameter is the caller's own array, which can be grown.
+void add_squares(int into[..], int count) {
+    for (int i = 1; i <= count; i++) append(into, i * i)
+}
+
+int main() {
+    int numbers[..] = {3, 1, 4}
+    append(numbers, 1, 5)
+    append(numbers, 9)
+    cout << numbers << " " << len(numbers) << " " << sum(numbers) << "\n"
+
+    numbers[0] = 30
+    numbers[-1 + len(numbers)] += 1
+    cout << numbers[0] << " " << numbers[len(numbers) - 1] << "\n"
+
+    int last = pop(numbers)
+    cout << last << " " << numbers << "\n"
+
+    add_squares(scores, 4)
+    cout << scores << "\n"
+
+    int copy[..] = clone(numbers)
+    append(copy, 100)
+    cout << len(numbers) << " " << len(copy) << "\n"
+
+    int fixed[3] = {7, 8, 9}
+    copy = clone(fixed)
+    cout << copy << "\n"
+
+    reserve(copy, 1000)
+    for (int i = 0; i < 1000; i++) append(copy, i)
+    cout << len(copy) << " " << copy[999] << "\n"
+
+    clear(copy)
+    cout << len(copy) << "\n"
+    delete(copy)
+    delete(copy)
+    append(copy, 1)
+    cout << copy << "\n"
+
+    string words[..]
+    append(words, "wind", "blows")
+    cout << words << "\n"
+
+    Point path[..]
+    append(path, {1, 2}, {3, 4})
+    path[1].y = 40
+    cout << path[1].x << " " << path[1].y << " " << len(path) << "\n"
+
+    char text[..] = clone("hi")
+    append(text, '!')
+    cout << text << "\n"
+
+    delete(copy)
+    delete(numbers)
+    delete(scores)
+    delete(words)
+    delete(path)
+    delete(text)
+    return 0
+}

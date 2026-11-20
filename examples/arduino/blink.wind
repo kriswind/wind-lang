@@ -1,0 +1,37 @@
+// Blinks the board's LED and counts the blinks over the serial port, on any
+// board programmed with the Arduino toolchain. With the board's name given,
+// it is found among the connected boards and the program run on it:
+//
+//     wind run --fqbn arduino:avr:uno examples/arduino/blink.wind
+//
+// or, with "#board arduino:avr:uno" added below "#target", just
+//
+//     wind run examples/arduino/blink.wind
+//
+// The top level runs once when the board starts; loop runs over and over
+// after it.
+
+#target arduino
+#board rp2040:rp2040:rpipico2w
+
+import ::vendor/arduino
+
+int blinks = 0
+
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+
+// On a board whose serial port is its own USB connection, such as the Pico,
+// what is printed before a computer opens the port is lost, and "wind run"
+// opens it some seconds after the upload; so the program waits for that,
+// for ten seconds at most, so that it also starts on its own.
+arduino.waitForSerial(10000)
+cout << "blinking\n"
+
+void loop() {
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.HIGH)
+    arduino.delay(500)
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
+    arduino.delay(500)
+    blinks++
+    cout << "Number of blinks: " << blinks << "\n"
+}

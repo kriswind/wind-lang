@@ -1,0 +1,32 @@
+// An array parameter declared "const" is read-only: the function reads the
+// elements and cannot change them, and constant arrays can be given for it.
+const int PRIMES[4] = {2, 3, 5, 7}
+const string NAMES[3] = {"ada", "bo", "cy"}
+
+int total(const int values[]) {
+    int sum = 0
+    for (int v in values) sum += v
+    return sum
+}
+
+bool listed(const string names[], string name) {
+    for (string n in names) {
+        if (n == name) return true
+    }
+    return false
+}
+
+// A read-only array can be passed on to another "const" parameter.
+int twice(const int values[]) { return total(values) * 2 }
+
+int count(const int n) { return n + 1 }
+
+int main() {
+    int mine[3] = {1, 2, 3}
+    int grown[..] = {10, 20}
+    cout << total(PRIMES) << " " << total(mine) << " " << total(grown) << " " << twice(PRIMES)
+         << "\n"
+    cout << listed(NAMES, "bo") << listed(NAMES, "dee") << " " << count(4) << "\n"
+    delete(grown)
+    return 0
+}

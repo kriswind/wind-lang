@@ -1,0 +1,4 @@
+tests/err/static_locals.wind:1:5: error: 'f' can reach its end without returning a 'int' value
+tests/err/static_locals.wind:2:20: error: a static variable starts out once, before the program runs, so its value must be known at compile time
+tests/err/static_locals.wind:3:16: error: a static array starts out once, before the program runs, so it starts empty; add to it in the function
+tests/err/static_locals.wind:4:12: error: 'static' goes in front of a variable's declaration

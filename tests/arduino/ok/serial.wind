@@ -1,0 +1,41 @@
+#target arduino
+
+// A program for a board: its top level runs once, loop runs after it over
+// and over, and output, input and errors go through the serial port.
+import ::vendor/arduino
+
+struct Reading { u8 pin; int value }
+enum Mode { OFF, ON }
+
+int rounds = 0
+Reading readings[2] = { { arduino.A0, 512 }, { arduino.A1, -3 } }
+Mode mode = ON
+char *label = "serial"
+
+cout << "start " << label << " " << sizeof(int) << " " << sizeof(float) << "\n"
+cout << 2.5 << " " << f32(0.125) << " " << 1.0 / 3.0 << " " << 1e10 << " " << 0.0001 << " " <<
+    -0.5 << " " << 123456.0 << " " << 1e-7 << "\n"
+cout << readings << " " << mode << " " << true << " " << 'c' << " " << -32768 << " " <<
+    u16(65535) << " " << i64(-9000000000) << "\n"
+
+int n
+string word
+float f
+cin >> n >> word >> f
+cout << "read " << n << " " << word << " " << f << " " << cin << "\n"
+
+arduino.waitForSerial(5000)
+cout << "port open " << arduino.serialConnected() << ", waiting " << arduino.serialAvailable() << "\n"
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+cout << " " << arduino.analogRead(arduino.A2) << "\n"
+
+void loop() {
+    rounds++
+    arduino.digitalWrite(arduino.LED_BUILTIN, rounds % 2 == 1 ? arduino.HIGH : arduino.LOW)
+    cout << " round " << rounds << " at " << arduino.millis() << "\n"
+    arduino.delay(250)
+    if (rounds == 3) {
+        int pins[2] = {2, 3}
+        cout << pins[rounds] << "\n"
+    }
+}

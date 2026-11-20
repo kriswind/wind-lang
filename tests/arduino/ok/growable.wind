@@ -1,0 +1,14 @@
+#target arduino
+#board arduino:avr:uno
+
+// A growable array on a board, where its elements come from the board's
+// small heap.
+int main() {
+    u8 readings[..]
+    for (u8 i = 1; i <= 5; i++) append(readings, i * 10)
+    cout << readings << " " << len(readings) << "\n"
+    u8 last = pop(readings)
+    cout << last << " " << len(readings) << "\n"
+    delete(readings)
+    return 0
+}

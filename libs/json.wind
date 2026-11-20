@@ -1,0 +1,368 @@
+// JSON: reading it into a document of nodes, finding what is in it, and
+// writing it out again.
+//
+// A document's nodes are kept in one array, the first of them the value at
+// its top, and refer to each other by position: a node's children are found
+// from its first child through each child's next. Strings, and the keys of
+// objects, are decoded into the document's own text, so what text gives
+// stays valid until the document is read into again or deleted.
+
+import ::text
+
+export enum Kind { JSON_NULL, JSON_BOOL, JSON_NUMBER, JSON_STRING, JSON_ARRAY, JSON_OBJECT }
+
+export struct Node {
+    Kind kind
+    bool truth
+    f64 number
+    int start       // a string: where it is in the document's text
+    int length
+    int key_start   // a member of an object: where its key is in the text
+    int key_length
+    int first       // an array or object: its first child, or -1
+    int last        // and its last, or -1
+    int next        // the next child of the same array or object, or -1
+    int count       // an array or object: how many children it has
+}
+
+export struct Doc {
+    Node nodes[..]
+    char text[..]
+}
+
+// Reads source into doc, in place of what it held. False if source is not
+// one JSON value, with nothing but spaces around it.
+export bool parse(Doc *doc, string source) {
+    clear(doc->nodes)
+    clear(doc->text)
+    int at = 0
+    if (value(doc, source, &at) < 0) return false
+    skip_space(source, &at)
+    return at == len(source)
+}
+
+void skip_space(string s, int *at) {
+    while (*at < len(s) && text.is_space(s[*at])) *at = *at + 1
+}
+
+int add_node(Doc *doc, Kind kind) {
+    append(doc->nodes, {kind, false, 0, 0, 0, 0, 0, -1, -1, -1, 0})
+    return len(doc->nodes) - 1
+}
+
+void add_child(Doc *doc, int parent, int child) {
+    if (doc->nodes[parent].last < 0) {
+        doc->nodes[parent].first = child
+    } else {
+        doc->nodes[doc->nodes[parent].last].next = child
+    }
+    doc->nodes[parent].last = child
+    doc->nodes[parent].count++
+}
+
+// Reads the value at *at, and returns its node, or -1 if there is none.
+int value(Doc *doc, string s, int *at) {
+    skip_space(s, at)
+    if (*at >= len(s)) return -1
+    char c = s[*at]
+    if (c == '{') return object(doc, s, at)
+    if (c == '[') return array(doc, s, at)
+    if (c == '"') {
+        int node = add_node(doc, JSON_STRING)
+        int start = len(doc->text)
+        if (!string_into(doc, s, at)) return -1
+        doc->nodes[node].start = start
+        doc->nodes[node].length = len(doc->text) - start
+        return node
+    }
+    if (text.starts_with(s[*at:], "true")) {
+        *at = *at + 4
+        int node = add_node(doc, JSON_BOOL)
+        doc->nodes[node].truth = true
+        return node
+    }
+    if (text.starts_with(s[*at:], "false")) {
+        *at = *at + 5
+        return add_node(doc, JSON_BOOL)
+    }
+    if (text.starts_with(s[*at:], "null")) {
+        *at = *at + 4
+        return add_node(doc, JSON_NULL)
+    }
+    int end = *at
+    while (end < len(s) && (text.is_digit(s[end]) || s[end] == '-' || s[end] == '+' ||
+                            s[end] == '.' || s[end] == 'e' || s[end] == 'E')) {
+        end++
+    }
+    f64 number = 0
+    if (end == *at || !text.parse_float(s[*at:end], &number)) return -1
+    *at = end
+    int node = add_node(doc, JSON_NUMBER)
+    doc->nodes[node].number = number
+    return node
+}
+
+int array(Doc *doc, string s, int *at) {
+    int node = add_node(doc, JSON_ARRAY)
+    *at = *at + 1
+    skip_space(s, at)
+    if (*at < len(s) && s[*at] == ']') {
+        *at = *at + 1
+        return node
+    }
+    while (true) {
+        int item = value(doc, s, at)
+        if (item < 0) return -1
+        add_child(doc, node, item)
+        skip_space(s, at)
+        if (*at >= len(s)) return -1
+        if (s[*at] == ']') {
+            *at = *at + 1
+            return node
+        }
+        if (s[*at] != ',') return -1
+        *at = *at + 1
+    }
+}
+
+int object(Doc *doc, string s, int *at) {
+    int node = add_node(doc, JSON_OBJECT)
+    *at = *at + 1
+    skip_space(s, at)
+    if (*at < len(s) && s[*at] == '}') {
+        *at = *at + 1
+        return node
+    }
+    while (true) {
+        skip_space(s, at)
+        if (*at >= len(s) || s[*at] != '"') return -1
+        int key_start = len(doc->text)
+        if (!string_into(doc, s, at)) return -1
+        int key_length = len(doc->text) - key_start
+        skip_space(s, at)
+        if (*at >= len(s) || s[*at] != ':') return -1
+        *at = *at + 1
+        int member = value(doc, s, at)
+        if (member < 0) return -1
+        doc->nodes[member].key_start = key_start
+        doc->nodes[member].key_length = key_length
+        add_child(doc, node, member)
+        skip_space(s, at)
+        if (*at >= len(s)) return -1
+        if (s[*at] == '}') {
+            *at = *at + 1
+            return node
+        }
+        if (s[*at] != ',') return -1
+        *at = *at + 1
+    }
+}
+
+// Decodes the string that starts at *at, its quote included, onto the end
+// of the document's text.
+bool string_into(Doc *doc, string s, int *at) {
+    int i = *at + 1
+    while (i < len(s) && s[i] != '"') {
+        char c = s[i]
+        if (c != '\\') {
+            append(doc->text, c)
+            i++
+            continue
+        }
+        if (i + 1 >= len(s)) return false
+        char e = s[i + 1]
+        i += 2
+        if (e == 'n') {
+            append(doc->text, '\n')
+        } else if (e == 't') {
+            append(doc->text, '\t')
+        } else if (e == 'r') {
+            append(doc->text, '\r')
+        } else if (e == 'b') {
+            append(doc->text, char(8))
+        } else if (e == 'f') {
+            append(doc->text, char(12))
+        } else if (e == 'u') {
+            int code = hex4(s, i)
+            if (code < 0) return false
+            i += 4
+            // A pair of escapes for one character beyond the first 65536.
+            if (code >= 0xD800 && code < 0xDC00 && i + 6 <= len(s) && s[i] == '\\' &&
+                s[i + 1] == 'u') {
+                int low = hex4(s, i + 2)
+                if (low >= 0xDC00 && low < 0xE000) {
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                    i += 6
+                }
+            }
+            utf8_into(doc, code)
+        } else {
+            append(doc->text, e)
+        }
+    }
+    if (i >= len(s)) return false
+    *at = i + 1
+    return true
+}
+
+int hex4(string s, int at) {
+    if (at + 4 > len(s)) return -1
+    int code = 0
+    for (int i = at; i < at + 4; i++) {
+        char c = s[i]
+        int digit = text.is_digit(c) ? int(c) - int('0')
+                  : c >= 'a' && c <= 'f' ? int(c) - int('a') + 10
+                  : c >= 'A' && c <= 'F' ? int(c) - int('A') + 10
+                  : -1
+        if (digit < 0) return -1
+        code = code * 16 + digit
+    }
+    return code
+}
+
+void utf8_into(Doc *doc, int code) {
+    if (code < 0x80) {
+        append(doc->text, char(code))
+    } else if (code < 0x800) {
+        append(doc->text, char(0xC0 | (code >> 6)), char(0x80 | (code & 0x3F)))
+    } else if (code < 0x10000) {
+        append(doc->text, char(0xE0 | (code >> 12)), char(0x80 | ((code >> 6) & 0x3F)),
+               char(0x80 | (code & 0x3F)))
+    } else {
+        append(doc->text, char(0xF0 | (code >> 18)), char(0x80 | ((code >> 12) & 0x3F)),
+               char(0x80 | ((code >> 6) & 0x3F)), char(0x80 | (code & 0x3F)))
+    }
+}
+
+export Kind kind(Doc *doc, int node) { return doc->nodes[node].kind }
+
+// How many items an array, or members an object, has.
+export int count(Doc *doc, int node) { return doc->nodes[node].count }
+
+// A string's value, or a member's key with key, as a view of the
+// document's text.
+export string text_of(Doc *doc, int node) {
+    return string(doc->text)[doc->nodes[node].start:doc->nodes[node].start + doc->nodes[node].length]
+}
+
+export string key_of(Doc *doc, int node) {
+    int start = doc->nodes[node].key_start
+    return string(doc->text)[start:start + doc->nodes[node].key_length]
+}
+
+export f64 number_of(Doc *doc, int node) { return doc->nodes[node].number }
+export bool truth_of(Doc *doc, int node) { return doc->nodes[node].truth }
+
+// The item of an array at an index, or -1 if there is none.
+export int item(Doc *doc, int node, int index) {
+    if (doc->nodes[node].kind != JSON_ARRAY) return -1
+    int child = doc->nodes[node].first
+    for (int i = 0; i < index && child >= 0; i++) child = doc->nodes[child].next
+    return child
+}
+
+// The member of an object with a key, or -1 if there is none.
+export int member(Doc *doc, int node, string key) {
+    if (doc->nodes[node].kind != JSON_OBJECT) return -1
+    for (int child = doc->nodes[node].first; child >= 0; child = doc->nodes[child].next) {
+        if (key_of(doc, child) == key) return child
+    }
+    return -1
+}
+
+// What a path of keys and indexes leads to from a node, as "result.items.0.label",
+// or -1 if it leads nowhere. An empty path is the node itself.
+export int find(Doc *doc, int node, string path) {
+    int at = node
+    int from = 0
+    while (at >= 0 && from < len(path)) {
+        int end = from
+        while (end < len(path) && path[end] != '.') end++
+        string step = path[from:end]
+        int index = 0
+        if (doc->nodes[at].kind == JSON_ARRAY && text.parse_int(step, &index)) {
+            at = item(doc, at, index)
+        } else {
+            at = member(doc, at, step)
+        }
+        from = end + 1
+    }
+    return at
+}
+
+// Appends s to into as a JSON string, in quotes, with what must be escaped
+// escaped.
+export void quote(char into[..], string s) {
+    append(into, '"')
+    for (char c in s) {
+        if (c == '"') {
+            append(into, "\\\"")
+        } else if (c == '\\') {
+            append(into, "\\\\")
+        } else if (c == '\n') {
+            append(into, "\\n")
+        } else if (c == '\t') {
+            append(into, "\\t")
+        } else if (c == '\r') {
+            append(into, "\\r")
+        } else if (int(c) < 0x20) {
+            string digits = "0123456789abcdef"
+            append(into, "\\u00", digits[int(c) >> 4], digits[int(c) & 15])
+        } else {
+            append(into, c)
+        }
+    }
+    append(into, '"')
+}
+
+// Appends a node to into as compact JSON. With sorted, an object's members
+// are written in the order of their keys, so that two objects that hold
+// the same members are written the same.
+export void write(char into[..], Doc *doc, int node, bool sorted) {
+    Kind k = doc->nodes[node].kind
+    if (k == JSON_NULL) {
+        append(into, "null")
+    } else if (k == JSON_BOOL) {
+        append(into, doc->nodes[node].truth)
+    } else if (k == JSON_NUMBER) {
+        f64 n = doc->nodes[node].number
+        if (n == f64(i64(n)) && n < 1e15 && n > -1e15) {
+            append(into, i64(n))
+        } else {
+            append(into, n)
+        }
+    } else if (k == JSON_STRING) {
+        quote(into, text_of(doc, node))
+    } else if (k == JSON_ARRAY) {
+        append(into, '[')
+        for (int child = doc->nodes[node].first; child >= 0; child = doc->nodes[child].next) {
+            if (child != doc->nodes[node].first) append(into, ',')
+            write(into, doc, child, sorted)
+        }
+        append(into, ']')
+    } else {
+        int members[..]
+        defer delete(members)
+        for (int child = doc->nodes[node].first; child >= 0; child = doc->nodes[child].next) {
+            append(members, child)
+        }
+        if (sorted) {
+            // Few members, so a plain insertion sort by key does.
+            for (int i = 1; i < len(members); i++) {
+                for (int j = i; j > 0 && key_of(doc, members[j]) < key_of(doc, members[j - 1]); j--) {
+                    int swap = members[j]
+                    members[j] = members[j - 1]
+                    members[j - 1] = swap
+                }
+            }
+        }
+        append(into, '{')
+        for (int i, int child in members) {
+            if (i > 0) append(into, ',')
+            quote(into, key_of(doc, child))
+            append(into, ':')
+            write(into, doc, child, sorted)
+        }
+        append(into, '}')
+    }
+}

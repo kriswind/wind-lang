@@ -1,0 +1,1 @@
+10080 permutations, total 120914640, checksum 7988782

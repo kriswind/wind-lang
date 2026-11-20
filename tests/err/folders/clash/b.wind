@@ -1,0 +1,1 @@
+export int same() { return 2 }

@@ -10,6 +10,7 @@ static const struct {
 } keywords[] = {
     {"const", TOK_KW_CONST, TYPE_INVALID},
     {"cout", TOK_KW_COUT, TYPE_INVALID},
+    {"cerr", TOK_KW_CERR, TYPE_INVALID},
     {"cin", TOK_KW_CIN, TYPE_INVALID},
     {"if", TOK_KW_IF, TYPE_INVALID},
     {"else", TOK_KW_ELSE, TYPE_INVALID},
@@ -19,6 +20,11 @@ static const struct {
     {"break", TOK_KW_BREAK, TYPE_INVALID},
     {"continue", TOK_KW_CONTINUE, TYPE_INVALID},
     {"goto", TOK_KW_GOTO, TYPE_INVALID},
+    {"defer", TOK_KW_DEFER, TYPE_INVALID},
+    {"switch", TOK_KW_SWITCH, TYPE_INVALID},
+    {"case", TOK_KW_CASE, TYPE_INVALID},
+    {"default", TOK_KW_DEFAULT, TYPE_INVALID},
+    {"fallthrough", TOK_KW_FALLTHROUGH, TYPE_INVALID},
     {"return", TOK_KW_RETURN, TYPE_INVALID},
     {"true", TOK_KW_TRUE, TYPE_INVALID},
     {"false", TOK_KW_FALSE, TYPE_INVALID},
@@ -30,6 +36,8 @@ static const struct {
     {"typedef", TOK_KW_TYPEDEF, TYPE_INVALID},
     {"typeof", TOK_KW_TYPEOF, TYPE_INVALID},
     {"export", TOK_KW_EXPORT, TYPE_INVALID},
+    {"extern", TOK_KW_EXTERN, TYPE_INVALID},
+    {"static", TOK_KW_STATIC, TYPE_INVALID},
     {"void", TOK_TYPE, TYPE_VOID},
     {"bool", TOK_TYPE, TYPE_BOOL},
     {"string", TOK_TYPE, TYPE_STRING},
@@ -51,7 +59,7 @@ static const struct {
     {"float", TOK_TYPE, TYPE_FLOAT},
     {"f16", TOK_TYPE, TYPE_F16},
     {"f32", TOK_TYPE, TYPE_F32},
-    {"f64", TOK_TYPE, TYPE_F64},
+    {"f64", TOK_TYPE, TYPE_FLOAT},
     {"f128", TOK_TYPE, TYPE_F128},
 
     /* C spellings. "unsigned", "signed", "long" and "short" combine with each
@@ -60,7 +68,7 @@ static const struct {
     {"signed", TOK_KW_SIGNED, TYPE_INVALID},
     {"long", TOK_KW_LONG, TYPE_INVALID},
     {"short", TOK_KW_SHORT, TYPE_INVALID},
-    {"double", TOK_TYPE, TYPE_F64},
+    {"double", TOK_TYPE, TYPE_FLOAT},
     {"int8_t", TOK_TYPE, TYPE_I8},
     {"int16_t", TOK_TYPE, TYPE_I16},
     {"int32_t", TOK_TYPE, TYPE_I32},
@@ -107,6 +115,7 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_DIRECTIVE: return "a directive";
     case TOK_KW_CONST:  return "'const'";
     case TOK_KW_COUT:   return "'cout'";
+    case TOK_KW_CERR:   return "'cerr'";
     case TOK_KW_CIN:    return "'cin'";
     case TOK_KW_IF:     return "'if'";
     case TOK_KW_ELSE:   return "'else'";
@@ -116,6 +125,11 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_BREAK:  return "'break'";
     case TOK_KW_CONTINUE: return "'continue'";
     case TOK_KW_GOTO:   return "'goto'";
+    case TOK_KW_DEFER:  return "'defer'";
+    case TOK_KW_SWITCH: return "'switch'";
+    case TOK_KW_CASE:   return "'case'";
+    case TOK_KW_DEFAULT: return "'default'";
+    case TOK_KW_FALLTHROUGH: return "'fallthrough'";
     case TOK_KW_RETURN: return "'return'";
     case TOK_KW_TRUE:   return "'true'";
     case TOK_KW_FALSE:  return "'false'";
@@ -127,6 +141,8 @@ const char *token_kind_name(TokenKind kind) {
     case TOK_KW_TYPEDEF: return "'typedef'";
     case TOK_KW_TYPEOF: return "'typeof'";
     case TOK_KW_EXPORT: return "'export'";
+    case TOK_KW_EXTERN: return "'extern'";
+    case TOK_KW_STATIC: return "'static'";
     case TOK_KW_UNSIGNED: return "'unsigned'";
     case TOK_KW_SIGNED: return "'signed'";
     case TOK_KW_LONG:   return "'long'";
@@ -264,10 +280,39 @@ static char decode_escape(Lexer *lexer) {
     case 'n':  return '\n';
     case 't':  return '\t';
     case 'r':  return '\r';
-    case '0':  return '\0';
+    case 'a':  return '\a';
+    case 'b':  return '\b';
+    case 'f':  return '\f';
+    case 'v':  return '\v';
     case '\\': return '\\';
     case '"':  return '"';
     case '\'': return '\'';
+    case '?':  return '?';
+    }
+    if (c >= '0' && c <= '7') {
+        /* Octal, as in C: up to three digits, "\0" included. */
+        int value = c - '0';
+        for (int i = 1; i < 3 && !at_end(lexer) && peek(lexer) >= '0' && peek(lexer) <= '7'; i++) {
+            value = value * 8 + (advance(lexer) - '0');
+        }
+        if (value > 255) {
+            loc.len = lexer->pos - loc.offset;
+            diag_add(lexer->diags, SEV_ERROR, loc, "escape sequence is over 255, the most one byte holds");
+        }
+        return (char)value;
+    }
+    if (c == 'x') {
+        /* Hexadecimal: one or two digits. */
+        int value = 0, digits = 0;
+        while (digits < 2 && !at_end(lexer) && isxdigit((unsigned char)peek(lexer))) {
+            char d = advance(lexer);
+            value = value * 16 + (isdigit((unsigned char)d) ? d - '0' : tolower(d) - 'a' + 10);
+            digits++;
+        }
+        if (digits == 0) {
+            diag_add(lexer->diags, SEV_ERROR, loc, "'\\x' needs a hexadecimal digit after it");
+        }
+        return (char)value;
     }
     if (isprint((unsigned char)c)) {
         diag_add(lexer->diags, SEV_ERROR, loc, "unknown escape sequence '\\%c'", c);

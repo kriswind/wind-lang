@@ -1,0 +1,68 @@
+// Next permutation: steps through every permutation of the items 0 to n - 1
+// in lexicographic order, each from the one before by the classic
+// next-permutation algorithm, and does so for several rounds. Each
+// permutation's value is the sum of its items times random weights, one
+// weight per position, drawn afresh for each round. Prints how many
+// permutations there were, the sum of their values and a checksum of the
+// values in order.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 10
+
+int items[MAX]
+int weights[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+// Turns items into the next permutation in lexicographic order; false,
+// leaving it unchanged, if it is the last.
+bool next_permutation(int n) {
+    int i = n - 2
+    while (i >= 0 && items[i] >= items[i + 1]) i--
+    if (i < 0) return false
+    int j = n - 1
+    while (items[j] <= items[i]) j--
+    int held = items[i]
+    items[i] = items[j]
+    items[j] = held
+    int low = i + 1
+    int high = n - 1
+    while (low < high) {
+        held = items[low]
+        items[low] = items[high]
+        items[high] = held
+        low++
+        high--
+    }
+    return true
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int n = bench ? MAX : 7
+    int rounds = bench ? 4 : 2
+    int count = 0
+    int total = 0
+    int checksum = 0
+    for (int round = 0; round < rounds; round++) {
+        for (int i = 0; i < n; i++) {
+            items[i] = i
+            weights[i] = random() % 1000 + 1
+        }
+        do {
+            int value = 0
+            for (int i = 0; i < n; i++) value += items[i] * weights[i]
+            count++
+            total += value
+            checksum = (checksum * 31 + value) % 1000000007
+        } while (next_permutation(n))
+    }
+    cout << count << " permutations, total " << total << ", checksum " << checksum << "\n"
+    return 0
+}

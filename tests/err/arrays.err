@@ -1,16 +1,12 @@
-tests/err/arrays.wind:5:5: warning: variable 'bad1' is never used
 tests/err/arrays.wind:5:10: error: an array's length must be between 1 and 268435456
-tests/err/arrays.wind:6:5: warning: variable 'bad2' is never used
 tests/err/arrays.wind:6:10: error: an array's length must be an integer known at compile time
-tests/err/arrays.wind:7:5: warning: variable 'bad3' is never used
 tests/err/arrays.wind:7:22: error: too many elements: the array has length 2
 tests/err/arrays.wind:8:5: error: an array needs a length or its elements
-tests/err/arrays.wind:9:5: warning: variable 'bad5' is never used
 tests/err/arrays.wind:9:19: error: an element of this array must be 'int', found 'string'
 tests/err/arrays.wind:10:6: error: 'bad6' cannot have type 'void'
 tests/err/arrays.wind:11:11: error: a constant array needs its elements: '= { ... }'
 tests/err/arrays.wind:12:9: error: cannot initialize 'int' variable with 'int *'
-tests/err/arrays.wind:13:1: error: cannot assign to array 'a' as a whole; assign its elements
+tests/err/arrays.wind:13:5: error: cannot assign 'int' to 'int[3]' variable 'a'
 tests/err/arrays.wind:14:3: error: index 3 is out of range for an array of length 3
 tests/err/arrays.wind:15:3: error: index -4 is out of range for an array of length 3
 tests/err/arrays.wind:17:1: error: cannot assign to an element of constant array 'C'
@@ -19,12 +15,15 @@ tests/err/arrays.wind:19:1: error: cannot index a value of type 'int'; only arra
 tests/err/arrays.wind:20:9: error: cannot index a value of type 'int'; only arrays, strings and pointers have elements
 tests/err/arrays.wind:21:11: error: an index must be an integer of at most 64 bits, found 'string'
 tests/err/arrays.wind:23:11: error: an index must be an integer of at most 64 bits, found 'i128'
-tests/err/arrays.wind:25:18: error: an array parameter is written 'int v[]', without a length
-tests/err/arrays.wind:26:7: error: argument 1 of 'takes' must be an array of 'int'
-tests/err/arrays.wind:27:7: error: constant array 'C' cannot be passed to a function, which could change it
-tests/err/arrays.wind:28:7: error: argument 1 of 'takes' must be an array of 'int'
-tests/err/arrays.wind:30:7: error: argument 1 of 'takes' must be an array of 'int'
+tests/err/arrays.wind:25:18: error: an array parameter is written 'int v[]', without a length, or 'int v[..]' for a growable one
+tests/err/arrays.wind:26:7: error: argument 1 of 'takes' must be an array of 'int', found 'int'
+tests/err/arrays.wind:27:7: error: constant array 'C' can only be given to an array parameter declared 'const', which cannot change it
+tests/err/arrays.wind:28:7: error: argument 1 of 'takes' must be an array of 'int', found 'string'
+tests/err/arrays.wind:30:7: error: argument 1 of 'takes' must be an array of 'int', found an array of 'u8'
 tests/err/arrays.wind:31:8: error: cannot read into array 'a' as a whole; read its elements
 tests/err/arrays.wind:32:8: error: cannot read into an element of constant array 'C'
-tests/err/arrays.wind:33:13: error: 'len' needs an array or a string, found 'int'
+tests/err/arrays.wind:33:13: error: 'len' needs an array, a map or a string, found 'int'
 tests/err/arrays.wind:34:9: error: 'len' takes 1 argument, but 2 were given
+tests/err/arrays.wind:38:9: warning: array 'table' takes 8000000 bytes of the stack, which may be more than it has; declare it at the top level, outside any function
+tests/err/arrays.wind:44:19: error: index -1 counts back from the end, which needs a length known at compile time, and an array parameter's length is known only when the program runs; write 'values[len(values) - 1]'
+tests/err/arrays.wind:48:18: error: index -1 counts back from the end, which needs a length known at compile time, and this string's length is known only when the program runs; write 'word[len(word) - 1]'

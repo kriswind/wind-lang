@@ -1,0 +1,29 @@
+// A static variable in a function keeps its value from one call to the
+// next; it starts out once, as its declaration says. At the top level,
+// "static" changes nothing.
+static int helper(int x) { return x * 2 }
+static int shared = 5
+
+int next_id() {
+    static int count = 100
+    count++
+    return count
+}
+
+void note(string word) {
+    static string words[..]
+    static int calls, longest = -1
+    static int weights[3] = {7, 8, 9}
+    calls++
+    append(words, word)
+    if (len(word) > longest) longest = len(word)
+    cout << calls << " " << words << " " << longest << " " << weights[calls % 3] << "\n"
+}
+
+int main() {
+    cout << next_id() << " " << next_id() << " " << next_id() << " " << helper(shared) << "\n"
+    note("a")
+    note("bcd")
+    note("ef")
+    return 0
+}

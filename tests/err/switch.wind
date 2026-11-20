@@ -1,0 +1,50 @@
+enum Mode { OFF, ON }
+const int LIMIT = 3
+
+int pick(int n, f64 x, string s, Mode m) {
+    int other = 2
+    switch (x) {
+    case 1: break
+    }
+    switch (n) {
+    case 1, LIMIT - 2:
+        break
+    case other:
+        break
+    case "two":
+        break
+    case 3:
+        other++
+    case 4:
+        fallthrough
+    default:
+        break
+    default:
+        break
+    }
+    switch (s) {
+    case "a", "b":
+    case "a":
+        break
+    }
+    switch (m) {
+    case OFF:
+        if (n > 0) fallthrough
+        break
+    case ON:
+        fallthrough
+    }
+    continue
+    fallthrough
+    break
+    switch (n) {
+    case 1: return 1
+    default: return 2
+    }
+    return 0
+}
+
+int main() {
+    case 2:
+    return pick(1, 2.0, "", OFF)
+}

@@ -1,0 +1,32 @@
+struct Point { int x }
+extern void body() { }
+extern const int VALUE = 3
+extern string name()
+extern void take(int values[])
+extern void place(Point p)
+extern int no_parens
+extern const string TEXT
+extern const int LIMIT
+extern void fine(int *at, bool flag, char c)
+extern "" void unnamed()
+extern "a\"b.h" void quoted()
+extern "stdio.h" {
+    export i32 getchar()
+    extern i32 putc(i32 c)
+    i32 fputs(char *text) { return 0 }
+    const i32 BUFSIZ
+    void twice() twice
+    int body
+}
+#no_bounds_check extern "stdio.h" { i32 fflush(i32 *at) }
+extern "math.h" link "-rf" { float sqrt(float x) }
+extern "math.h" link { float cbrt(float x) }
+int main() {
+    extern int inner()
+    int sized[LIMIT]
+    LIMIT = 2
+    fine(NULL, true, 'c')
+    return int(len(LIMIT))
+}
+extern "math.h" {
+    double sqrt(double x)

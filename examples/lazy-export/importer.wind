@@ -1,0 +1,5 @@
+import exporter
+
+for (u8 u = 0; u < exporter.f; u++) {
+	cout << exporter.milkshake << " " << exporter.animal << "\n"
+}

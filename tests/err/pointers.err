@@ -1,36 +1,22 @@
 tests/err/pointers.wind:5:6: error: a pointer to 'void' is not supported; point to a type
 tests/err/pointers.wind:6:1: error: unknown type 'Missing'
-tests/err/pointers.wind:6:10: warning: variable 'nowhere' is never used
-tests/err/pointers.wind:8:10: warning: variable 'a' is never used
 tests/err/pointers.wind:8:15: error: cannot take the address of parameter 'n'
-tests/err/pointers.wind:9:10: warning: variable 'b' is never used
 tests/err/pointers.wind:9:15: error: cannot take the address of array 'values' as a whole; '&values[0]' points to its first element
 tests/err/pointers.wind:11:5: error: cannot assign to parameter 'n'
 tests/err/pointers.wind:13:5: error: cannot assign to parameter 'at'
-tests/err/pointers.wind:16:6: warning: function 'gone' is never used
 tests/err/pointers.wind:19:27: warning: this returns a pointer to 'here', which is gone once 'gone' returns
 tests/err/pointers.wind:20:27: warning: this returns a pointer to 'list', which is gone once 'gone' returns
 tests/err/pointers.wind:21:12: warning: this returns a pointer to 'list', which is gone once 'gone' returns
 tests/err/pointers.wind:30:16: error: cannot initialize 'float *' variable with 'int *'
-tests/err/pointers.wind:31:10: warning: variable 'r' is never used
 tests/err/pointers.wind:31:15: error: cannot take the address of constant 'K'
-tests/err/pointers.wind:32:10: warning: variable 't' is never used
 tests/err/pointers.wind:32:15: error: cannot take the address of an element of constant array 'TABLE'
-tests/err/pointers.wind:33:10: warning: variable 'u' is never used
 tests/err/pointers.wind:33:14: error: constant array 'TABLE' cannot be used as a value, since the pointer it would be could change it; index it, print it, or take its length
-tests/err/pointers.wind:34:10: warning: variable 'v' is never used
 tests/err/pointers.wind:34:15: error: cannot take the address of array 'nums' as a whole; '&nums[0]' points to its first element
-tests/err/pointers.wind:35:10: warning: variable 'w' is never used
 tests/err/pointers.wind:35:15: error: cannot take the address of this: it is not a variable, an element, a field or what a pointer points to
-tests/err/pointers.wind:36:10: warning: variable 'z' is never used
 tests/err/pointers.wind:36:15: error: cannot take the address of this: it is not a variable, an element, a field or what a pointer points to
-tests/err/pointers.wind:37:11: warning: variable 'ch' is never used
 tests/err/pointers.wind:37:17: error: 's' is a string, and a string's characters cannot be pointed to
-tests/err/pointers.wind:38:12: warning: variable 'fl' is never used
 tests/err/pointers.wind:38:17: error: cannot initialize 'float *' variable with 'int *'
-tests/err/pointers.wind:39:9: warning: variable 'n' is never used
 tests/err/pointers.wind:39:14: error: operator '*' needs a pointer, found 'int'
-tests/err/pointers.wind:40:9: warning: variable 'm' is never used
 tests/err/pointers.wind:40:13: error: cannot initialize 'int' variable with 'int *'
 tests/err/pointers.wind:41:9: error: cannot assign 'int' to 'int *' variable 'p'
 tests/err/pointers.wind:42:9: error: cannot assign 'int' to 'int *' variable 'p'
@@ -40,26 +26,20 @@ tests/err/pointers.wind:45:8: error: '->' needs a pointer to a struct, found 'in
 tests/err/pointers.wind:46:9: error: '->' needs a pointer to a struct, found 'Point'; use '.'
 tests/err/pointers.wind:48:9: error: struct 'Point' has no field 'z'
 tests/err/pointers.wind:49:8: error: struct 'Point' has no field 'z'
-tests/err/pointers.wind:50:9: warning: variable 'bad' is never used
 tests/err/pointers.wind:50:22: error: '->' needs a pointer to a struct, found 'int'
-tests/err/pointers.wind:51:10: warning: variable 'truth' is never used
 tests/err/pointers.wind:51:18: error: cannot initialize 'bool' variable with 'int *'
 tests/err/pointers.wind:52:8: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/pointers.wind:53:13: error: operator '!' needs a 'bool' or a pointer, found 'int'
 tests/err/pointers.wind:54:18: error: operator '&&' needs 'bool' or pointer operands, found 'int'
 tests/err/pointers.wind:55:13: error: mismatched types 'int *' and 'bool' for operator '=='
-tests/err/pointers.wind:56:10: warning: variable 'same' is never used
 tests/err/pointers.wind:56:17: error: mismatched types 'int *' and 'float *' for operator '=='
-tests/err/pointers.wind:57:10: warning: variable 'none' is never used
 tests/err/pointers.wind:57:17: error: nothing here tells NULL which pointer type it is; use it with a pointer, as in 'int *p = NULL'
 tests/err/pointers.wind:57:25: error: nothing here tells NULL which pointer type it is; use it with a pointer, as in 'int *p = NULL'
 tests/err/pointers.wind:58:13: error: nothing here tells NULL which pointer type it is; use it with a pointer, as in 'int *p = NULL'
 tests/err/pointers.wind:59:9: error: operator '+' is not defined for 'int *' and 'float'
 tests/err/pointers.wind:60:9: error: operator '+' is not defined for 'int *' and 'int *'
 tests/err/pointers.wind:61:9: error: mismatched types 'int *' and 'int' for operator '*'
-tests/err/pointers.wind:62:9: warning: variable 'd' is never used
 tests/err/pointers.wind:62:13: error: operator '-' is not defined for 'int *' and 'float *'
-tests/err/pointers.wind:63:9: warning: variable 'e' is never used
 tests/err/pointers.wind:63:13: error: operator '-' is not defined for 'int' and 'int *'
 tests/err/pointers.wind:64:10: error: a pointer moves by an integer of at most 64 bits, found 'float'
 tests/err/pointers.wind:65:5: error: operator '*=' is not defined for 'int *'
@@ -73,32 +53,25 @@ tests/err/pointers.wind:73:7: error: '++' after '*' is unclear: put the '*' in p
 tests/err/pointers.wind:74:7: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
 tests/err/pointers.wind:75:12: error: a 'int *' cannot be read from input
 tests/err/pointers.wind:76:17: error: a 'int *' cannot be read from input
-tests/err/pointers.wind:76:17: warning: variable 'fresh' is never used
-tests/err/pointers.wind:77:16: warning: constant 'cp' is never used
 tests/err/pointers.wind:77:21: error: a constant's value must be known at compile time; use a variable for this
-tests/err/pointers.wind:78:10: warning: variable 'node' is never used
 tests/err/pointers.wind:78:22: error: field 'next' is 'Node *', found 'Point *'
 tests/err/pointers.wind:79:28: error: a pointer to 'void' is not supported; point to a type
 tests/err/pointers.wind:80:5: error: cannot index a value of type 'int'; only arrays, strings and pointers have elements
 tests/err/pointers.wind:81:11: error: '->' needs a pointer to a struct, found 'int *'
 tests/err/pointers.wind:82:5: error: expected a statement, found '&'
 tests/err/pointers.wind:83:16: error: argument 3 of 'f' must be 'Point *', found 'Point'
-tests/err/pointers.wind:84:10: error: argument 2 of 'f' must be an array of 'int'
+tests/err/pointers.wind:84:10: error: argument 2 of 'f' must be an array of 'int', found 'int *'; a pointer does not know how many elements it points to, and an array does
 tests/err/pointers.wind:87:20: error: cannot initialize 'string' variable with 'char *'
 tests/err/pointers.wind:88:12: error: cannot assign 'string' to 'char *' variable 'text'
-tests/err/pointers.wind:89:9: warning: variable 'raw' is never used
 tests/err/pointers.wind:89:15: error: cannot initialize 'u8 *' variable with 'string'
-tests/err/pointers.wind:90:10: warning: variable 'eq' is never used
 tests/err/pointers.wind:90:15: error: mismatched types 'char *' and 'string' for operator '=='
 tests/err/pointers.wind:91:20: error: 'cstring' needs a string, found 'int'
 tests/err/pointers.wind:92:12: error: 'cstring' takes 1 argument, but 0 were given
 tests/err/pointers.wind:93:13: error: cannot convert 'int *' to 'string'
 tests/err/pointers.wind:94:12: error: cannot convert 'string' to 'char *'; cstring() makes a copy that ends with a '\0'
-tests/err/pointers.wind:95:17: warning: constant 'made' is never used
 tests/err/pointers.wind:95:24: error: a constant's value must be known at compile time; use a variable for this
-tests/err/pointers.wind:96:18: warning: constant 'seen' is never used
 tests/err/pointers.wind:96:25: error: a constant's value must be known at compile time; use a variable for this
 tests/err/pointers.wind:98:8: error: operator '==' would compare where the two arrays are, not what they hold; compare their elements in a loop
 tests/err/pointers.wind:99:8: error: condition must be 'bool' or a pointer, found 'int'
 tests/err/pointers.wind:100:21: error: '++' after '*' is unclear: put the '*' in parentheses to change what the pointer points to, or leave the '*' out to move the pointer
-tests/err/pointers.wind:101:21: error: 'len' needs an array or a string, found 'int *'
+tests/err/pointers.wind:101:21: error: 'len' needs an array, a map or a string, found 'int *'

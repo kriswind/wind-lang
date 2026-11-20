@@ -1,0 +1,38 @@
+// The libraries in libs/, used as a program would: ::math, ::random and
+// ::text, the last a folder of several files.
+import ::math
+import ::random
+import ::text
+import ::text/chars
+
+// text.parse_int, at and around the limits of a 64-bit int.
+string inputs[10] = {"42", "-17", "+5", "", "-", "12a", "9223372036854775807",
+                     "-9223372036854775808", "9223372036854775808", "-9223372036854775809"}
+for (int i = 0; i < len(inputs); i++) {
+    int v = -1
+    bool ok = text.parse_int(inputs[i], &v)
+    cout << '"' << inputs[i] << "\" " << ok << " " << v << "\n"
+}
+
+cout << math.sqrt(2.0) << " " << math.pow(2.0, 10.0) << " " << math.sin(math.PI / 2.0) << " " <<
+    math.floor(-2.5) << " " << math.round(2.5) << " " << math.atan2(1.0, 1.0) * 4.0 << "\n"
+cout << math.gcd(84, -36) << " " << math.lcm(4, 6) << " " << math.lcm(0, 6) << " " <<
+    math.clamp(15, 0, 10) << " " << math.sign(-4) << " " << math.abs(-9) << " " <<
+    math.is_prime(97) << " " << math.is_prime(91) << " " << math.lerp(10.0, 20.0, 0.25) << " " <<
+    math.degrees(math.PI) << "\n"
+
+random.seed(42)
+cout << random.next() << " " << random.next() << " " << random.range(1, 7) << " " <<
+    random.range(5, 5) << " " << random.unit() << "\n"
+random.seed(0)
+int deck[6] = {1, 2, 3, 4, 5, 6}
+random.shuffle(deck)
+cout << deck << " " << random.chance(100) << " " << random.chance(0) << "\n"
+
+cout << text.index_of("hello world", "o") << " " << text.last_index_of("hello world", "o") << " " <<
+    text.index_of("hello", "") << " " << text.index_of("hi", "high") << " " <<
+    text.contains("wind", "in") << " " << text.starts_with("windmill", "wind") << " " <<
+    text.ends_with("blink.wind", ".wind") << " " << text.count("banana", 'a') << "\n"
+cout << text.to_upper('q') << text.to_lower('Q') << text.to_upper('3') << " " <<
+    text.digit_value('7') << " " << text.digit_value('x') << " " << chars.is_space('\t') << " " <<
+    chars.is_alnum('_') << "\n"

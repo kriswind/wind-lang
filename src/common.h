@@ -96,10 +96,57 @@ bool file_read(const char *path, Str *out);
    current directory. The result comes from malloc. */
 char *path_beside(const char *from, Str written);
 
+/* The directory of the libraries that an import reaches with "::", found
+   from program, the path the compiler was started as. It is $WIND_LIBS if
+   that is set; otherwise "libs" beside the directory the compiler is in,
+   which is where it is in a build of the source, or "share/wind/libs" there,
+   which is where "make install" puts it. */
+void libs_locate(const char *program);
+/* The directory libs_locate found, or NULL if there is none. */
+const char *libs_dir(void);
+
+/* Where an import's path leads, before any ".wind" is added, from malloc:
+   "::path" in the libraries directory, any other path beside the file at
+   "from" as path_beside finds it. A path that ends in "/" names a folder
+   and nothing else, which sets *folder_only; the "/" is left off. Returns
+   NULL if the path starts with "::" and there is no libraries directory. */
+char *import_base(const char *from, Str written, bool *folder_only);
+
+bool is_directory(const char *path);
+bool file_exists(const char *path);
+
+/* Bounds on the folders below a folder that wind_files_in looks through,
+   which keep a folder high in a large tree, or a link that leads back up,
+   from taking the search on through the whole disk. */
+#define WIND_FOLDER_LIMIT 1000
+#define WIND_FOLDER_DEPTH 16
+
+/* The ".wind" files in a folder and in the folders below it, as paths
+   from malloc in an array from malloc, ordered by path. Returns how many
+   there are. If the folder holds more folders than the bounds above allow,
+   returns none and sets *too_large, which may be NULL. */
+size_t wind_files_in(const char *folder, char ***files, bool *too_large);
+
 /* The absolute path of an existing file with every link resolved, from
    malloc, so that two spellings of one file compare equal. Returns NULL,
    with errno set, if there is no such file. */
 char *path_canonical(const char *path);
+
+/* Runs the program at path, searched for in PATH if it has no slash, with
+   the given NULL-terminated argument vector, and waits for it. Returns its
+   exit code, or 128 + the signal number if a signal ended it. A signal
+   that would end wind while it waits (an interrupt, a hangup, a request to
+   terminate) is passed on to the program instead, so that wind outlives it
+   and can clean up after it. */
+int run_program(const char *path, char *const argv[]);
+/* Runs a program as run_program does, with its standard output captured.
+   Returns what it wrote there, from malloc and NUL-terminated, and sets
+   *status to what run_program would return. */
+char *program_output(const char *path, char *const argv[], int *status);
+/* True if a program of this name can be found in PATH. */
+bool program_on_path(const char *name);
+/* The directory for temporary files: $TMPDIR, or /tmp. */
+const char *temp_dir(void);
 
 /* For failures of the tool itself (I/O, memory), not of the program being
    compiled; those go through diag_add. */

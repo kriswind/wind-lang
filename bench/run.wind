@@ -1,0 +1,472 @@
+// Builds the benchmark program in each language and times every kernel.
+//
+// Run from the repository root:  wind run bench/run.wind [options] [kernel...]
+//
+//     --runs n          runs per kernel, of which the best is kept; a kernel
+//                       that takes over a second is run once (default: 5)
+//     --only language   run only this language; may be repeated
+//     --skip language   leave a language out; may be repeated
+//     --seconds         show seconds in place of ratios
+//     --cc command      the C compiler (default: $CC or cc)
+//     --cxx command     the C++ compiler (default: $CXX or c++)
+//
+// Each kernel is run as its own process, so a time includes starting the
+// program, and the best of several runs is kept. A language whose toolchain
+// is not installed is left out. Every language must print the same result
+// for a kernel; one that does not is reported and left out of the summary.
+//
+// A run of every kernel also writes bench/RESULTS.md, the tables that the
+// README links to.
+
+import ::os
+import ::text
+import results
+
+// What each kernel leans on, in the order they are shown.
+const string KERNELS[12] = {"fib", "sieve", "collatz", "gcd", "mandelbrot", "matmul",
+                      "particles", "sort", "queens", "hash", "bytes", "list"}
+const string LEANS_ON[12] = {"function calls", "array writes", "integer arithmetic",
+                       "division in a called function", "float arithmetic",
+                       "nested loops over arrays", "structs of floats",
+                       "recursion with swaps", "recursion with backtracking",
+                       "scattered reads and writes", "bytes", "pointer chasing"}
+
+// A kernel that takes longer than this, in seconds, is not run again: its
+// time is far from the noise that repeating is there to remove.
+const f64 SLOW = 1.0
+
+// One language: its name, the name the results file gives it, its build
+// spelled for people, the tool it needs, and the commands that build it
+// (none for an interpreted one), run it, and ask its toolchain's version,
+// with the text on the line that holds the version where there are several.
+// A command is words, in which {wind}, {cc}, {cxx}, {bench}, {out} and
+// {elixir} are filled in.
+struct Language {
+    string name
+    string label
+    string how
+    string tool
+    string toolchain
+    string pick
+    string build[..]
+    string run[..]
+    string version[..]
+}
+
+Language languages[..]
+string wind = "wind"
+string cc = "cc"
+string cxx = "c++"
+string bench = "bench"
+string out = "build/bench"
+string elixir = ""
+
+void add(string name, string label, string how, string tool, string toolchain, string build,
+         string run, string version) {
+    append(languages, {name, label, how, tool, toolchain, ""})
+    int at = len(languages) - 1
+    text.split(build, "", languages[at].build)
+    text.split(run, "", languages[at].run)
+    text.split(version, "", languages[at].version)
+}
+
+void add_languages() {
+    add("wind", "Wind", "`wind build`", wind, "wind",
+        "{wind} build {bench}/bench.wind -o {out}/wind", "{out}/wind", "{wind} --version")
+    add("wind-unchecked", "Wind, no bounds checks", "`wind build --no-bounds-check`", wind,
+        "wind", "{wind} build --no-bounds-check {bench}/bench.wind -o {out}/wind-unchecked",
+        "{out}/wind-unchecked", "{wind} --version")
+    add("c", "C", "`cc -O2`", cc, compiler_name(cc),
+        "{cc} -std=c11 -O2 -o {out}/c {bench}/bench.c", "{out}/c", "{cc} --version")
+    add("c++", "C++", "`c++ -O2`", cxx, compiler_name(cxx),
+        "{cxx} -std=c++17 -O2 -o {out}/cpp {bench}/bench.cpp", "{out}/cpp", "{cxx} --version")
+    add("rust", "Rust", "`rustc -C opt-level=3 -C panic=abort`", "rustc", "rustc",
+        "rustc -C opt-level=3 -C panic=abort -o {out}/rust {bench}/bench.rs", "{out}/rust",
+        "rustc --version")
+    add("zig", "Zig", "`zig build-exe -O ReleaseFast`", "zig", "Zig",
+        "zig build-exe -O ReleaseFast --cache-dir {out}/zig-cache -femit-bin={out}/zig "
+            + "{bench}/bench.zig",
+        "{out}/zig", "zig version")
+    add("odin", "Odin", "`odin build -o:aggressive -no-bounds-check`", "odin", "Odin",
+        "odin build {bench}/bench.odin -file -o:aggressive -no-bounds-check -microarch:native "
+            + "-out:{out}/odin",
+        "{out}/odin", "odin version")
+    add("go", "Go", "`go build`", "go", "Go", "go build -o {out}/go {bench}/bench.go", "{out}/go",
+        "go version")
+    add("swift", "Swift", "`swiftc -Ounchecked`", "swiftc", "Swift",
+        "swiftc -Ounchecked -o {out}/swift {bench}/bench.swift", "{out}/swift",
+        "swiftc --version")
+    add("haskell", "Haskell", "`ghc -O2`", "ghc", "GHC",
+        "ghc -O2 -dynamic -outputdir {out}/haskell-objects -o {out}/haskell {bench}/bench.hs",
+        "{out}/haskell", "ghc --version")
+    add("java", "Java", "`javac`, run on the JVM", "javac", "OpenJDK",
+        "javac -d {out}/java {bench}/Bench.java", "java -cp {out}/java Bench", "java -version")
+    add("node", "JavaScript (Node.js)", "JavaScript on Node.js", "node", "Node.js", "",
+        "node {bench}/bench.js", "node --version")
+    add("bun", "JavaScript (Bun)", "JavaScript on Bun", "bun", "Bun", "", "bun {bench}/bench.js",
+        "bun --version")
+    // The Erlang VM is started itself, which is quicker than going through
+    // the elixir script.
+    string run_elixir = "elixir -pa {out}/elixir -e Bench.main(System.argv())"
+    if (os.on_path("erl") && len(elixir) > 0) {
+        run_elixir = "erl -noshell -noinput -pa {elixir}/ebin -pa {out}/elixir -eval "
+                     + "'Elixir.Bench':main([list_to_binary(A)||A<-init:get_plain_arguments()]),halt(). "
+                     + "-extra"
+    }
+    add("elixir", "Elixir", "`elixirc`, run on the BEAM", "elixirc", "Elixir",
+        "elixirc -o {out}/elixir {bench}/bench.ex", run_elixir, "elixir --version")
+    languages[len(languages) - 1].pick = "Elixir"
+    add("luajit", "Lua (LuaJIT)", "Lua on LuaJIT", "luajit", "LuaJIT", "", "luajit {bench}/bench.lua",
+        "luajit -v")
+    add("lua", "Lua", "Lua, the reference interpreter", "lua", "Lua", "", "lua {bench}/bench.lua",
+        "lua -v")
+    add("python", "Python", "CPython", "python3", "CPython", "", "python3 {bench}/bench.py",
+        "python3 --version")
+}
+
+// "Clang" or "GCC", by what a C or C++ compiler says it is.
+string compiler_name(string command) {
+    string asking[2] = {command, "--version"}
+    char said[..]
+    char err[..]
+    os.capture(asking, "", said, err)
+    char lower[..]
+    for (char c in string(said)) append(lower, text.to_lower(c))
+    return text.contains(string(lower), "clang") ? "Clang" : "GCC"
+}
+
+// Appends a command to into, with its placeholders filled in.
+void fill(string into[..], const string command[]) {
+    for (string word in command) {
+        string filled = word
+        filled = swap(filled, "{wind}", wind)
+        filled = swap(filled, "{cc}", cc)
+        filled = swap(filled, "{cxx}", cxx)
+        filled = swap(filled, "{bench}", bench)
+        filled = swap(filled, "{out}", out)
+        filled = swap(filled, "{elixir}", elixir)
+        append(into, filled)
+    }
+}
+
+// word with every placeholder in it replaced by value.
+string swap(string word, string placeholder, string value) {
+    if (!text.contains(word, placeholder)) return word
+    char swapped[..]
+    text.replace(swapped, word, placeholder, value)
+    return "" + string(swapped)
+}
+
+bool listed(const string names[], string name) {
+    for (string n in names) {
+        if (n == name) return true
+    }
+    return false
+}
+
+void usage(string problem) {
+    cerr << "bench/run.wind: " << problem << "\n"
+    cerr << "usage: wind run bench/run.wind [--runs n] [--only language] [--skip language] "
+         << "[--seconds] [--cc command] [--cxx command] [kernel ...]\n"
+    cerr << "kernels:"
+    for (int i, string kernel in KERNELS) cerr << " " << kernel << " (" << LEANS_ON[i] << ")"
+    cerr << "\n"
+    exit(2)
+}
+
+// One language's results: its times by kernel are in the times map, under
+// "language/kernel".
+struct Row {
+    int at
+    f64 mean
+    bool has_mean
+    f64 total
+}
+
+f64 times[string]
+
+f64 time_of(string name, string kernel) {
+    string key = name + "/" + kernel
+    return has(times, key) ? times[key] : -1
+}
+
+int main(int argc, string argv[]) {
+    if (os.has_env("CC") && len(os.get_env("CC")) > 0) cc = os.get_env("CC")
+    if (os.has_env("CXX") && len(os.get_env("CXX")) > 0) cxx = os.get_env("CXX")
+    int runs = 5
+    bool seconds = false
+    string only[..]
+    string skip[..]
+    string kernels[..]
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i]
+        bool takes = arg == "--runs" || arg == "--only" || arg == "--skip" || arg == "--cc" ||
+                     arg == "--cxx"
+        if (takes && i + 1 >= argc) usage("missing a value after " + arg)
+        if (arg == "--runs") {
+            i++
+            if (!text.parse_int(argv[i], &runs) || runs < 1) usage("--runs takes a count")
+        } else if (arg == "--only") {
+            i++
+            append(only, argv[i])
+        } else if (arg == "--skip") {
+            i++
+            append(skip, argv[i])
+        } else if (arg == "--seconds") {
+            seconds = true
+        } else if (arg == "--cc") {
+            i++
+            cc = argv[i]
+        } else if (arg == "--cxx") {
+            i++
+            cxx = argv[i]
+        } else if (arg == "-h" || arg == "--help") {
+            usage("times the benchmark kernels in each language")
+        } else if (len(arg) > 0 && arg[0] == '-') {
+            usage("unknown option " + arg)
+        } else if (!listed(KERNELS, arg)) {
+            usage("unknown kernel: " + arg)
+        } else {
+            append(kernels, arg)
+        }
+    }
+    bool every_kernel = len(kernels) == 0
+    if (every_kernel) kernels = clone(KERNELS)
+    if (!os.is_dir(bench)) {
+        cerr << "run this from the repository root, where bench/ is\n"
+        exit(2)
+    }
+
+    // Paths are given whole, so that every tool finds them wherever it runs.
+    char here[..]
+    os.current_dir(here)
+    bench = string(here) + "/bench"
+    out = string(here) + "/build/bench"
+    if (os.is_file("build/wind")) wind = string(here) + "/build/wind"
+    if (os.on_path("elixir")) {
+        string asking[3] = {"elixir", "-e", "IO.write(:code.lib_dir(:elixir))"}
+        char said[..]
+        char err[..]
+        if (os.capture(asking, "", said, err) == 0) elixir = "" + text.trim(string(said))
+    }
+    add_languages()
+    for (string name in only) {
+        bool known = false
+        for (Language lang in languages) known = known || lang.name == name
+        if (!known) usage("unknown language: " + name)
+    }
+    for (string name in skip) {
+        bool known = false
+        for (Language lang in languages) known = known || lang.name == name
+        if (!known) usage("unknown language: " + name)
+    }
+
+    os.make_dirs(out)
+    os.set_env("CC", cc)
+    int ready[..]
+    for (int at = 0; at < len(languages); at++) {
+        Language lang = languages[at]
+        if (listed(skip, lang.name) || (len(only) > 0 && !listed(only, lang.name))) continue
+        if (!os.on_path(lang.tool)) continue
+        if (len(lang.build) > 0) {
+            string command[..]
+            fill(command, lang.build)
+            char said[..]
+            char err[..]
+            if (os.capture(command, bench, said, err) != 0) {
+                cerr << lang.name << ": build failed\n" << text.trim(string(said) + string(err))
+                     << "\n"
+                continue
+            }
+        }
+        append(ready, at)
+    }
+    if (len(ready) == 0) {
+        cerr << "nothing to run\n"
+        exit(1)
+    }
+
+    string reference = languages[ready[0]].name
+    for (int at in ready) {
+        if (languages[at].name == "c") reference = "c"
+    }
+    bool wrong = false
+    for (string kernel in kernels) {
+        string printed[string]
+        for (int at in ready) {
+            Language lang = languages[at]
+            cerr << "\r" << left(kernel + ": " + lang.name, 40)
+            string command[..]
+            fill(command, lang.run)
+            append(command, kernel)
+            f64 best = -1
+            char said[..]
+            char err[..]
+            for (int run = 0; run < runs; run++) {
+                clear(said)
+                clear(err)
+                f64 start = os.clock()
+                int status = os.capture(command, "", said, err)
+                f64 elapsed = os.clock() - start
+                if (status != 0) {
+                    best = -1
+                    string problem = text.trim(string(said) + string(err))
+                    printed[lang.name] = len(problem) > 0 ? problem : "exit " + status
+                    break
+                }
+                printed[lang.name] = "" + text.trim(string(said))
+                if (best < 0 || elapsed < best) best = elapsed
+                if (elapsed > SLOW) break
+            }
+            if (best >= 0) times[lang.name + "/" + kernel] = best
+            delete(command)
+        }
+        cerr << "\r" << left("", 40) << "\r"
+        string expected = printed[reference]
+        for (int at in ready) {
+            string name = languages[at].name
+            string key = name + "/" + kernel
+            if (!has(times, key)) {
+                cerr << name << " " << kernel << ": failed: " << printed[name] << "\n"
+            } else if (printed[name] != expected) {
+                cerr << name << " " << kernel << ": printed " << printed[name] << ", but "
+                     << reference << " printed " << expected << "\n"
+                remove(times, key)
+                wrong = true
+            }
+        }
+    }
+
+    Row rows[..]
+    for (int at in ready) {
+        string name = languages[at].name
+        f64 ratios[..]
+        f64 total = 0
+        for (string kernel in kernels) {
+            f64 t = time_of(name, kernel)
+            f64 base = time_of(reference, kernel)
+            if (t >= 0) total += t
+            if (t >= 0 && base > 0) append(ratios, t / base)
+        }
+        bool timed = len(ratios) > 0
+        append(rows, {at, timed ? results.geometric_mean(ratios) : 1e300, timed, total})
+        delete(ratios)
+    }
+    sort(rows, .mean)
+
+    cout << (seconds ? "seconds" : "time relative to " + reference) << ", best of up to " << runs
+         << " run" << (runs == 1 ? "" : "s") << "; mean is the geometric mean of the ratios to "
+         << reference << "\n\n"
+    print_table(rows, kernels, reference, seconds)
+    if (every_kernel && reference == "c") {
+        cout << "\n"
+        write_results(rows, kernels, runs)
+    }
+    return wrong ? 1 : 0
+}
+
+void print_table(Row rows[], string kernels[], string reference, bool seconds) {
+    int width = 8
+    cout << left("", 15)
+    for (string kernel in kernels) cout << right(kernel[:len(kernel) < width ? len(kernel) : width - 1], width)
+    cout << right("mean", width) << right("total s", width) << "\n"
+    for (Row row in rows) {
+        string name = languages[row.at].name
+        cout << left(name, 15)
+        for (string kernel in kernels) {
+            f64 t = time_of(name, kernel)
+            if (t < 0) {
+                cout << right("-", width)
+            } else if (seconds) {
+                cout << right(fixed(t, 3), width)
+            } else {
+                char ratio[..]
+                results.ratio_text(ratio, t / time_of(reference, kernel))
+                cout << right(string(ratio), width)
+                delete(ratio)
+            }
+        }
+        char mean[..]
+        if (row.has_mean) {
+            results.ratio_text(mean, row.mean)
+        } else {
+            append(mean, "-")
+        }
+        cout << right(string(mean), width) << right(fixed(row.total, 2), width) << "\n"
+        delete(mean)
+    }
+}
+
+// Writes bench/RESULTS.md from a run of every kernel.
+void write_results(Row rows[], string kernels[], int runs) {
+    char page[..]
+    results.heading(page, "Benchmark results", "wind run bench/run.wind",
+                    "the best of up to " + runs + " runs")
+    append(page, "\n\nTime relative to C, as the geometric mean over the ", len(kernels),
+           " kernels. Lower is better, and one block is one times C.\n\n```\n")
+    int width = 0
+    for (Row row in rows) {
+        int label = len(languages[row.at].label)
+        if (row.has_mean && label > width) width = label
+    }
+    width += 2
+    for (Row row in rows) {
+        if (!row.has_mean) continue
+        char ratio[..]
+        results.ratio_text(ratio, row.mean)
+        append(page, left(languages[row.at].label, width), " ", right(string(ratio), 6), "x  ")
+        results.bar(page, row.mean)
+        append(page, "\n")
+        delete(ratio)
+    }
+    append(page, "```\n\n| | Built with | Toolchain | Relative to C | All kernels |\n",
+           "| --- | --- | --- | ---: | ---: |\n")
+    for (Row row in rows) {
+        Language lang = languages[row.at]
+        string bold = lang.name == "wind" ? "**" : ""
+        append(page, "| ", bold, lang.label, bold, " | ", lang.how, " | ", lang.toolchain)
+        string command[..]
+        fill(command, lang.version)
+        char version[..]
+        if (results.tool_version(command, lang.pick, version)) append(page, " ", string(version))
+        append(page, " | ")
+        if (row.has_mean) {
+            append(page, bold)
+            results.ratio_text(page, row.mean)
+            append(page, "x", bold)
+        } else {
+            append(page, "-")
+        }
+        append(page, " | ", fixed(row.total, 2), " s |\n")
+        delete(command)
+        delete(version)
+    }
+    append(page, "\n## Each kernel\n\nAs a multiple of C's time:\n\n|")
+    for (string kernel in kernels) append(page, " | ", kernel)
+    append(page, " |\n| --- |")
+    for (string kernel in kernels) append(page, " ---: |")
+    append(page, "\n")
+    for (Row row in rows) {
+        string name = languages[row.at].name
+        append(page, "| ", languages[row.at].label, " |")
+        for (string kernel in kernels) {
+            f64 t = time_of(name, kernel)
+            append(page, " ")
+            if (t < 0) {
+                append(page, "-")
+            } else {
+                results.ratio_text(page, t / time_of("c", kernel))
+            }
+            append(page, " |")
+        }
+        append(page, "\n")
+    }
+    append(page, "\nC's own times, in seconds, to give the ratios a scale:\n\n|")
+    for (string kernel in kernels) append(page, " ", kernel, " |")
+    append(page, "\n|")
+    for (string kernel in kernels) append(page, " ---: |")
+    append(page, "\n|")
+    for (string kernel in kernels) append(page, " ", fixed(time_of("c", kernel), 3), " |")
+    append(page, "\n")
+    results.write("bench/RESULTS.md", string(page))
+}

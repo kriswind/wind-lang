@@ -1,0 +1,15 @@
+// Escapes in characters and strings as C has them, adjacent strings joined
+// into one, and integer division by -1 wrapping.
+int main() {
+    cout << '\x41' << '\101' << "\x42\103" << '\x2a' << int('\0') << int('\7') << "\n"
+    cout << int('\a') << ' ' << int('\b') << ' ' << int('\f') << ' ' << int('\v') << ' '
+         << "\?" << "\n"
+    string joined = "one, "
+                    "two, "  "three"
+    cout << joined << ' ' << len(joined) << "\n"
+    i32 low = -2147483647 - 1
+    i32 minus = -1
+    cout << low / minus << ' ' << low % minus << ' ' << -7 / 2 << ' ' << -7 % 2 << "\n"
+    assert(len(joined) == 15)
+    return 0
+}

@@ -1,0 +1,10 @@
+tests/err/settings/for_board.wind:1:9: error: this file is for target 'arduino', and the program is being built for 'c'; give the program '#target arduino'
+tests/err/settings/names_board.wind:1:1: error: '#board' belongs in the program's own file, not in one it imports
+tests/err/settings.wind:2:1: error: '#target' is already given at line 1
+tests/err/settings.wind:3:1: error: '#board' names a board, which a program for c does not run on
+tests/err/settings.wind:4:1: error: '#board' is already given at line 3
+tests/err/settings.wind:5:7: error: expected the board's name, as in '#board arduino:avr:uno', found end of line
+tests/err/settings.wind:6:8: error: 'settings/for_board' has errors
+tests/err/settings.wind:7:8: error: 'settings/names_board' has errors
+tests/err/settings.wind:8:1: error: '#target' goes at the top of the file, above everything but other settings
+tests/err/settings.wind:10:5: error: '#target' goes at the top of the file, not inside a block

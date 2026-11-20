@@ -1,0 +1,12 @@
+took 1.5 s for 3 runs: true x|29
+build/wind.42
+[1, 2, 3] {"ada": 36} Point{x = 3, y = 4}
+noisy ran
+n=7
+n=7 n=7
+[ab   ][   ab][    42]
+[3.14][2.000][-0][   0.3333]
+[█▌  ][  x ][toolong]
+wind      0.051
+c         0.049
+to the error output: 12 2.5

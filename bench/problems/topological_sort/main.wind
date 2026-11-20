@@ -1,0 +1,114 @@
+// Topological sort: orders the nodes of a random directed acyclic graph so
+// that every edge points forwards, by Kahn's algorithm, always taking the
+// smallest node that is ready (a binary min-heap holds the ready nodes), so
+// the order is unique. The graph is made from the shared generator: the
+// nodes are shuffled (Fisher-Yates) into a random labelling, then each edge
+// joins two random positions, from the lower to the higher, between their
+// labels; an edge from a position to itself is dropped. The edges are stored
+// grouped by source (counting, then prefix sums). Prints the number of edges,
+// how many nodes were placed, and a checksum of the order.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 1000000
+const int MAX_EDGES = 4 * MAX
+
+int label[MAX]
+int waiting[MAX]
+int first[MAX + 1]
+int fill[MAX]
+int heap[MAX]
+int source[MAX_EDGES]
+int target[MAX_EDGES]
+int after[MAX_EDGES]
+int size = 0
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+void push(int node) {
+    int at = size
+    size++
+    while (at > 0) {
+        int parent = (at - 1) / 2
+        if (heap[parent] <= node) break
+        heap[at] = heap[parent]
+        at = parent
+    }
+    heap[at] = node
+}
+
+int pop() {
+    int top = heap[0]
+    size--
+    int last = heap[size]
+    int at = 0
+    for (;;) {
+        int child = 2 * at + 1
+        if (child >= size) break
+        if (child + 1 < size && heap[child + 1] < heap[child]) child++
+        if (last <= heap[child]) break
+        heap[at] = heap[child]
+        at = child
+    }
+    heap[at] = last
+    return top
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 1000
+    int m = 4 * n
+    for (int i = 0; i < n; i++) label[i] = i
+    for (int i = n - 1; i > 0; i--) {
+        int j = random() % (i + 1)
+        int held = label[i]
+        label[i] = label[j]
+        label[j] = held
+    }
+    int edges = 0
+    for (int e = 0; e < m; e++) {
+        int a = random() % n
+        int b = random() % n
+        if (a == b) continue
+        if (a > b) {
+            int held = a
+            a = b
+            b = held
+        }
+        source[edges] = label[a]
+        target[edges] = label[b]
+        edges++
+    }
+    for (int e = 0; e < edges; e++) {
+        first[source[e] + 1]++
+        waiting[target[e]]++
+    }
+    for (int i = 0; i < n; i++) first[i + 1] += first[i]
+    for (int i = 0; i < n; i++) fill[i] = first[i]
+    for (int e = 0; e < edges; e++) {
+        after[fill[source[e]]] = target[e]
+        fill[source[e]]++
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (waiting[i] == 0) push(i)
+    }
+    int placed = 0
+    int checksum = 0
+    while (size > 0) {
+        int node = pop()
+        placed++
+        checksum = (checksum * 31 + node) % 1000000007
+        for (int k = first[node]; k < first[node + 1]; k++) {
+            int v = after[k]
+            waiting[v]--
+            if (waiting[v] == 0) push(v)
+        }
+    }
+    cout << edges << " edges, " << placed << " nodes placed, checksum " << checksum << "\n"
+    return 0
+}

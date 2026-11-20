@@ -1,0 +1,26 @@
+// What a "const" array parameter does not allow: changing the array.
+const int FIXED[3] = {3, 1, 2}
+
+void change(int values[]) { values[0] = 1 }
+
+void read_only(const int values[]) {
+    values[0] = 9
+    values[1]++
+    int *at = &values[2]
+    int *all = values
+    sort(values)
+    reverse(values)
+    change(values)
+    cin >> values[0]
+    cout << at << all << "\n"
+}
+
+void grow(const int into[..]) {}
+void lookup(const int counts[string]) {}
+void point(const int *p) {}
+
+int main() {
+    change(FIXED)
+    read_only(FIXED)
+    return 0
+}

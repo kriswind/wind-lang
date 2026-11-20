@@ -1,0 +1,15 @@
+// What building text does not allow.
+void nothing() {}
+
+int main() {
+    char text[..]
+    int numbers[..]
+    append(text, nothing())
+    append(numbers, "seven")
+    string padded = left("a", 3)
+    cout << fixed("pi", 2) << right(1, "wide") << left(1) << "\n"
+    string view = string(numbers)
+    exit("now")
+    cerr << nothing() << "\n"
+    return 0
+}

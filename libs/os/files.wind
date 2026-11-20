@@ -1,0 +1,43 @@
+// Part of ::os: files and folders.
+#target c
+
+extern "files.h" {
+    bool os_read_file(string path, char into[..])
+    bool os_write_file(string path, string text, bool add)
+    int os_kind(string path)
+    bool os_make_dirs(string path)
+    bool os_remove(string path)
+    bool os_list_dir(string path, string into[..])
+    bool os_current_dir(char into[..])
+}
+
+// Appends the whole of the file at path to into. False if it cannot be
+// read, which leaves into as it was.
+export bool read_file(string path, char into[..]) { return os_read_file(path, into) }
+
+// Makes the file at path hold text, and nothing else. False if it cannot be
+// written.
+export bool write_file(string path, string text) { return os_write_file(path, text, false) }
+
+// Adds text to the end of the file at path, making it if it is not there.
+export bool append_file(string path, string text) { return os_write_file(path, text, true) }
+
+// Whether there is a file, a folder or anything else at path.
+export bool exists(string path) { return os_kind(path) != 0 }
+export bool is_file(string path) { return os_kind(path) == 1 }
+export bool is_dir(string path) { return os_kind(path) == 2 }
+
+// Makes the folder at path, and those it is in that are not there yet.
+// True if it is there afterwards.
+export bool make_dirs(string path) { return os_make_dirs(path) }
+
+// Removes a file, or a folder that is empty. True if it was removed.
+export bool remove_path(string path) { return os_remove(path) }
+
+// Appends to into the names of what is in the folder at path, in byte
+// order. The names' characters are kept until the program ends. False if
+// the folder cannot be read.
+export bool list_dir(string path, string into[..]) { return os_list_dir(path, into) }
+
+// Appends the folder the program is working in to into.
+export bool current_dir(char into[..]) { return os_current_dir(into) }

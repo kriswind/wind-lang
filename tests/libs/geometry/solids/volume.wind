@@ -1,0 +1,5 @@
+// In a folder below the library's: part of ::geometry as well, and also a
+// module of its own as ::geometry/solids.
+import ../area
+
+export int cubeVolume(int side) { return area.squareArea(side) * side }

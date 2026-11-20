@@ -1,0 +1,27 @@
+// What a deferred statement cannot do.
+void leaves() {
+    for (int i = 0; i < 3; i++) {
+        defer break
+        defer continue
+        defer {
+            for (int j = 0; j < 2; j++) {
+                if (j == 1) break
+            }
+        }
+    }
+    defer return
+    defer int kept = 1
+}
+
+void jumps() {
+    defer cout << "done\n"
+again:
+    goto again
+}
+
+int main() {
+    if (true) defer cout << "now\n"
+    leaves()
+    jumps()
+    return 0
+}

@@ -1,0 +1,15 @@
+true true false
+true 23 true
+["first line", "second line"]
+["a.wind", "notes.txt"]
+notes.txt .wind os-test . /
+0 [a.wind
+notes.txt]
+4 0 [oops]
+wind: cannot run 'no-such-program-here': No such file or directory
+127 true false
+seen true false[]
+seen
+true
+10 --
+true false

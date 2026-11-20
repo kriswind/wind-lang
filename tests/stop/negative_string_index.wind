@@ -1,0 +1,8 @@
+// The same holds for a string, whose length is not known at compile time.
+int main() {
+    string word = "wind"
+    int from = 2
+    cout << word[from - 1] << "\n"
+    cout << word[from - 3] << "\n"
+    return 0
+}

@@ -1,0 +1,10 @@
+tests/err/modules/broken.wind:2:27: error: 'bad' returns 'int', found 'string'
+tests/err/modules/good.wind:6:5: warning: function 'secret' is never used
+tests/err/imports.wind:1:8: error: there is no file 'tests/err/modules/nowhere.wind' or folder 'tests/err/modules/nowhere'
+tests/err/imports.wind:2:8: error: there is no file 'tests/libs/nothing/here.wind' or folder 'tests/libs/nothing/here'
+tests/err/imports.wind:3:8: error: there is no file 'tests/libs/nothing/here.wind' or folder 'tests/libs/nothing/here'
+tests/err/imports.wind:3:8: error: 'here' is already defined at line 2
+tests/err/imports.wind:4:8: error: 'modules/broken' has errors
+tests/err/imports.wind:5:26: error: expected a name, found end of line
+tests/err/imports.wind:6:7: error: expected the path of a file to import, found end of line
+tests/err/imports.wind:11:27: error: module 'again' has no 'answer'

@@ -30,16 +30,42 @@ build/wind run examples/hello.wind          # the same, spelled out
 build/wind build examples/hello.wind -o hi  # compile to an executable
 build/wind build --no-bounds-check examples/hello.wind   # without index checks
 build/wind check examples/hello.wind        # report errors and warnings only
-build/wind emit-c examples/hello.wind       # print the generated C
+build/wind emit examples/hello.wind         # print the generated C
+build/wind build -t arduino examples/arduino/blink.wind  # an Arduino sketch
+build/wind emit -t arduino examples/arduino/blink.wind   # print the sketch's C
 build/wind lsp                              # language server on stdio
 
-make install    # installs to ~/.local/bin/wind (override with PREFIX=)
+make install    # installs wind to ~/.local/bin and its libraries to
+                # ~/.local/share/wind/libs (override with PREFIX=)
 ```
 
 Requires GCC or Clang on a POSIX system. `$CC` selects the C compiler used
 both for building `wind` and by `wind` itself (default `cc`).
 
-`make test` also needs `python3`, which drives the language server test.
+`make test` needs nothing more: its scripts, the language server test
+included, are themselves written in Wind.
+
+## Libraries
+
+`libs/` holds the libraries that come with Wind. An import whose path starts
+with `::` is found there, so `import ::vendor/arduino` is the folder
+`libs/vendor/arduino`, a [module made of several files](#modules). The
+compiler looks for the directory beside itself: `libs` in a build of the
+source, `share/wind/libs` once installed. `WIND_LIBS` names another one.
+
+| Library | What it holds |
+| --- | --- |
+| `::math` | C's maths functions (`sqrt`, `pow`, `sin`, `atan2`, `floor`, `round`…), `PI` and `E`, and helpers: `min`, `max`, `clamp`, `abs`, `sign`, `gcd`, `lcm`, `is_prime`, `lerp`, `radians`, `degrees` |
+| `::random` | Pseudo-random numbers that a seed makes repeatable on any machine or board: `seed`, `next`, `range`, `unit`, `chance`, `shuffle` |
+| `::text` | Characters and strings: `is_digit`, `is_letter`, `to_upper`…, `index_of`, `contains`, `starts_with`, `ends_with`, `count`; `split`, `trim`, `join`, `replace`; and `parse_int`, `parse_float`. A folder of four files; `::text/chars` and the others can be imported alone |
+| `::json` | JSON: `parse` it into a document of nodes, `find` by a path such as `"result.items.0.label"`, `item`, `member`, `count`, `text_of`, `number_of`, `truth_of`; and `write` a node out, with its objects' keys in order if asked, and `quote` a string |
+| `::os` | The system a program runs on, for the computer it runs on only: `run` and `capture` other programs, `on_path`, and `start` one to talk to, with `write_to`, `read_from`, `read_line`, `close_input` and `wait`; `read_file`, `write_file`, `append_file`, `exists`, `is_file`, `is_dir`, `make_dirs`, `list_dir`, `remove_path`, `current_dir`; `get_env`, `has_env`, `set_env`; `clock`, `today`, `sleep`; and the paths `join`, `dir_name`, `base_name`, `extension`. A folder of parts, each importable alone, as `::os/process` |
+| `::vendor/arduino` | The Arduino core: pins, time, the serial port and the board's constants; see [The Arduino toolchain](#the-arduino-toolchain) |
+
+`::math`, `::random`, `::text` and `::json` work on every target, and `::os` on the
+computer the program runs on. Examples that use
+them are in `examples/libraries`, and `examples/arduino/dice.wind` uses
+`::random` and `::math` on a board.
 
 ## Tooling
 
@@ -51,12 +77,17 @@ build would.
   `file:line:col: severity: message` and exits with status 1 if there are
   errors. Warnings do not fail a check or a build. They cover an unused
   constant, variable, function, label or import, and unreachable code.
-  Problems in an imported file are listed under that file's own name.
+  Problems in an imported file are listed under that file's own name. A
+  program for a board, by its `#target` or `-t arduino`, is checked with
+  the board's sizes and rules, in the editor too.
 - `wind lsp` provides diagnostics as you type, hover, go-to-definition and
   completion for constants, variables, functions, parameters, labels and
   modules. Go-to-definition follows a name into the file that exports it, and
   typing `module.` lists what the module exports. Imported files are read
   from disk, so save a file for the files that import it to see the change.
+- The paths of imports are completed too, and so is the board after
+  `#board`, from the boards of the cores `arduino-cli` has installed. A
+  board connected to the computer comes first, with the port it is on.
 
 Code is reported as unreachable only where that is certain: after a
 `return`, `break`, `continue` or `goto`, after a loop that never ends, and in
@@ -100,8 +131,21 @@ wind program.wind one two     # argc is 3
 
 - A statement ends at a newline or a `;`. Semicolons are optional.
 - A newline does not end a statement directly after `=`, `<<`, `>>`, `,` or a
-  binary operator, inside parentheses, or before a line that starts with the
-  `?` or `:` of a conditional.
+  binary operator, or inside parentheses. A line that starts with a binary
+  operator, `.`, `->`, the `?` or `:` of a conditional, or the `<<` or `>>`
+  of a `cout` or `cin`, carries on the line before:
+
+  ```wind
+  int total = price
+      + tax
+      - discount
+  cout << "total: " << total
+       << "\n"
+  ```
+
+  `*` and `&` can also start a statement (`*p = 7`), so a line that starts
+  with one of them carries on the line before only when a space follows it,
+  as in `* scale`.
 - `// ...` is a comment to the end of the line; `/* ... */` is a comment that
   may span lines. Block comments do not nest.
 - Names are `[A-Za-z_][A-Za-z0-9_]*`. Keywords and type names are reserved.
@@ -118,7 +162,8 @@ wind program.wind one two     # argc is 3
 | Pointers | `T *` for any type `T`; see [Pointers](#pointers) |
 
 - `int`, `uint` and `uintptr` are pointer-sized. `float` is 64-bit.
-- `byte` is another name for `u8`.
+- `byte` is another name for `u8`, and `f64` and C's `double` are other
+  names for `float`: they are the same type, so they mix freely.
 - A `string` is a contiguous array of bytes with an explicit length (a
   pointer and a length, as in Odin). It is not NUL-terminated, so it may
   contain any byte, including `\0`.
@@ -153,6 +198,10 @@ char letter = char(65)
 Conversions work between any two numeric types and between `char` and
 integers. C's spelling works too: `(i8)wide` is `i8(wide)`. As in C it applies
 to the one value after it, so `(float)a / b` converts `a` and then divides.
+A float converted to an integer type drops its fraction, and one that does
+not fit that type, or is not a number, stops the program with a message
+naming the line, where C leaves the result undefined (unless index checks
+are left out, as described under [Arrays](#arrays)).
 
 ### Literals
 
@@ -172,8 +221,16 @@ literal suffixes (`1.5f`, `10UL`, `2.0L`) are accepted and ignored.
 `sizeof(type)` and `sizeof expr` give a size in bytes and behave like an
 integer literal, so the result fits whatever integer type it is used as.
 
-Escapes in strings and characters: `\n` `\t` `\r` `\0` `\\` `\"` `\'`.
-A string literal cannot span lines.
+Escapes in strings and characters are C's: `\n` `\t` `\r` `\0` `\\` `\"`
+`\'` `\a` `\b` `\f` `\v` `\?`, a byte in hexadecimal as `\x41`, and one in
+octal as `\101`. A string literal cannot span lines, but string literals
+written one after another are one string, as in C, so a long one can be
+split across lines:
+
+```wind
+string usage = "usage: wind run FILE\n"
+               "       wind check FILE\n"
+```
 
 ### Variables and constants
 
@@ -184,14 +241,32 @@ const f64 Pi = 3.14  // constant
 count = count + 1
 count += 2           // also -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
 count++              // also count--, ++count, --count
+int rows = 3, columns = rows * 2, cells[6]   // several of one type
 ```
 
 - `++` and `--` are statements, not expressions: they cannot be used inside a
   larger expression.
+- Declarations separated by `,` share their type, and each takes its own
+  value, as in C. They declare one name after another, so a later one can
+  use an earlier one. A pointer is declared one at a time: in C,
+  `int *p, q` makes `q` an `int`, so Wind rejects it.
 - A variable without an initializer starts at its type's zero value: `0`,
   `false` or `""`.
 - A constant's value must be known at compile time: literals, other
   constants, and operators over them. It cannot be assigned to.
+- `const { ... }` declares several constants without repeating `const`.
+  Each line in it is a typed declaration with a value, and the names are
+  declared where the block is, not inside a scope of their own. It can go
+  wherever a constant can, and `export const { ... }` exports them all:
+
+  ```wind
+  const {
+      int ROWS = 9
+      int COLUMNS = 9
+      int CELLS = ROWS * COLUMNS
+      string TITLE = "sudoku"
+  }
+  ```
 - Names must be declared before use. A name may shadow one from an enclosing
   block, but cannot be declared twice in the same block.
 
@@ -212,12 +287,21 @@ cout << len(scores) << "\n"   // 5
 
 - A length must be known at compile time: a literal, a constant, or
   arithmetic over them.
-- Elements are indexed from zero. A negative index counts back from the
-  end, as in Python: `scores[-1]` is the last element and `scores[-2]` the
-  one before it.
+- Elements are indexed from zero. A negative index known at compile time
+  counts back from the end, as in Python: `scores[-1]` is the last element
+  and `scores[-2]` the one before it. The compiler turns it into the
+  position it names, so it costs nothing when the program runs. It needs a
+  length known at compile time too: a fixed array, a string literal or a
+  string constant. For an array parameter or a string variable, write
+  `values[len(values) - 1]`.
+- An index worked out while the program runs is never counted back from
+  the end: a negative one is out of range, so a mistake such as
+  `grid[cell - width]` on the top row is caught rather than reading the
+  bottom row.
 - Every index is checked: one that is out of range, in either direction,
   stops the program with a message naming the line, the index and the
-  length. A literal index that is out of range is a compile-time error.
+  length. An index known at compile time that is out of range is a
+  compile-time error.
   Building with `--no-bounds-check` leaves the run-time test out; an index
   that is out of range is then undefined, as in C.
 - `#no_bounds_check` and `#bounds_check` set this for one piece of code,
@@ -230,11 +314,26 @@ cout << len(scores) << "\n"   // 5
   `const int count = len(pets)`.
 - A string can be indexed the same way: `word[0]` is a `char`. Strings cannot
   be changed, so a character cannot be assigned.
+- `word[from:to]` is the part of a string from position `from` up to, not
+  including, `to`; either can be left out, for the start or the end:
+  `"windmill"[4:]` is `"mill"`. It is a view of the same characters, so it
+  costs nothing to make. Its ends are checked, like an index: they must be
+  in order and within the string.
 - `const int Primes[3] = {2, 3, 5}` declares an array whose elements cannot
   be changed.
+- `sort(scores)` puts an array of numbers, characters, enums or strings in
+  order, and `sort(rows, .field)` an array of structs by one field. Elements
+  that compare equal keep the order they were in. `reverse(scores)` puts an
+  array in the opposite order, so a sort and a reverse give the largest
+  first.
 - `cout << scores` prints the whole array as `[12, 57, 3, 0, 13]`. Inside an
   array, strings and chars are quoted and escaped (`["a", "b"]`, `['x']`) so
   that the elements can be told apart.
+- An array declared inside a function lives on the stack, which is small:
+  usually 8 MB on a computer and a few kilobytes on a board. One over 1 MB
+  (1 KB on a board) gets a warning, since running out of stack ends the
+  program with no message. Declare a large array at the top level, outside
+  any function, where it can be as large as memory allows.
 
 A function takes an array with a parameter written `T name[]`. It receives a
 view of the caller's array, not a copy, together with its length, so it works
@@ -247,6 +346,26 @@ void clear(int values[]) {
     }
 }
 ```
+
+`const T name[]` is a read-only view: the function can read the elements
+but not change them, through assignment, `&`, `sort`, `reverse` or `cin`,
+and can pass the array on only to another `const` parameter. A constant
+array can be given only to such a parameter:
+
+```wind
+const int PRIMES[4] = {2, 3, 5, 7}
+
+int total(const int values[]) {
+    int sum = 0
+    for (int v in values) sum += v
+    return sum
+}
+
+cout << total(PRIMES)   // 17
+```
+
+`const` on any other parameter changes nothing, since a parameter cannot be
+assigned anyway, so C's `int f(const int n)` reads as it does in C.
 
 **Bounds checks in one place**
 
@@ -272,16 +391,126 @@ int sum(int values[]) {           // the whole function
 - The directive can sit on the line above what it covers. The innermost
   one wins. It covers the code written there, not the functions that code
   calls.
-- A negative index counts back from the end either way, and a literal index
-  that is out of range is still a compile-time error.
+- An index known at compile time is settled either way: a negative one
+  counts back from the end, and one out of range is still a compile-time
+  error.
 - `NULL` checks on pointers are not affected.
 
-An array is not a value in itself. Its name can be indexed, measured,
-printed, and passed to an array parameter, but one array cannot be assigned
-to another, compared with `==`, or returned from a function. Used any other
-way, the name is a pointer to the array's first element; see
-[Pointers](#pointers). Arrays have one dimension, and their elements cannot
-themselves be arrays.
+An array of a fixed length is a value, as a struct is: `b = a` copies the
+elements of `a` into `b`, an array of the same type, and so does
+`int b[3] = a`. It is indexed, measured, printed, and passed to an array
+parameter, but not compared with `==` or returned from a function. Used any
+other way, an array is a pointer to its first element; see
+[Pointers](#pointers).
+
+**Arrays of arrays**
+
+The elements of an array can themselves be arrays, of any kind, and arrays
+can be fields of structs and values of maps. Suffixes read as in C, the
+first one outermost:
+
+```wind
+int grid[3][4]                  // 3 rows, each an array of 4 ints
+grid[2][1] = 7
+cout << len(grid) << len(grid[0]) << "\n"   // 34
+const int UNIT[2][2] = {{1, 0}, {0, 1}}
+
+struct Board { int cells[3][3]; string moves[..] }
+
+int rows[..][..]                // a growable array of growable arrays
+append(rows, {1, 2, 3})
+append(rows[0], 4)              // grows the first row
+int points[..][2]               // a growable array of pairs
+append(points, {3, 4})
+int groups[string][..]          // a map whose values are growable arrays
+append(groups["even"], 2, 4)    // puts "even" in, empty, and appends
+```
+
+- Only the first `[]` may leave its length out: `int g[][2] = {{1, 2}, {3,
+  4}}` has 2 rows. A parameter `int g[][4]` takes any array of rows of 4,
+  fixed or growable.
+- Something that holds a growable array or a map is not copied, since the
+  copy would share its elements: a growable array is appended or stored as
+  `{ ... }`, `clone(...)` or `pop(...)`, all of which make one of its own.
+  `rows[1] = clone(rows[0])` replaces the elements of `rows[1]`.
+- An inner array is reached through the outer one each time it is used, so
+  nothing can point into an array whose elements move: `&rows[0][1]` is an
+  error, as is `&points[0]`. Elements of fixed arrays of fixed arrays can be
+  pointed to.
+- Changing a map's value, as `append(groups["odd"], 1)` does, puts its key
+  in if it is missing; reading one that is missing, as in
+  `len(groups["none"])`, gives an empty value and puts nothing in.
+- Deleting an array of growable arrays frees only its own elements: delete
+  the inner ones first if they should be freed too.
+
+**Growable arrays**
+
+An array declared with `[..]` has no fixed length: it starts empty, or with
+the elements given, and grows as values are appended. Its elements live on
+the heap.
+
+```wind
+int scores[..]                  // empty; nothing allocated yet
+string names[..] = {"ada", "bo"}
+int copy[..] = clone(scores)    // a copy of any array's elements
+
+append(scores, 12, 47)          // adds values at the end
+int last = pop(scores)          // removes the last element and gives it
+reserve(scores, 1000)           // makes room ahead, for speed
+clear(scores)                   // removes every element, keeping the room
+delete(scores)                  // frees the elements; scores is empty again
+defer delete(names)             // frees them when the block is left
+```
+
+- It is indexed, measured with `len`, printed, and passed to a `T name[]`
+  parameter like any other array, with every index checked against how many
+  elements it holds now.
+- A parameter declared `T name[..]` is given the caller's own growable
+  array, which the function can grow: `void add(int into[..]) { append(into, 1) }`.
+- Its elements move when it grows, so none can be pointed to: `&scores[0]`
+  is an error, and so is using its name as a pointer. Keep an index instead.
+- One growable array is not assigned to another; `copy = clone(scores)`
+  replaces `copy`'s elements with a copy of `scores`'s. A `char` array can
+  also be made from a string's bytes: `char text[..] = clone("hi")`.
+- `delete` returns the memory, and leaves the array empty and usable again;
+  deleting twice does nothing more. Memory never deleted is returned when
+  the program ends, which is fine for a program that runs and exits.
+- `pop` on an empty array stops the program with a message, as an index out
+  of range does, unless bounds checks are off. Running out of memory always
+  stops it with a message.
+
+**Maps**
+
+`V name[K]` is a map from keys of type `K` to values of type `V`. It starts
+empty, or with the entries given, and grows as keys are put in. Its entries
+stay in the order their keys were first put, so going through a map, or
+printing it, gives the same order every time.
+
+```wind
+int ages[string] = {"ada": 36, "bo": 7}
+ages["cy"] = 51                 // puts a key in, or changes its value
+ages["bo"]++                    // a key that is not there starts at zero
+cout << ages["dee"]             // 0: reading a missing key gives zero
+if (has(ages, "ada")) remove(ages, "ada")
+cout << len(ages) << " " << ages << "\n"   // 2 {"bo": 8, "cy": 51}
+clear(ages)                     // removes every entry, keeping the room
+delete(ages)                    // frees it; the map is empty again
+```
+
+- Keys can be integers, `char`, `bool`, enums, pointers and strings. A
+  string key is copied into the map, so the map never holds text that is
+  gone.
+- Values can be of any type, structs and arrays included:
+  `stock["tea"].count -= 1` changes one field of the value stored under
+  `"tea"`.
+- A parameter declared `V name[K]` is given the caller's own map, which the
+  function can change.
+- A value in a map moves as the map grows, so none can be pointed to, and a
+  map is not assigned to another or used as a value. A map cannot be read
+  into with `cin`; read into a variable, then store it.
+
+How this was chosen, and what is to come, is in
+[docs/design/memory.md](docs/design/memory.md).
 
 ### Operators
 
@@ -291,7 +520,7 @@ themselves be arrays.
 | `%` | integers | same type |
 | unary `-` | numbers | same type |
 | `==` `!=` | any two values of one type | `bool` |
-| `<` `<=` `>` `>=` | numbers, `char` | `bool` |
+| `<` `<=` `>` `>=` | numbers, `char`, strings (byte by byte) | `bool` |
 | `&&` `\|\|` `!` | `bool`, or a pointer (true unless `NULL`) | `bool` |
 | `&` `\|` `^` (and, or, xor) | integers | same type |
 | unary `~` (not) | integers | same type |
@@ -302,7 +531,17 @@ themselves be arrays.
 
 From tightest to loosest: unary and casts, `* / %`, `+ -`, `<< >>`, `&`, `^`,
 `|`, comparisons, `&&`, `||`, `?:`. Integer arithmetic wraps at the width of
-its type.
+its type. Integer `/` and `%` by zero stop the program with a message naming
+the line; dividing the most negative value by `-1` wraps to itself, with a
+remainder of 0, where C would stop the program with a signal. The test is
+left out for a divisor that is a literal other than zero, and, like the
+tests on float conversions, wherever index checks are left out.
+
+Operands are evaluated from left to right, and so are the arguments of a
+call and the values between braces: `show(next(), next())` passes the first
+number drawn, then the second, whatever C compiler builds the program. An
+assignment finds its place before it evaluates its value, so
+`slots[i] = advance()` stores into the element `i` named before the call.
 
 `c ? a : b` is `a` when `c` is true and `b` otherwise; only the chosen one is
 evaluated. Conditionals chain to the right, so `a ? x : b ? y : z` reads as a
@@ -364,13 +603,73 @@ for (int i = 0; i < count; i++) {
   assignment or a call, and `last` an assignment or a call. Any of the three
   can be left out; without a condition the loop runs until something leaves
   it. The parentheses are optional. A variable declared in `first` belongs to
-  the loop.
-- `break` leaves the innermost loop. `continue` skips to its next pass: to
-  the condition of a `while` or `do`, or to the last clause of a `for`.
+  the loop. `first` may declare several variables of one type, and `last`
+  may be several assignments or calls, separated by `,`:
+  `for (int i = 0, j = n - 1; i < j; i++, j--)`.
+- `for (T x in a)` goes through an array, a string or a map: one name takes
+  each element, character or key; two names take each index and element,
+  or each key and value.
+
+  ```wind
+  for (int score in scores) total += score
+  for (int i, string name in names) cout << i << ": " << name << "\n"
+  for (string name, int age in ages) cout << name << " is " << age << "\n"
+  ```
+
+  The types are written out, as everywhere in Wind. A loop variable is a
+  copy and cannot be assigned. The length is read on each pass, so a body
+  that appends to the array also goes through what it appended; keys put
+  into a map during the loop may or may not be reached.
+- `break` leaves the innermost loop or `switch`. `continue` skips to the
+  next pass of the innermost loop: to the condition of a `while` or `do`, or
+  to the last clause of a `for`.
+- `switch` chooses a case by an integer, a `char`, an enum or a string:
+
+  ```wind
+  switch (command) {
+  case "add", "plus":
+      total += value
+      break
+  case "clear":
+      total = 0
+      break
+  case "quit":
+      return total
+  default:
+      cerr << "unknown command '" << command << "'\n"
+  }
+  ```
+
+  Each case's values must be constants of the switch's type, and no value
+  may appear twice. Labels written one after another share a case, as in C,
+  and so do values listed with `,`. A case with statements must end with
+  something that leaves it, `break`, `continue`, `return` and the like, or
+  with `fallthrough`, which runs on into the next case; running on without
+  saying so is an error, since in C it is a common mistake. The last case
+  needs neither. Every case is a block of its own, so its declarations end
+  with it. As in C, the parentheses are optional and `default` can sit
+  anywhere.
 - `name:` declares a label and `goto name` jumps to it. Labels work as in C:
   a label is known throughout the function it is in (or throughout the
   top-level code of a script), so a `goto` can jump forwards or backwards,
   and into or out of blocks.
+- `defer` runs a statement, or a block, when the block it is in is left: at
+  its end, or by a `return`, `break` or `continue`. Several run in reverse
+  order, the latest first, so cleanup sits next to what it cleans up:
+
+  ```wind
+  int read_all() {
+      int values[..]
+      defer delete(values)
+      ...
+      return len(values)    // worked out before the deferred delete runs
+  }
+  ```
+
+  A `defer` in a loop's body runs at the end of each pass. What is deferred
+  cannot itself leave with `return`, `goto`, or a `break` or `continue`
+  meant for a loop outside it, and a function that uses `defer` cannot use
+  `goto`, which could jump past it.
 
 ### Functions
 
@@ -393,6 +692,48 @@ report("square", square(7))
 - Parameters cannot be assigned to (the elements of an array parameter can).
 - A function sees every other function, and the constants and variables
   declared directly at the top level above it.
+- A variable declared `static` in a function is one variable for the whole
+  program, which keeps its value from one call to the next, as in C. It
+  starts out once, before the program runs, so its value must be known at
+  compile time; a static growable array or map starts empty. At the top
+  level, `static` changes nothing: what a file does not export is its own
+  already.
+
+  ```wind
+  int next_id() {
+      static int count = 0
+      count++
+      return count
+  }
+  ```
+
+**Pointers to functions**
+
+A function's name used as a value, with or without `&`, is a pointer to the
+function, which can be kept, passed and called. Its type is written as in C,
+and a `typedef` gives it a name:
+
+```wind
+typedef int (*BinOp)(int, int)
+
+int add(int a, int b) { return a + b }
+int apply(int (*op)(int, int), int a, int b) { return op(a, b) }
+
+BinOp op = add
+cout << op(2, 3) << apply(add, 4, 5) << "\n"
+struct Button { string label; void (*on_click)(string) }
+BinOp table[string] = {"+": add}
+cout << table["+"](1, 2) << "\n"
+```
+
+- A pointer to a function can be held in a variable, a field, an array or
+  a map, compared with `==`, tested as a condition, and set to `NULL`. It
+  is called with `f(x)` or, as in C, `(*f)(x)`; a parameter's name in its
+  type may be left out.
+- Its type must match the function's exactly: what it returns and each
+  parameter, arrays and maps included.
+- Calling through `NULL` stops the program with a message naming the line,
+  unless bounds checks are off. A pointer to a function cannot be printed.
 
 ### Structs, enums and type names
 
@@ -418,9 +759,44 @@ cout << moved << " " << c << "\n"   // Point{x = 14, y = 5} GREEN
 **Structs**
 
 - Fields are separated by `;`, `,` or a newline. A field can be of any type,
-  including another struct, but not an array.
+  including another struct, an array of a fixed length (`int cells[9]`), a
+  growable array (`string build[..]`) or a map (`f64 times[string]`).
 - A struct is a value, as in C: assigning it, passing it or returning it
   copies it. A variable declared without a value has every field zero.
+- A struct that holds a growable array or a map, itself or in a struct field,
+  cannot be copied into a variable, since the copy would share its
+  elements. It is made with `{ ... }`, where its arrays and maps start empty,
+  or taken out of a growable array with `pop`, and it cannot be returned,
+  or assigned, appended or stored in a map from a variable. Its arrays and maps
+  work like any others.
+- Passed to a function, gone through with `for ... in`, or given a name of
+  its own, as in `Language lang = languages[i]`, it is a copy that shares
+  those arrays and maps with the original, and is read-only all the way
+  down: nothing in it can be changed, grown or pointed to. It is read
+  without copying any elements. A function that changes one takes the array
+  it is in, and its index. While the copy is in use, the original must not
+  change, and the array it lives in must not grow, which would move it:
+
+  ```wind
+  struct Language {
+      string name
+      string build[..]
+      f64 times[string]
+  }
+
+  Language languages[..]
+  append(languages, {"wind"})
+  append(languages[0].build, "wind", "build")
+  languages[0].times["sort"] = 0.051
+  cout << languages[0] << "\n"
+  // Language{name = "wind", build = ["wind", "build"], times = {"sort": 0.051}}
+
+  f64 total(Language language) {      // reads it; cannot change it
+      f64 sum = 0
+      for (string name, f64 t in language.times) sum += t
+      return sum
+  }
+  ```
 - `{ ... }` is a struct value. It takes its type from where it is used: a
   declaration, an assignment, an argument, a `return`. Values are given in
   field order, or by name as `.field = value`; fields left out are zero.
@@ -577,21 +953,45 @@ int clamp(int n) { return n > 1000 ? 1000 : n }   // private to this file
 
 ```wind
 // main.wind
-import "shapes.wind"
-import "lib/my-text.wind" as text
+import shapes
+import lib/my-text as text
+import ::vendor/arduino
 
 cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
 ```
 
-- A path is relative to the file that contains the import.
-- The module's name is the file's name without `.wind`; `as name` gives it
-  another. A file whose name is not a valid name, such as `my-text.wind`,
-  needs `as`.
+- A path is relative to the file that contains the import. One that starts
+  with `::` is in the [libraries](#libraries) directory instead.
+- `.wind` can be left off. A path is written as it is, up to the first
+  space, or in quotes: `import "lib/my text.wind"`.
+- A path that names a folder imports every `.wind` file in it, and in the
+  folders below it, as one module. The files are equal parts of it: what
+  any of them exports, the module exports, so `import ::vendor/arduino`
+  gives both `arduino.pinMode` from `core.wind` and `arduino.waitForSerial`
+  from `serial.wind`. Two parts cannot export the same name. A path to one
+  of the files, or to a folder below, imports just that:
+  `import ::vendor/arduino/serial`. A path is a file before it is a folder;
+  one that ends in `/` is always a folder.
+- A file's module is named after the file, without `.wind`, and a folder's
+  after the folder, unless its files' `#module` names it otherwise; `as
+  name` gives either another name. A path whose last part is not a valid
+  name, such as `my-text.wind`, needs `as`.
 - What a module exports is used as `module.name`. Names never leak into the
   importing file, so two modules can export the same name.
 - Functions, constants and types can be exported. Everything else in a file
   is private to it, including its top-level variables, which its functions can
   use and which are initialized before the program starts.
+- `export { ... }` exports every declaration in the block, extern blocks
+  and `const` blocks included, so a file can gather what it offers in one
+  place:
+
+  ```wind
+  export {
+      const int SIDES = 4
+      struct Box { int w; int h }
+      int area(Box b) { return b.w * b.h }
+  }
+  ```
 - A file is loaded once, however many files import it, so its variables
   exist once. Imports cannot form a cycle.
 - Imports and `export` go at the top level. An import can be used anywhere
@@ -602,12 +1002,276 @@ cout << shapes.area(3, 4) << " " << shapes.SIDES << "\n"
 - The program is compiled as a whole: `wind build main.wind` follows the
   imports and produces one executable.
 
+### Settings
+
+A file can say what it is compiled for at its very top, above everything
+else:
+
+```wind
+#target arduino
+#board arduino:avr:uno
+#module blinker
+```
+
+- `#target` names the target: `c`, the machine `wind` runs on, or
+  `arduino`; see [The Arduino toolchain](#the-arduino-toolchain). Without
+  it, a program is for `c`.
+- `#board` names the board, for a target whose programs run on one, as
+  `arduino-cli` spells it. The name runs up to the first space; it may
+  also be written in quotes.
+- `run`, `build`, `check`, `emit` and the language server all read them;
+  `-t` and `--fqbn` on the command line override them.
+- Only the program's own file chooses. A file it imports can state the
+  target it is written for, as `::vendor/arduino` does, and importing it
+  into a program for another target is then an error.
+- `#module name` names the module that a folder makes, for its imports,
+  when that should not be the folder's name. Any of the folder's files can
+  say it, and those that do must agree. It does not rename a file imported
+  on its own.
+
+### External functions and constants
+
+`extern` declares a function or a constant that C defines, so that Wind can
+use the C library and the libraries of a platform:
+
+```wind
+extern "stdlib.h" i32 abs(i32 n)
+extern "limits.h" const i32 INT_MAX
+
+extern "string.h" {
+    uint strlen(char *text)
+    char *strchr(char *text, i32 c)
+    i32 strcmp(char *a, char *b)
+}
+
+extern i32 putchar(i32 c)
+
+cout << abs(-5) << " " << strlen("wind") << " " << INT_MAX << "\n"
+putchar(i32('!'))
+```
+
+- The string after `extern` is the C header that declares the function or
+  constant; the generated C includes it. Without one, the generated C
+  declares the function itself from the Wind signature, which must then
+  agree with any declaration C already has.
+- `extern "header" { ... }` declares several at once: everything in the
+  block shares its header. The declarations are written one to a line, or
+  separated by `;`.
+- `link "name"` after the header names a C library that the functions are
+  in, as `link "m"` for C's maths library: `extern "math.h" link "m" { ...
+  }`. A program is linked with it (`-lm`) only if it uses one of them.
+- An external function has no body and an external constant no value: both
+  are C's. They keep their own names in the generated C. An external
+  constant can be used wherever a value can, but not where Wind needs a
+  number at compile time, such as an array's length.
+- Only types that C has a matching form for can cross: numbers, `bool`,
+  `char`, enums and pointers. A `string` cannot; C's strings are `char *`
+  (see `cstring()`). An array cannot either; pass a pointer to its elements.
+- The Wind type must match C's: `int` is pointer-sized, so C's `int` is
+  `i32` on a 64-bit machine. Pointers are passed as they are, whatever they
+  point to, so `char *` can be given to a C function that takes `const
+  char *`.
+- `export extern` makes the declaration part of what a module offers, and
+  `export extern "header" { ... }` exports the whole block, which is how
+  `::vendor/arduino` is written. `export` goes only before the block, not
+  on the lines inside it.
+
+**C that a library carries**
+
+A library can bring its own C. When the header an `extern` names is a file
+beside the `.wind` file that declares it, the library carries it: the
+program built from the library holds the header's text, after Wind's own
+types, in place of an `#include`, so it needs no include path and works the
+same in a sketch for a board. Such a header is written for Wind, and its
+functions take and give Wind's values as they are:
+
+| Wind | C, in a carried header |
+| --- | --- |
+| `string` | `wind_string`: `{ const char *data; size_t len; }` |
+| `int`, `bool`, `char`, `f64`… | `wind_int`, `wind_bool`, `wind_char`, `wind_f64`… |
+| `T values[]` | `wind_slice_T`: `{ T *data; size_t len; }` |
+| `T into[..]` | `wind_list_T *`: `{ T *data; size_t len; size_t cap; }`, to append to |
+
+`#define` lines at the very top of the header come first in the generated
+C, before any system header, which is where feature macros such as
+`_POSIX_C_SOURCE` must be. An editor reading the header on its own finds
+these types in `libs/wind.h`, which a header can include when `WIND_PROGRAM`
+is not defined. `::os` is written this way.
+
+### The Arduino toolchain
+
+The `arduino` target is for boards programmed with the Arduino toolchain:
+any board that has an Arduino core, which `arduino-cli` and the Arduino IDE
+build for. That takes in Arduino's own boards and many others, such as the
+Raspberry Pi Pico. `wind run` builds a program, compiles and uploads it
+with `arduino-cli`, and shows what it prints; `wind build` writes it as a
+sketch for building yourself. The file says what it is for at its top:
+
+```wind
+// blink.wind
+#target arduino
+#board rp2040:rp2040:rpipico2w
+
+import ::vendor/arduino
+
+int blinks = 0
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+
+void loop() {
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.HIGH)
+    arduino.delay(500)
+    arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
+    arduino.delay(500)
+    blinks++
+    cout << "blinks: " << blinks << "\n"
+}
+```
+
+```sh
+wind run blink.wind                    # compile, upload, show the output until Ctrl-C
+wind run --fqbn arduino:avr:uno blink.wind          # on another board
+wind run -p /dev/ttyACM1 blink.wind    # on the board at that port
+
+wind build blink.wind                  # writes blink/blink.ino and blink/wind_program.c
+wind build blink.wind -o sketches/blinker
+wind check blink.wind                  # checked with the board's sizes and rules
+wind emit blink.wind                   # prints the C the sketch holds
+```
+
+- **Settings.** `#target arduino` makes `run`, `build`, `check`, `emit`
+  and the language server treat the file as a program for a board, and
+  `#board` names the board, as `arduino-cli` spells it. They go at the very
+  top of the program's file. On the command line, `-t` and `--fqbn`
+  override them; without the settings a file is for the `c` target, and
+  `-t arduino` makes it one for a board.
+- **Running.** `wind run` needs `arduino-cli`, with the core for the board
+  installed (`arduino-cli core install arduino:avr`). It looks for the
+  board among the connected ones, by its name; `-p` (or `--port`) gives
+  the port instead, which is needed when it is not recognized (a board in
+  its bootloader, for one) or when two of them are connected. `arduino-cli
+  board list` shows the names and ports. The sketch is built in a
+  temporary folder, which is removed when the run ends. The output is
+  shown from the moment the port can be opened after the upload; see
+  "Output at the start" below.
+
+- **Start and repeat.** The top level, or `main` in a file laid out as a C
+  program, runs once when the board starts, as Arduino's `setup()`. A
+  function `void loop()` is then called over and over. Without one, the
+  board idles once the start has run.
+- **Serial port.** `cout`, `cin` and error messages all use the board's
+  serial port at 9600 baud. `cin` waits for input to arrive.
+- **Errors.** An index out of range, or a `NULL` pointer that is used,
+  prints its message and stops the program; the board keeps running so the
+  message is sent, and starts again when it is reset.
+- **The library.** `import ::vendor/arduino` brings in the pin, analog,
+  time, pulse and shift functions and the board's constants (`HIGH`,
+  `OUTPUT`, `LED_BUILTIN`, `A0` to `A5` and so on), all taken from the
+  board's own Arduino core, and the serial port: `serialConnected()`,
+  `serialAvailable()` and `waitForSerial(ms)`.
+- **Output at the start.** On a board whose serial port is its own USB
+  connection, such as the Pico, what is printed before a computer opens the
+  port is lost, and `wind run` opens it some seconds after the upload. A
+  program that should not lose its first lines starts with
+  `arduino.waitForSerial(10000)`, which waits for the port to be opened, or
+  ten seconds at most so that the board also starts on its own. Where the
+  port goes through a separate USB chip, as on an Uno, it returns at once.
+- **Sizes.** Checking assumes an AVR board (the Uno, Nano or Mega): `int`,
+  `uint` and pointers are 16 bits, so `int x = 40000` is an error; use
+  `i32`. A `double`, and so `float` and `f64`, is 32 bits there. `i128` and
+  `u128` are not available. The sketch itself builds for any board; on a
+  32-bit board `int` is 32 bits, but `sizeof` still gives the AVR sizes.
+- **Not yet.** Arduino's C++-only libraries (`Wire`, `Servo`, `SPI`) and
+  interrupt handlers have no declarations yet, and string literals take up
+  RAM on AVR boards rather than staying in flash.
+
+The sketch has two files: `wind_program.c`, the program as C, and a small
+fixed `.ino` file that starts it from `setup()` and `loop()` and lends it the
+serial port. A sketch folder must have the name of its `.ino` file, so the
+folder's name is the sketch's.
+
 ### Output
 
 `cout << a << b << ...` prints each value in turn. Any type can be printed,
 and so can a whole array:
 integers in decimal, floats with the fewest digits that read back as the same
 value, `bool` as `true` or `false`.
+
+`cerr << ...` writes the same way to the error output, after anything
+`cout` has written so far. `exit(status)` ends the program at once, from
+anywhere, with that exit status; deferred statements do not run.
+`panic(values...)` writes its values as `cerr` would, after `wind: line N: `,
+and stops the program with status 1. `assert(condition)` stops it the same
+way when the condition is false, with the condition as it is written:
+`wind: line 12: assertion failed: count > 0`. Neither is affected by
+`--no-bounds-check`.
+
+Three functions give a printed value a width or a number of digits. They can
+be used wherever a value is written as text: in `cout`, in `cerr`, and when
+appending to an array of `char`.
+
+```wind
+cout << left("name", 10) << right(42, 6) << "\n"   // "name          42"
+cout << fixed(3.14159, 2) << "\n"                 // "3.14"
+cout << right(fixed(t, 3), 8) << "\n"             // a fixed-point column
+```
+
+- `left(v, width)` writes `v` followed by spaces, and `right(v, width)`
+  spaces and then `v`, to make `width` characters. A wider value is written
+  whole. Characters are counted, not bytes, so `"█"` takes one column.
+- `fixed(x, digits)` writes a number with that many digits after the point,
+  rounded.
+
+**Joining strings**
+
+`+` with a string on either side joins the two, the other side written as
+`cout` would write it, so numbers, `bool`s and `char`s join too:
+
+```wind
+string message = "took " + fixed(t, 3) + " s for " + runs + " runs"
+```
+
+`left`, `right` and `fixed` work in a join as they do in `cout`, and
+`s += part` joins `part` to the end of `s`.
+
+The joined text lives in scratch memory, which is kept until the program
+ends. That suits a program that runs and exits; in one that joins strings
+over and over, `#temp { ... }` frees everything joined inside it as the
+block is left, by its end or by a `return`, `break` or `continue`:
+
+```wind
+for (string name in names) {
+    #temp {
+        string path = "build/" + name + ".wind"
+        build(path)
+    }
+}
+```
+
+Text joined inside a `#temp` block must not be kept past it: store a copy
+instead, in an array of `char`. A map copies its keys, so joined text can
+always be a map's key.
+
+**Building text**
+
+An array of `char` that grows is where text is built. Appending any value
+to one writes it as `cout` would, and `string(text)` is a view of what it
+holds:
+
+```wind
+char line[..]
+append(line, "took ", fixed(t, 3), " s for ", runs, " runs")
+cout << string(line) << "\n"
+
+char path[..] = clone("build/")
+append(path, name, ".wind")
+run(string(path))
+```
+
+The values are worked out before any of them is written, so a value that
+prints something while it is worked out does not print into the text. A view
+made with `string(text)` shows the characters as they are when it is made,
+and is not valid after the array grows or is deleted; make the view again
+after changing the text.
 
 ### Input
 
@@ -655,20 +1319,18 @@ cout << name << " is " << age << "\n"
 
 ### Current limits
 
-- A struct field cannot be an array, and a struct or an enum cannot be read
-  with `cin`; read into the fields.
-- There is no `void *`, no pointer to a function, and no way to allocate
-  memory while the program runs: a pointer points to a variable, an element
-  or a field. `cin` reads into a variable, not through a pointer.
+- A struct or an enum cannot be read with `cin`; read into the fields. `cin`
+  reads into one element of a one-dimensional array, as in `cin >> xs[i]`,
+  not into an array of arrays.
+- There is no `void *`, and memory is
+  allocated only by growable arrays and maps: a pointer points to a
+  variable, an element or a field. `cin` reads into a variable, not through a pointer.
 - A constant cannot take its value from a field of another constant.
 - A message for an index that is out of range gives the line but not the
   file, which matters once a program has several files.
-- A module cannot export a variable; export a function that returns it.
-- A constant array cannot be passed to a function, because nothing yet marks
-  a parameter as read-only.
+- A module cannot export a variable; make it a constant if its value never
+  changes, or export a function that returns it.
 - An index must be an integer of at most 64 bits.
-- Integer division by zero and converting an out-of-range float to an integer
-  are not checked.
 - `f128` values are printed and read with the precision of the C
   `long double`.
 - A `string` read with `cin`, and a `char *` made by `cstring`, keep their
@@ -697,11 +1359,10 @@ twelve kernels, each of which leans on one thing:
 | `list` | pointer chasing: a shuffled linked list of a million nodes |
 
 ```sh
-python3 bench/run.py                       # everything (a few minutes)
-python3 bench/run.py --skip python --skip lua
-python3 bench/run.py --only wind --only c sort hash
-python3 bench/run.py --seconds             # times in place of ratios
-python3 bench/run.py --markdown            # the tables below
+wind run bench/run.wind                       # everything (a few minutes); writes bench/RESULTS.md
+wind run bench/run.wind --skip python --skip lua
+wind run bench/run.wind --only wind --only c sort hash
+wind run bench/run.wind --seconds             # times in place of ratios
 ```
 
 The script builds each program, runs every kernel as its own process, keeps
@@ -710,81 +1371,11 @@ for a kernel. A language whose toolchain is missing is left out.
 
 ### Results
 
-Time relative to C, as the geometric mean over the twelve kernels. Lower is
-better, and one block is one times C.
-
-```
-C                        1.00x  █
-Wind, no bounds checks   0.99x  █
-C++                      1.05x  █
-Wind                     1.06x  █
-Zig                      1.06x  █
-Odin                     1.09x  █▏
-Rust                     1.10x  █▏
-Swift                    1.19x  █▎
-Go                       1.34x  █▍
-Haskell                  1.67x  █▋
-JavaScript (Bun)         1.88x  █▉
-Lua (LuaJIT)             1.97x  ██
-Java                     2.09x  ██▏
-JavaScript (Node.js)     2.35x  ██▍
-Elixir                   12.7x  ████████████▊
-Lua                      13.3x  █████████████▎
-Python                   32.8x  ████████████████████████████████▊
-```
-
-| | Built with | Relative to C | All twelve kernels |
-| --- | --- | ---: | ---: |
-| C | `cc -O2` | 1.00x | 0.86 s |
-| Wind, no bounds checks | `wind build --no-bounds-check` | 0.99x | 0.85 s |
-| C++ | `c++ -O2` | 1.05x | 0.91 s |
-| **Wind** | `wind build` | **1.06x** | 0.89 s |
-| Zig | `zig build-exe -O ReleaseFast` | 1.06x | 0.93 s |
-| Odin | `odin build -o:aggressive -no-bounds-check` | 1.09x | 0.91 s |
-| Rust | `rustc -C opt-level=3 -C panic=abort` | 1.10x | 0.95 s |
-| Swift | `swiftc -Ounchecked` | 1.19x | 0.97 s |
-| Go | `go build` | 1.34x | 1.08 s |
-| Haskell | `ghc -O2` | 1.67x | 1.34 s |
-| JavaScript (Bun) | `bun` | 1.88x | 1.38 s |
-| Lua (LuaJIT) | `luajit` | 1.97x | 1.57 s |
-| Java | `javac`, run on the JVM | 2.09x | 1.40 s |
-| JavaScript (Node.js) | `node` | 2.35x | 1.67 s |
-| Elixir | `elixirc`, run on the BEAM | 12.7x | 11.13 s |
-| Lua | `lua` | 13.3x | 10.09 s |
-| Python | `python3` | 32.8x | 25.42 s |
-
-Each kernel, as a multiple of C's time:
-
-| | fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| C | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Wind, no bounds checks | 1.04 | 1.01 | 1.03 | 1.00 | 1.00 | 1.01 | 1.00 | 1.05 | 1.01 | 0.82 | 1.00 | 0.97 |
-| C++ | 1.08 | 1.08 | 1.15 | 1.02 | 1.01 | 1.09 | 1.23 | 0.99 | 1.01 | 0.85 | 1.05 | 1.11 |
-| **Wind** | 1.04 | 1.10 | 1.04 | 1.01 | 1.00 | 1.02 | 1.22 | 1.05 | 1.03 | 1.17 | 1.02 | 1.01 |
-| Zig | 2.12 | 1.00 | 0.85 | 1.02 | 0.98 | 1.92 | 1.01 | 0.98 | 0.78 | 0.81 | 0.85 | 1.08 |
-| Odin | 1.77 | 1.01 | 0.92 | 1.04 | 1.01 | 1.97 | 1.02 | 1.00 | 0.99 | 1.02 | 0.86 | 0.99 |
-| Rust | 1.79 | 1.08 | 0.86 | 0.97 | 1.01 | 2.01 | 1.02 | 0.97 | 1.02 | 0.93 | 0.94 | 1.11 |
-| Swift | 1.83 | 1.06 | 0.92 | 1.05 | 1.06 | 2.10 | 1.22 | 1.00 | 1.03 | 1.36 | 1.05 | 1.08 |
-| Go | 4.04 | 1.16 | 1.42 | 1.11 | 1.04 | 2.09 | 1.72 | 1.05 | 1.03 | 1.14 | 0.98 | 1.02 |
-| Haskell | 5.34 | 1.30 | 1.64 | 1.28 | 1.52 | 2.26 | 1.94 | 1.62 | 1.35 | 1.57 | 1.31 | 1.11 |
-| JavaScript (Bun) | 5.47 | 1.59 | 4.65 | 1.33 | 1.30 | 3.08 | 2.00 | 1.28 | 1.55 | 1.58 | 1.69 | 0.88 |
-| Lua (LuaJIT) | 6.81 | 1.22 | 3.60 | 1.98 | 1.06 | 3.05 | 1.24 | 2.81 | 2.32 | 1.50 | 1.71 | 0.84 |
-| Java | 2.89 | 1.55 | 2.63 | 2.10 | 2.52 | 3.69 | 2.84 | 1.50 | 1.99 | 2.15 | 1.75 | 0.96 |
-| JavaScript (Node.js) | 8.38 | 1.70 | 3.77 | 1.95 | 1.52 | 4.54 | 3.26 | 1.59 | 2.12 | 1.70 | 2.25 | 0.92 |
-| Elixir | 9.79 | 19.2 | 6.63 | 8.38 | 16.9 | 47.1 | 35.4 | 20.0 | 6.02 | 10.7 | 6.45 | 7.09 |
-| Lua | 46.6 | 11.8 | 27.3 | 4.24 | 15.6 | 60.0 | 45.5 | 7.51 | 9.24 | 6.62 | 8.45 | 2.83 |
-| Python | 93.1 | 10.1 | 60.2 | 9.45 | 52.1 | 126 | 105 | 33.2 | 18.0 | 22.5 | 29.6 | 10.4 |
-
-C's own times for the kernels, in seconds, to give the ratios a scale:
-
-| fib | sieve | collatz | gcd | mandelbrot | matmul | particles | sort | queens | hash | bytes | list |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.044 | 0.088 | 0.033 | 0.026 | 0.049 | 0.024 | 0.023 | 0.133 | 0.033 | 0.034 | 0.034 | 0.337 |
-
-Measured on one x86-64 Linux machine with GCC 16.2, Zig 0.17, Rust 1.91,
-Go 1.27, Odin dev-2026-10, Swift 6.3, GHC 9.6, OpenJDK 17, Node.js 25.8,
-Bun 1.3, Elixir 1.20 on Erlang/OTP 29, LuaJIT 2.1, Lua 5.5 and Python 3.14. Other machines and versions will give other
-numbers; the script is there to run it again.
+The latest results are in [bench/RESULTS.md](bench/RESULTS.md): each
+language's time relative to C over all twelve kernels, each kernel on its
+own, and the toolchain versions and machine they were measured with.
+`bench/run.wind` writes that file whenever it runs every kernel, so running
+it again on another machine replaces the numbers with that machine's.
 
 ### Reading the numbers
 
@@ -794,9 +1385,9 @@ numbers; the script is there to run it again.
   Where that changes the shape of the code, the top of the file says how.
 - **Wind is C with checks.** It compiles to C, so it gets whatever the C
   compiler can do. What it adds is a range check on every array index and a
-  `NULL` check on every use of a pointer. That shows where indexes are
-  scattered or packed into tight loops (`hash`, `particles`, `sieve`) and
-  nowhere else. With `--no-bounds-check` the difference from C is within
+  `NULL` check on every use of a pointer. A check is one comparison that
+  the processor predicts, so it shows only where indexes are worked out in
+  a tight loop. With `--no-bounds-check` the difference from C is within
   the noise of the measurement.
 - **Most of the others here run without those checks.** Zig, Odin and
   Swift are built with them off, and Rust and Haskell skip them in their
@@ -828,6 +1419,48 @@ numbers; the script is there to run it again.
   made one kernel faster and others slower, with no gain overall, so those
   four stay at their plain optimized builds.
 
+### Problems
+
+`bench/problems/` holds 22 small problems of the kind set in programming
+interviews and contests, each written the same way in Wind, C, Rust, Go,
+JavaScript and Python. Each folder holds one problem: dynamic programming
+(`edit_distance`, `knapsack`, `coin_change`, `longest_common_subsequence`,
+...), graphs and search (`dijkstra_grid`, `bfs_maze`, `topological_sort`,
+`islands`, `union_find`, `sudoku`), arrays and hashing (`two_sum`,
+`sliding_window_maximum`, `trapping_rain_water`, ...), and sorting, maths
+and simulation (`merge_sort_inversions`, `matrix_fibonacci`, `kth_largest`,
+`game_of_life`, `next_permutation`). The description is at the top of each
+`main.wind`.
+
+Unlike the kernels, every answer is checked against a known one. Each
+program takes `test` or `bench` for the size of its input, makes that input
+with the same small generator in every language, and prints its answer,
+which must equal the folder's `expected-test.txt` or `expected-bench.txt`.
+Those files come from the Python version, the reference, which is written
+for clarity rather than speed.
+
+```sh
+wind run bench/problems/run.wind                     # check everything at test size
+wind run bench/problems/run.wind --size bench        # check, time, write RESULTS.md
+wind run bench/problems/run.wind --only wind knapsack sudoku
+wind run bench/problems/run.wind --expected two_sum  # rewrite the answers from Python
+```
+
+The runner is itself a Wind program, built on `::os` and `::text`; run it
+from the repository root. `make test` runs the Wind version of every
+problem at test size, with and
+without bounds checks, so the set doubles as a body of real programs that
+each change to the compiler must still get right.
+
+The latest timings are in
+[bench/problems/RESULTS.md](bench/problems/RESULTS.md), which `run.wind`
+writes whenever it checks and times every problem at bench size with every
+answer right. The programs are written plainly in every language, with no
+unchecked reads in Rust and no tuning beyond sensible types, so the numbers
+show what ordinary code in each language costs. Wind's bounds checks cost
+most where an index is computed in a tight loop; without them Wind runs as
+fast as C.
+
 ## Compiler layout
 
 | File | Role |
@@ -836,11 +1469,12 @@ numbers; the script is there to run it again.
 | `src/parser.c` | Tokens to AST (grammar is documented at the top of the file) |
 | `src/sema.c` | Name resolution, type checking and lint warnings |
 | `src/codegen.c` | Checked AST to C |
+| `src/targets/` | What differs between targets: `host.c` for the machine the compiler runs on, `arduino.c` for boards programmed with the Arduino toolchain |
 | `src/lsp.c` | Language server |
 | `src/json.c` | JSON reading and writing for the language server |
 | `src/main.c` | Command-line driver |
 | `src/ast.h` | AST and symbol definitions shared by the passes |
-| `src/types.c` | The table of built-in types |
+| `src/types.c` | The table of built-in types, and the platform that sizes them |
 | `src/common.c` | Arena allocator and diagnostics |
 
 The passes never abort on bad input: they record diagnostics and recover, so
@@ -852,4 +1486,9 @@ in `ast.h`, a rule in the parser, a check in `sema.c`, and a case in
 `codegen.c`.
 
 Tests live in `tests/ok` (expected stdout in `.out`), `tests/err` (expected
-`wind check` output in `.err`) and `tests/lsp.py` (a scripted LSP session).
+`wind check` output in `.err`), `tests/arduino` (sketches run against a
+stand-in board on the machine running the tests), `tests/stop` (programs
+that must stop with an error), `tests/warn` (expected warnings), `tests/std`
+(programs that use the libraries) and `tests/lsp.wind` (a scripted LSP
+session, written in Wind with `::os` and `::json`). `tests/libs` is the libraries directory the tests
+import from.

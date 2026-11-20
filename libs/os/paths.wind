@@ -1,0 +1,42 @@
+// Part of ::os: the paths of files and folders, as text.
+
+// Appends to into the path of part inside the folder dir: "dir/part", with
+// one '/' between them, or part alone if dir is "" or part starts at '/'.
+export void join(char into[..], string dir, string part) {
+    if (len(dir) == 0 || (len(part) > 0 && part[0] == '/')) {
+        append(into, part)
+        return
+    }
+    append(into, dir)
+    if (dir[len(dir) - 1] != '/') append(into, '/')
+    append(into, part)
+}
+
+// The folder a path is in: "a/b" for "a/b/c", "." for "c", "/" for "/c".
+export string dir_name(string path) {
+    int end = len(path)
+    while (end > 1 && path[end - 1] == '/') end--
+    int at = end - 1
+    while (at >= 0 && path[at] != '/') at--
+    if (at < 0) return "."
+    while (at > 0 && path[at - 1] == '/') at--
+    return at == 0 ? "/" : path[:at]
+}
+
+// The last part of a path: "c" for "a/b/c" and for "a/b/c/".
+export string base_name(string path) {
+    int end = len(path)
+    while (end > 1 && path[end - 1] == '/') end--
+    int at = end - 1
+    while (at >= 0 && path[at] != '/') at--
+    return path[at + 1:end]
+}
+
+// The part of a path's last part from its last '.', as ".wind", or "".
+export string extension(string path) {
+    string name = base_name(path)
+    for (int at = len(name) - 1; at > 0; at--) {
+        if (name[at] == '.') return name[at:]
+    }
+    return ""
+}

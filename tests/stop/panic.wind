@@ -1,0 +1,13 @@
+// panic writes its values as cerr does, and stops the program; deferred
+// statements do not run.
+void load(string name, int size) {
+    defer cout << "load returns\n"
+    if (size > 100) panic("'", name, "' is too big: ", size, " > ", 100)
+    cout << "loaded " << name << "\n"
+}
+
+int main() {
+    load("small", 10)
+    load("large", 500)
+    return 0
+}

@@ -1,0 +1,1 @@
+export string label(int n) { return n == 1 ? "one part" : "several parts" }

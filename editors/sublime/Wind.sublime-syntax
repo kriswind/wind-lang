@@ -16,7 +16,7 @@ contexts:
       push: string
     - match: "'(\\\\[ntr0\\\\\"']|[^\\\\'])'"
       scope: constant.character.wind
-    - match: '\b(const|export)\b'
+    - match: '\b(const|export|extern)\b'
       scope: storage.modifier.wind
     - match: '\b(struct|enum|typedef)\b'
       scope: keyword.declaration.wind
@@ -26,7 +26,7 @@ contexts:
       scope: keyword.control.import.wind
     - match: '\bas\b(?=\s+[A-Za-z_]\w*\s*$)'
       scope: keyword.control.import.wind
-    - match: '\b(if|else|while|do|for|break|continue|goto|return)\b'
+    - match: '\b(if|else|switch|case|default|fallthrough|while|do|for|break|continue|goto|return|defer)\b'
       scope: keyword.control.wind
     - match: '\bsizeof\b'
       scope: keyword.operator.word.wind
@@ -36,7 +36,7 @@ contexts:
       scope: constant.language.wind
     - match: '\b(void|bool|string|char|byte|int|i8|i16|i32|i64|i128|uint|u8|u16|u32|u64|u128|uintptr|float|f16|f32|f64|f128|unsigned|signed|long|short|double|u?int(8|16|32|64)_t|u?intptr_t|ptrdiff_t|ssize_t|size_t)\b'
       scope: storage.type.wind
-    - match: '\b(cout|cin)\b'
+    - match: '\b(cout|cerr|cin)\b'
       scope: support.function.wind
     - match: '^\s*([A-Za-z_]\w*)(:)'
       captures:

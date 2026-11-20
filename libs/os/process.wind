@@ -1,0 +1,94 @@
+// Part of ::os: running other programs.
+#target c
+
+extern "process.h" {
+    int os_run(const string command[], string dir, char out[..], char err[..], bool capture)
+    bool os_on_path(string name)
+}
+
+// Runs command[0] with the rest of command as its arguments, and waits for
+// it. The program is found on PATH unless its name has a '/' in it, and it
+// reads and writes where this program does. Returns its exit status: 0 if
+// it succeeded, 128 plus the number of a signal that ended it, 127 if it
+// could not be started, and -1 if no process could be made for it.
+export int run(const string command[]) {
+    char unused[..]
+    return os_run(command, "", unused, unused, false)
+}
+
+// Runs command as run does, in the folder dir unless that is "", and
+// appends what it writes to its output to out, and to its error output to
+// err. Returns its exit status, as run does.
+export int capture(const string command[], string dir, char out[..], char err[..]) {
+    return os_run(command, dir, out, err, true)
+}
+
+// True if a program of this name would be found to run.
+export bool on_path(string program) { return os_on_path(program) }
+
+extern "process.h" {
+    bool os_start(const string command[], int *pid, int *to, int *from)
+    bool os_write_fd(int fd, string text)
+    int os_read_fd(int fd, char into[..], int count)
+    void os_close_fd(int fd)
+    int os_wait(int pid)
+}
+
+// A program started with start, and the two pipes this program has to it.
+export struct Process {
+    int pid
+    int input  // written to, to reach what it reads
+    int output // read from, for what it writes
+}
+
+// Starts command[0] with the rest of command as its arguments, as run
+// does, with a pipe to what it reads and one from what it writes; what it
+// writes to its error output goes where this program's does. False if it
+// cannot be started.
+export bool start(const string command[], Process *process) {
+    return os_start(command, &process->pid, &process->input, &process->output)
+}
+
+// Writes text to what a started program reads. False if it cannot, as when
+// the program has ended.
+export bool write_to(Process *process, string text) {
+    return os_write_fd(process->input, text)
+}
+
+// Reads what a started program writes, appending it to into, until count
+// bytes have come or the program has stopped writing. Returns how many
+// came.
+export int read_from(Process *process, char into[..], int count) {
+    return os_read_fd(process->output, into, count)
+}
+
+// Reads one line of what a started program writes, appending it to into
+// without the line break, '\r' included. False if no more came.
+export bool read_line(Process *process, char into[..]) {
+    char one[..]
+    defer delete(one)
+    bool any = false
+    while (true) {
+        clear(one)
+        if (os_read_fd(process->output, one, 1) == 0) return any
+        any = true
+        char c = one[0]
+        if (c == '\n') return true
+        if (c != '\r') append(into, c)
+    }
+}
+
+// Closes the pipe to what a started program reads, which it sees as the end
+// of its input.
+export void close_input(Process *process) {
+    os_close_fd(process->input)
+    process->input = -1
+}
+
+// Waits for a started program to end, and returns its exit status, as run
+// does. The pipe from it is closed.
+export int wait(Process *process) {
+    os_close_fd(process->output)
+    process->output = -1
+    return os_wait(process->pid)
+}

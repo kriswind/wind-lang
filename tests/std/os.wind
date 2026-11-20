@@ -1,0 +1,73 @@
+// The os library: running programs, files and folders, the environment,
+// the clock, and paths.
+import ::os
+import ::text
+
+int main() {
+    // A scratch folder of its own, beside the program's files.
+    char base[..]
+    os.current_dir(base)
+    char dir[..]
+    os.join(dir, string(base), "build/os-test")
+    string folder = string(dir)
+    os.make_dirs(folder)
+    cout << os.is_dir(folder) << " " << os.exists(folder) << " " << os.is_file(folder) << "\n"
+
+    char path[..]
+    os.join(path, folder, "notes.txt")
+    os.write_file(string(path), "first line\n")
+    os.append_file(string(path), "second line\n")
+    char read[..]
+    cout << os.read_file(string(path), read) << " " << len(read) << " " << os.is_file(string(path))
+         << "\n"
+    string lines[..]
+    text.split(text.trim(string(read)), "\n", lines)
+    cout << lines << "\n"
+
+    char other[..]
+    os.join(other, folder, "a.wind")
+    os.write_file(string(other), "")
+    string names[..]
+    os.list_dir(folder, names)
+    cout << names << "\n"
+    cout << os.base_name(string(path)) << " " << os.extension(string(other)) << " "
+         << os.base_name(os.dir_name(string(path))) << " " << os.dir_name("file") << " "
+         << os.dir_name("/top") << "\n"
+
+    // Running programs.
+    string listing[3] = {"ls", "-1", "."}
+    char out[..]
+    char err[..]
+    int status = os.capture(listing, folder, out, err)
+    cout << status << " [" << text.trim(string(out)) << "]\n"
+    string failing[3] = {"sh", "-c", "echo oops >&2; exit 4"}
+    clear(out)
+    status = os.capture(failing, "", out, err)
+    cout << status << " " << len(out) << " [" << text.trim(string(err)) << "]\n"
+    string missing[1] = {"no-such-program-here"}
+    cout << os.run(missing) << " " << os.on_path("sh") << " " << os.on_path("no-such-program-here")
+         << "\n"
+
+    // The environment, which the programs it runs see.
+    os.set_env("WIND_OS_TEST", "seen")
+    cout << os.get_env("WIND_OS_TEST") << " " << os.has_env("WIND_OS_TEST") << " "
+         << os.has_env("WIND_OS_UNSET") << "[" << os.get_env("WIND_OS_UNSET") << "]\n"
+    string show[3] = {"sh", "-c", "printf %s \"$WIND_OS_TEST\""}
+    clear(out)
+    os.capture(show, "", out, err)
+    cout << string(out) << "\n"
+
+    // The clock goes forward, and today is a date.
+    f64 start = os.clock()
+    os.sleep(0.01)
+    f64 took = os.clock() - start
+    cout << (took >= 0.009 && took < 1.0) << "\n"
+    char date[..]
+    os.today(date)
+    cout << len(date) << " " << string(date)[4] << string(date)[7] << "\n"
+
+    os.remove_path(string(path))
+    os.remove_path(string(other))
+    cout << os.remove_path(folder) << " " << os.exists(folder) << "\n"
+    return 0
+}

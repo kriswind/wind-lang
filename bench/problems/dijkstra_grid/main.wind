@@ -1,0 +1,90 @@
+// Dijkstra on a grid: the cheapest path from the top-left cell of a square
+// grid to the bottom-right one, moving up, down, left or right, where
+// entering a cell (the first one included) costs its value, 1 to 9, from the
+// shared generator. A binary min-heap holds the cells still to settle, each
+// packed into one number as distance * cells + cell, so that ties go to the
+// lower cell; a cell is pushed again whenever its distance improves, and
+// stale entries are skipped when popped. Prints the cost to the far corner
+// and, as a checksum, the sum of the costs to every cell.
+//
+//     wind run main.wind test|bench
+
+const int MAX_SIDE = 1500
+const int MAX = MAX_SIDE * MAX_SIDE
+
+int cost[MAX]
+int dist[MAX]
+// Each cell is pushed at most once per neighbour, plus the start.
+int heap[4 * MAX + 1]
+int size = 0
+int n = 0
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+void push(int key) {
+    int at = size
+    size++
+    while (at > 0) {
+        int parent = (at - 1) / 2
+        if (heap[parent] <= key) break
+        heap[at] = heap[parent]
+        at = parent
+    }
+    heap[at] = key
+}
+
+int pop() {
+    int top = heap[0]
+    size--
+    int last = heap[size]
+    int at = 0
+    for (;;) {
+        int child = 2 * at + 1
+        if (child >= size) break
+        if (child + 1 < size && heap[child + 1] < heap[child]) child++
+        if (last <= heap[child]) break
+        heap[at] = heap[child]
+        at = child
+    }
+    heap[at] = last
+    return top
+}
+
+void relax(int cell, int d) {
+    if (d < dist[cell]) {
+        dist[cell] = d
+        push(d * n + cell)
+    }
+}
+
+int main(int argc, string argv[]) {
+    int side = argc > 1 && argv[1] == "bench" ? MAX_SIDE : 40
+    n = side * side
+    for (int i = 0; i < n; i++) {
+        cost[i] = 1 + random() % 9
+        dist[i] = 1 << 62
+    }
+    dist[0] = cost[0]
+    push(cost[0] * n)
+    while (size > 0) {
+        int key = pop()
+        int d = key / n
+        int cell = key % n
+        if (d > dist[cell]) continue
+        int row = cell / side
+        int col = cell % side
+        if (row > 0) relax(cell - side, d + cost[cell - side])
+        if (row < side - 1) relax(cell + side, d + cost[cell + side])
+        if (col > 0) relax(cell - 1, d + cost[cell - 1])
+        if (col < side - 1) relax(cell + 1, d + cost[cell + 1])
+    }
+    int total = 0
+    for (int i = 0; i < n; i++) total += dist[i]
+    cout << "the cheapest path costs " << dist[n - 1] << "; the costs to every cell sum to " << total << "\n"
+    return 0
+}

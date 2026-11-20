@@ -1,0 +1,6 @@
+tests/err/joining.wind:5:22: error: cannot join a 'void' value to a string
+tests/err/joining.wind:7:10: error: cannot join a 'void' value to a string
+tests/err/joining.wind:8:5: error: operator '-=' is not defined for 'string'
+tests/err/joining.wind:9:13: error: cannot initialize 'int' variable with 'string'
+tests/err/joining.wind:10:11: error: expected '{' after '#temp'; it covers a block, found 'cout'
+tests/err/joining.wind:11:5: error: unknown directive '#tmp'; there are '#no_bounds_check', '#bounds_check', '#temp', '#target', '#board' and '#module'

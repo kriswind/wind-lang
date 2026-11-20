@@ -45,6 +45,30 @@ static const struct {
 
 static TypeTable *table;
 
+const Platform platform_host = {
+    .name = "c",
+    .pointer_size = sizeof(void *),
+    .double_size = 8,
+    .long_double_size = 16,
+    .wide_integers = true,
+    .has_arguments = true,
+    .repeat_function = NULL,
+};
+
+static const Platform *platform = &platform_host;
+
+void types_use_platform(const Platform *in_use) {
+    platform = in_use;
+}
+
+const Platform *types_platform(void) {
+    return platform;
+}
+
+bool type_available(TypeKind type) {
+    return platform->wide_integers || (type != TYPE_I128 && type != TYPE_U128);
+}
+
 void types_use(TypeTable *in_use) {
     table = in_use;
 }
@@ -117,19 +141,158 @@ TypeKind type_pointer_to(TypeKind target) {
     info->c_stem = format_text("p_%s", pointee ? pointee->c_stem : type_name(target));
     info->c_name = format_text("wind_%s", info->c_stem);
     info->writer_name = "wind_write_pointer";
-    info->size = sizeof(void *);
-    info->align = sizeof(void *);
+    info->size = platform->pointer_size;
+    info->align = platform->pointer_size;
     ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
     return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+/* The stem of names derived from a type in the generated C. */
+static const char *stem_of(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info ? info->c_stem : type_name(type);
+}
+
+static char *format_two(const char *fmt, const char *a, const char *b) {
+    int len = snprintf(NULL, 0, fmt, a, b);
+    char *out = arena_alloc(table->arena, (size_t)len + 1);
+    snprintf(out, (size_t)len + 1, fmt, a, b);
+    return out;
+}
+
+/* Finds or makes a container of elem; key and length as its kind has
+   them, and zero otherwise. */
+static TypeKind container_of(ContainerKind kind, TypeKind elem, TypeKind key, size_t length) {
+    for (size_t i = 0; i < table->count; i++) {
+        const TypeInfo *known = table->items[i];
+        if (known->container == kind && known->target == elem && known->key == key &&
+            known->length == length) {
+            return (TypeKind)(TYPE_COUNT + i);
+        }
+    }
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    info->container = kind;
+    info->target = elem;
+    info->key = key;
+    info->length = length;
+    /* "int[3][4]" is an array of 3 "int[4]": this container's part of the
+       name comes before its elements' part. */
+    const TypeInfo *inner = type_info(elem);
+    bool nested = inner && inner->container;
+    info->base = nested ? inner->base : elem;
+    char own[64];
+    switch (kind) {
+    case CONTAINER_ARRAY:
+        snprintf(own, sizeof own, "[%zu]", length);
+        break;
+    case CONTAINER_SLICE:
+        snprintf(own, sizeof own, "[]");
+        break;
+    case CONTAINER_LIST:
+        snprintf(own, sizeof own, "[..]");
+        break;
+    default:
+        snprintf(own, sizeof own, "[%s]", type_name(key));
+        break;
+    }
+    info->suffix = format_two("%s%s", own, nested ? inner->suffix : "");
+    info->name = format_two("%s%s", type_name(info->base), info->suffix);
+    info->short_name = info->name;
+    const char *elem_stem = stem_of(elem);
+    char count[32];
+    snprintf(count, sizeof count, "%zu", length);
+    switch (kind) {
+    case CONTAINER_ARRAY:
+        info->c_stem = format_two("array%s_%s", count, elem_stem);
+        info->c_name = format_text("wind_%s", info->c_stem);
+        info->size = type_size(elem) * length;
+        info->align = type_align(elem);
+        break;
+    case CONTAINER_SLICE:
+        info->c_stem = format_text("slice_%s", elem_stem);
+        info->c_name = format_text("wind_slice_%s", elem_stem);
+        info->size = 2 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    case CONTAINER_LIST:
+        info->c_stem = format_text("list_%s", elem_stem);
+        info->c_name = format_text("wind_list_%s", elem_stem);
+        info->size = 3 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    default:
+        /* Three pointers and five counts, whatever it holds. */
+        info->c_stem = format_two("map_%s_%s", stem_of(key), elem_stem);
+        info->c_name = "wind_map";
+        info->size = 8 * platform->pointer_size;
+        info->align = platform->pointer_size;
+        break;
+    }
+    info->writer_name = format_text("wind_write_%s", info->c_stem);
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+TypeKind type_array_of(TypeKind elem, size_t length) {
+    return container_of(CONTAINER_ARRAY, elem, TYPE_INVALID, length);
+}
+
+TypeKind type_slice_of(TypeKind elem) {
+    return container_of(CONTAINER_SLICE, elem, TYPE_INVALID, 0);
+}
+
+TypeKind type_list_of(TypeKind elem) {
+    return container_of(CONTAINER_LIST, elem, TYPE_INVALID, 0);
+}
+
+TypeKind type_map_of(TypeKind key, TypeKind value) {
+    return container_of(CONTAINER_MAP, value, key, 0);
+}
+
+ContainerKind type_container(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info ? info->container : CONTAINER_NONE;
+}
+
+bool type_is_container(TypeKind type) {
+    return type_container(type) != CONTAINER_NONE;
+}
+
+TypeKind type_elem(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->target : TYPE_INVALID;
+}
+
+TypeKind type_key(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container == CONTAINER_MAP ? info->key : TYPE_INVALID;
+}
+
+size_t type_length(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container == CONTAINER_ARRAY ? info->length : 0;
+}
+
+TypeKind type_base(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->base : type;
+}
+
+const char *type_suffix(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->container ? info->suffix : "";
 }
 
 void type_layout(TypeInfo *info) {
     size_t size = 0, align = 1;
     for (size_t i = 0; i < info->field_count; i++) {
-        size_t field_align = type_align(info->fields[i].type);
+        const Field *field = &info->fields[i];
+        size_t field_align = type_align(field->type);
+        size_t field_size = type_size(field->type);
         if (field_align > align) align = field_align;
         size = (size + field_align - 1) / field_align * field_align;
-        size += type_size(info->fields[i].type);
+        size += field_size;
     }
     info->size = (size + align - 1) / align * align;
     info->align = align;
@@ -137,7 +300,49 @@ void type_layout(TypeInfo *info) {
 
 bool type_is_struct(TypeKind type) {
     const TypeInfo *info = type_info(type);
-    return info && !info->is_enum && !info->is_pointer;
+    return info && !info->is_enum && !info->is_pointer && !info->container &&
+           !info->is_function;
+}
+
+TypeKind type_function_of(TypeKind ret, const TypeKind *params, size_t count) {
+    for (size_t i = 0; i < table->count; i++) {
+        const TypeInfo *known = table->items[i];
+        if (!known->is_function || known->target != ret || known->param_count != count) continue;
+        bool same = true;
+        for (size_t j = 0; j < count && same; j++) same = known->params[j] == params[j];
+        if (same) return (TypeKind)(TYPE_COUNT + i);
+    }
+    TypeInfo *info = arena_alloc(table->arena, sizeof *info);
+    memset(info, 0, sizeof *info);
+    info->is_function = true;
+    info->target = ret;
+    info->param_count = count;
+    info->params = arena_alloc(table->arena, (count ? count : 1) * sizeof *info->params);
+    if (count) memcpy(info->params, params, count * sizeof *params);
+    /* "int (*)(int, string)", as C writes it. */
+    size_t len = strlen(type_name(ret)) + 8;
+    for (size_t j = 0; j < count; j++) len += strlen(type_name(params[j])) + 2;
+    char *name = arena_alloc(table->arena, len + 1);
+    int at = snprintf(name, len + 1, "%s (*)(", type_name(ret));
+    for (size_t j = 0; j < count; j++) {
+        at += snprintf(name + at, len + 1 - (size_t)at, "%s%s", j ? ", " : "", type_name(params[j]));
+    }
+    snprintf(name + at, len + 1 - (size_t)at, ")");
+    info->name = info->short_name = name;
+    char stem[32];
+    snprintf(stem, sizeof stem, "fn%zu", table->count);
+    info->c_stem = format_text("%s", stem);
+    info->c_name = format_text("wind_%s", stem);
+    info->writer_name = "wind_write_pointer";
+    info->size = platform->pointer_size;
+    info->align = platform->pointer_size;
+    ARENA_PUSH(table->arena, table->items, table->count, table->cap, info);
+    return (TypeKind)(TYPE_COUNT + table->count - 1);
+}
+
+bool type_is_function(TypeKind type) {
+    const TypeInfo *info = type_info(type);
+    return info && info->is_function;
 }
 
 bool type_is_enum(TypeKind type) {
@@ -194,10 +399,9 @@ bool type_is_numeric(TypeKind type) {
     return type_is_integer(type) || type_is_float(type);
 }
 
-/* Programs are compiled for the machine the compiler runs on, so its pointer
-   size is the target's. */
+/* The pointer-sized integers take their width from the platform. */
 static int int_bits(TypeKind type) {
-    return types[type].bits ? types[type].bits : (int)(sizeof(void *) * 8);
+    return types[type].bits ? types[type].bits : (int)(platform->pointer_size * 8);
 }
 
 size_t type_size(TypeKind type) {
@@ -212,7 +416,12 @@ size_t type_size(TypeKind type) {
     case TYPE_CHAR:
         return 1;
     case TYPE_STRING:
-        return 2 * sizeof(void *); /* a pointer and a length */
+        return 2 * platform->pointer_size; /* a pointer and a length */
+    case TYPE_FLOAT:
+    case TYPE_F64:
+        return platform->double_size;
+    case TYPE_F128:
+        return platform->long_double_size;
     default:
         return (size_t)int_bits(type) / 8;
     }
@@ -223,7 +432,7 @@ size_t type_align(TypeKind type) {
     if (info) return info->align;
     /* A string is aligned as the pointer it starts with; every other
        built-in type is aligned to its own size. */
-    if (type == TYPE_STRING) return sizeof(void *);
+    if (type == TYPE_STRING) return platform->pointer_size;
     size_t size = type_size(type);
     return size ? size : 1;
 }

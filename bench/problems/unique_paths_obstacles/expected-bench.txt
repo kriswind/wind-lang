@@ -1,0 +1,2 @@
+paths 332191426
+obstacles 2499703

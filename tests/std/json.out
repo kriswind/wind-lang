@@ -1,0 +1,7 @@
+true 12
+wind 2.5 -300 true 3 -1 -1
+tab	here é 😀 "q"
+{"name":"wind","version":[0,2.5,-300],"ok":true,"none":null,"text":"tab\there é 😀 \"q\"","nested":{"b":1,"a":{}}}
+{"a":{},"b":1}
+"say \"hi\"\n\tback\\slash\u0001"
+falsefalsefalsefalsefalse true0

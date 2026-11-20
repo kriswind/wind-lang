@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include "lsp.h"
+#include "targets/target.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -8,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "ast.h"
 #include "json.h"
@@ -33,6 +35,7 @@ enum {
     LSP_COMPLETION_FUNCTION = 3,
     LSP_COMPLETION_VARIABLE = 6,
     LSP_COMPLETION_MODULE = 9,
+    LSP_COMPLETION_VALUE = 12,
     LSP_COMPLETION_ENUM = 13,
     LSP_COMPLETION_KEYWORD = 14,
     LSP_COMPLETION_ENUM_VALUE = 20,
@@ -253,6 +256,20 @@ static void publish_diagnostics(Arena *arena, Str uri, const Unit *unit) {
     send_message(&buf);
 }
 
+
+/* Analyzes a document for the target its "#target" names, so that it is
+   checked with that target's sizes and rules. */
+static void analyze_document(Doc *doc) {
+    Str text = {doc->text, doc->text_len};
+    FileSettings settings = file_settings(text);
+    const Target *target = settings.target
+                               ? target_find((Str){settings.target, strlen(settings.target)})
+                               : NULL;
+    types_use_platform(target ? &target->platform : &target_host.platform);
+    file_settings_release(&settings);
+    unit_analyze(&doc->unit, text, doc->path);
+}
+
 static void set_document(Server *server, Arena *arena, Str uri, Str text) {
     Doc *doc = find_doc(server, uri);
     if (doc) {
@@ -269,7 +286,7 @@ static void set_document(Server *server, Arena *arena, Str uri, Str text) {
     }
     doc->text = copy_cstr(text);
     doc->text_len = text.len;
-    unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
+    analyze_document(doc);
     publish_diagnostics(arena, uri, &doc->unit);
 }
 
@@ -279,7 +296,7 @@ static void refresh_documents(Server *server, Arena *arena) {
     for (size_t i = 0; i < server->doc_count; i++) {
         Doc *doc = &server->docs[i];
         unit_release(&doc->unit);
-        unit_analyze(&doc->unit, (Str){doc->text, doc->text_len}, doc->path);
+        analyze_document(doc);
         publish_diagnostics(arena, (Str){doc->uri, strlen(doc->uri)}, &doc->unit);
     }
 }
@@ -352,10 +369,17 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     const char *name = symbol->name.data;
     Str src = symbol->unit->src;
     if (symbol->exported) buf_puts(buf, "export ");
+    if (symbol->decl && symbol->decl->external) {
+        Str header = symbol->decl->header;
+        buf_puts(buf, "extern ");
+        if (header.len) buf_printf(buf, "\"%.*s\" ", (int)header.len, header.data);
+    }
     switch (symbol->kind) {
     case SYM_MODULE: {
         Str path = symbol->decl->as.import.path;
-        buf_printf(buf, "import \"%.*s\" as %.*s", (int)path.len, path.data, len, name);
+        const char *quote = symbol->decl->as.import.quoted ? "\"" : "";
+        buf_printf(buf, "import %s%.*s%s as %.*s", quote, (int)path.len, path.data, quote, len,
+                   name);
         break;
     }
     case SYM_ENUM_VALUE:
@@ -376,9 +400,10 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
         } else {
             buf_printf(buf, "struct %s { ", info->short_name);
             for (size_t i = 0; i < info->field_count; i++) {
-                buf_printf(buf, "%s%s%s%.*s", i ? "; " : "", type_name(info->fields[i].type),
-                           type_gap(info->fields[i].type), (int)info->fields[i].name.len,
-                           info->fields[i].name.data);
+                TypeKind base = type_base(info->fields[i].type);
+                buf_printf(buf, "%s%s%s%.*s%s", i ? "; " : "", type_name(base), type_gap(base),
+                           (int)info->fields[i].name.len, info->fields[i].name.data,
+                           type_suffix(info->fields[i].type));
             }
             buf_puts(buf, " }");
         }
@@ -386,23 +411,22 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
     }
     case SYM_CONST: {
         const Expr *init = symbol->decl->as.decl.init;
-        buf_printf(buf, "const %s%s%.*s", type_name(symbol->type), type_gap(symbol->type),
-                   len, name);
-        if (symbol->is_array) {
-            buf_printf(buf, "[%zu]", symbol->length);
-            break;
-        }
+        TypeKind base = type_base(symbol->type);
+        buf_printf(buf, "const %s%s%.*s%s", type_name(base), type_gap(base), len, name,
+                   type_suffix(symbol->type));
+        if (symbol->decl->external || symbol->decl->as.decl.broken) break;
+        if (type_is_container(symbol->type)) break;
         buf_puts(buf, " = ");
         buf_append(buf, src.data + init->loc.offset, init->loc.len);
         break;
     }
     case SYM_VAR:
-    case SYM_PARAM:
-        buf_printf(buf, "%s%s%.*s", type_name(symbol->type), type_gap(symbol->type), len,
-                   name);
-        if (symbol->is_array) buf_printf(buf, "[%zu]", symbol->length);
-        if (symbol->is_slice) buf_puts(buf, "[]");
+    case SYM_PARAM: {
+        TypeKind base = type_base(symbol->type);
+        buf_printf(buf, "%s%s%.*s%s", type_name(base), type_gap(base), len, name,
+                   type_suffix(symbol->type));
         break;
+    }
     case SYM_LABEL:
         buf_printf(buf, "%.*s:", len, name);
         break;
@@ -412,9 +436,9 @@ static void describe_symbol(Buf *buf, const Symbol *symbol) {
                    name);
         for (size_t i = 0; i < func->as.func.param_count; i++) {
             const Param *param = &func->as.func.params[i];
-            buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(param->type),
-                       type_gap(param->type), (int)param->name.len, param->name.data,
-                       param->is_slice ? "[]" : "");
+            TypeKind base = type_base(param->type);
+            buf_printf(buf, "%s%s%s%.*s%s", i ? ", " : "", type_name(base), type_gap(base),
+                       (int)param->name.len, param->name.data, type_suffix(param->type));
         }
         buf_puts(buf, ")");
         break;
@@ -461,8 +485,9 @@ static void handle_definition(Server *server, Arena *arena, const Json *id,
        declaration, which may be in an imported file. */
     const Unit *target = symbol->unit;
     SrcLoc loc = symbol->loc;
-    if (symbol->kind == SYM_MODULE && symbol->module) {
-        target = symbol->module;
+    if (symbol->kind == SYM_MODULE && symbol->part_count) {
+        /* A folder's module goes to its first file. */
+        target = symbol->parts[0];
         loc = (SrcLoc){.line = 1, .col = 1};
     }
     Buf buf = begin_result(arena, id);
@@ -548,9 +573,10 @@ static const Symbol *module_before(const Unit *unit, size_t offset) {
     return NULL;
 }
 
-/* If offset is inside the path of an import, as in 'import "lib/sh|', sets
-   *typed to the path up to the cursor and returns true. */
-static bool import_path_before(Str src, size_t offset, Str *typed) {
+/* If offset is inside the path of an import, as in 'import "lib/sh|' or
+   'import lib/sh|', sets *typed to the path up to the cursor and *quoted to
+   whether it is in quotes, and returns true. */
+static bool import_path_before(Str src, size_t offset, Str *typed, bool *quoted) {
     size_t start = offset;
     while (start > 0 && src.data[start - 1] != '\n') start--;
     size_t i = start;
@@ -559,9 +585,16 @@ static bool import_path_before(Str src, size_t offset, Str *typed) {
     i += 6;
     if (i == offset || (src.data[i] != ' ' && src.data[i] != '\t')) return false;
     while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
-    if (i == offset || src.data[i] != '"') return false;
-    i++;
-    if (memchr(src.data + i, '"', offset - i)) return false;
+    *quoted = i < offset && src.data[i] == '"';
+    if (*quoted) {
+        i++;
+        if (memchr(src.data + i, '"', offset - i)) return false;
+    } else {
+        /* Without quotes the path ends at the first space. */
+        for (size_t j = i; j < offset; j++) {
+            if (src.data[j] == ' ' || src.data[j] == '\t' || src.data[j] == '"') return false;
+        }
+    }
     *typed = (Str){src.data + i, offset - i};
     return true;
 }
@@ -578,11 +611,33 @@ typedef struct {
     const Doc *doc;
     SrcLoc typed; /* the path written so far, which every item replaces */
     size_t count;
+    bool bare; /* written without quotes, where ".wind" is left off */
 } ImportSearch;
 
 /* Adds the Wind files in the directory at dir_path, and in the directories
    below it, to the completion list. shown is the same directory as an
    import would spell it: empty, or ending in "/". */
+/* Adds one path to the completion list, unless it is the document's own
+   file, which it cannot import. file is where the path leads. */
+static void add_importable(ImportSearch *search, const char *file, Str text, int kind) {
+    char *real_path = path_canonical(file);
+    const char *own = search->doc->unit.real_path;
+    if (!real_path || !own || strcmp(real_path, own) != 0) {
+        Buf *buf = search->buf;
+        if (search->count++) buf_puts(buf, ",");
+        buf_puts(buf, "{\"label\":");
+        buf_json_string(buf, text);
+        buf_printf(buf, ",\"kind\":%d,\"filterText\":", kind);
+        buf_json_string(buf, text);
+        buf_puts(buf, ",\"textEdit\":{\"range\":");
+        write_range(buf, search->doc->unit.src, search->typed);
+        buf_puts(buf, ",\"newText\":");
+        buf_json_string(buf, text);
+        buf_puts(buf, "}}");
+    }
+    free(real_path);
+}
+
 static void list_importable(ImportSearch *search, const char *dir_path, const char *shown,
                             int depth) {
     DIR *entries = opendir(dir_path[0] ? dir_path : ".");
@@ -600,30 +655,24 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
         if (stat(full, &info) != 0) {
             /* unreadable or a dangling link: not importable */
         } else if (S_ISDIR(info.st_mode)) {
+            /* A folder that holds Wind files is a module of its own,
+               imported by the folder's path. */
+            char **files;
+            size_t count = wind_files_in(full, &files, NULL);
+            if (count) {
+                add_importable(search, full, (Str){spelled, strlen(spelled)},
+                               LSP_COMPLETION_MODULE);
+            }
+            for (size_t i = 0; i < count; i++) free(files[i]);
+            free(files);
             if (depth < IMPORT_SEARCH_DEPTH) {
                 strcat(full, "/");
                 strcat(spelled, "/");
                 list_importable(search, full, spelled, depth + 1);
             }
         } else if (S_ISREG(info.st_mode) && len > 5 && strcmp(name + len - 5, ".wind") == 0) {
-            /* A file cannot import itself. */
-            char *real_path = path_canonical(full);
-            const char *own = search->doc->unit.real_path;
-            if (!real_path || !own || strcmp(real_path, own) != 0) {
-                Buf *buf = search->buf;
-                Str text = {spelled, strlen(spelled)};
-                if (search->count++) buf_puts(buf, ",");
-                buf_puts(buf, "{\"label\":");
-                buf_json_string(buf, text);
-                buf_printf(buf, ",\"kind\":%d,\"filterText\":", LSP_COMPLETION_FILE);
-                buf_json_string(buf, text);
-                buf_puts(buf, ",\"textEdit\":{\"range\":");
-                write_range(buf, search->doc->unit.src, search->typed);
-                buf_puts(buf, ",\"newText\":");
-                buf_json_string(buf, text);
-                buf_puts(buf, "}}");
-            }
-            free(real_path);
+            add_importable(search, full, (Str){spelled, strlen(spelled) - (search->bare ? 5 : 0)},
+                           LSP_COMPLETION_FILE);
         }
         free(full);
         free(spelled);
@@ -631,31 +680,197 @@ static void list_importable(ImportSearch *search, const char *dir_path, const ch
     closedir(entries);
 }
 
-/* Completes the path of an import with every Wind file at or below the
-   directory the path so far points into, each as the whole path to write.
+/* The region of the document from offset - len to offset, with its line and
+   column, for a completion item that replaces it. */
+static SrcLoc region_before(Str src, size_t offset, size_t len) {
+    SrcLoc loc = {.offset = offset - len, .len = len, .line = 1, .col = 1};
+    for (size_t i = 0; i < loc.offset; i++) {
+        loc.col++;
+        if (src.data[i] == '\n') {
+            loc.line++;
+            loc.col = 1;
+        }
+    }
+    return loc;
+}
+
+/* Completes the path of an import with every Wind file and every folder
+   that holds one at or below the directory the path so far points into,
+   each as the whole path to write.
    An item replaces all of what was typed, so that the client need not agree
-   with the server on what a word is inside a string. */
-static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str typed) {
+   with the server on what a word is inside a path. A path that starts with
+   "::" is looked for in the libraries directory. */
+static void complete_import_path(Buf *buf, const Doc *doc, size_t offset, Str typed,
+                                 bool quoted) {
     size_t dir_len = typed.len;
     while (dir_len > 0 && typed.data[dir_len - 1] != '/') dir_len--;
 
-    ImportSearch search = {.buf = buf, .doc = doc};
-    search.typed = (SrcLoc){.offset = offset - typed.len, .len = typed.len, .line = 1, .col = 1};
-    for (size_t i = 0; i < search.typed.offset; i++) {
-        search.typed.col++;
-        if (doc->unit.src.data[i] == '\n') {
-            search.typed.line++;
-            search.typed.col = 1;
-        }
-    }
+    ImportSearch search = {.buf = buf, .doc = doc, .bare = !quoted};
+    search.typed = region_before(doc->unit.src, offset, typed.len);
 
-    char *shown = xmalloc(dir_len + 1);
-    memcpy(shown, typed.data, dir_len);
-    shown[dir_len] = '\0';
-    char *dir_path = path_beside(doc->path, (Str){typed.data, dir_len});
+    bool in_libs = typed.len >= 2 && typed.data[0] == ':' && typed.data[1] == ':';
+    if (typed.len >= 1 && typed.data[0] == ':' && !in_libs) return;
+    if (in_libs && !libs_dir()) return;
+
+    /* The directory as the import spells it, and where it is. */
+    size_t shown_len = in_libs && dir_len < 2 ? 2 : dir_len;
+    char *shown = xmalloc(shown_len + 1);
+    memcpy(shown, in_libs && dir_len < 2 ? "::" : typed.data, shown_len);
+    shown[shown_len] = '\0';
+    char *dir_path;
+    if (in_libs) {
+        Str inside = {shown + 2, shown_len - 2};
+        dir_path = xmalloc(strlen(libs_dir()) + inside.len + 2);
+        sprintf(dir_path, "%s/%.*s", libs_dir(), (int)inside.len, inside.data);
+    } else {
+        dir_path = path_beside(doc->path, (Str){typed.data, dir_len});
+    }
     list_importable(&search, dir_path, shown, 0);
     free(dir_path);
     free(shown);
+}
+
+/* If offset is inside the value of a "#board" setting, as in '#board ard|'
+   or '#board "ard|', sets *typed to the value up to the cursor and returns
+   true. */
+static bool board_before(Str src, size_t offset, Str *typed) {
+    size_t start = offset;
+    while (start > 0 && src.data[start - 1] != '\n') start--;
+    size_t i = start;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (offset - i < 6 || memcmp(src.data + i, "#board", 6) != 0) return false;
+    i += 6;
+    if (i == offset || (src.data[i] != ' ' && src.data[i] != '\t')) return false;
+    while (i < offset && (src.data[i] == ' ' || src.data[i] == '\t')) i++;
+    if (i < offset && src.data[i] == '"') i++;
+    for (size_t j = i; j < offset; j++) {
+        if (src.data[j] == ' ' || src.data[j] == '\t' || src.data[j] == '"') return false;
+    }
+    *typed = (Str){src.data + i, offset - i};
+    return true;
+}
+
+/* A board that "#board" can name: its FQBN, its name, and the port it is
+   connected on, if it is. */
+typedef struct {
+    Str fqbn;
+    Str name;
+    Str port;
+} Board;
+
+typedef struct {
+    Arena arena; /* holds the boards' text */
+    Board *items;
+    size_t count;
+    size_t cap;
+    time_t read_at;
+    bool read;
+} BoardList;
+
+enum {
+    /* How long, in seconds, the boards found connected are trusted before
+       arduino-cli is asked again: asking takes about a second, and the
+       completion is asked for with each key typed. */
+    CONNECTED_BOARDS_SECONDS = 15,
+};
+
+static void add_board(BoardList *list, const Json *board, Str port) {
+    Board item = {.port = port};
+    if (!json_string(json_get(board, "fqbn"), &item.fqbn) || !item.fqbn.len) return;
+    json_string(json_get(board, "name"), &item.name);
+    ARENA_PUSH(&list->arena, list->items, list->count, list->cap, item);
+}
+
+/* Fills list from what arduino-cli prints for these arguments, as JSON:
+   "board listall" for the boards of the installed cores, "board list" for
+   the ones connected. Empty if arduino-cli is not installed. */
+static void read_boards(BoardList *list, const char *command) {
+    arena_release(&list->arena);
+    list->items = NULL;
+    list->count = list->cap = 0;
+    list->read = true;
+    list->read_at = time(NULL);
+    if (!program_on_path("arduino-cli")) return;
+    char *argv[] = {"arduino-cli", "board", (char *)command, "--format", "json", NULL};
+    int status;
+    char *out = program_output("arduino-cli", argv, &status);
+    Json *root = status == 0 ? json_parse(&list->arena, (Str){out, strlen(out)}) : NULL;
+    const Json *boards = json_get(root, "boards");
+    for (size_t i = 0; i < json_count(boards); i++) {
+        add_board(list, json_at(boards, i), (Str){0});
+    }
+    const Json *ports = json_get(root, "detected_ports");
+    for (size_t i = 0; i < json_count(ports); i++) {
+        const Json *port = json_at(ports, i);
+        Str address = {0};
+        json_string(json_get(json_get(port, "port"), "address"), &address);
+        const Json *matching = json_get(port, "matching_boards");
+        for (size_t j = 0; j < json_count(matching); j++) {
+            add_board(list, json_at(matching, j), address);
+        }
+    }
+    free(out);
+}
+
+static BoardList installed_boards;
+static BoardList connected_boards;
+
+static void write_board(Buf *buf, Str src, SrcLoc typed, const Board *board, bool *first) {
+    if (!*first) buf_puts(buf, ",");
+    *first = false;
+    buf_puts(buf, "{\"label\":");
+    buf_json_string(buf, board->fqbn);
+    buf_printf(buf, ",\"kind\":%d,\"detail\":", LSP_COMPLETION_VALUE);
+    if (board->port.len) {
+        size_t len = board->name.len + board->port.len + 20;
+        char *detail = xmalloc(len);
+        snprintf(detail, len, "%.*s, connected on %.*s", (int)board->name.len,
+                 board->name.data, (int)board->port.len, board->port.data);
+        buf_json_string(buf, (Str){detail, strlen(detail)});
+        free(detail);
+    } else {
+        buf_json_string(buf, board->name);
+    }
+    /* Connected boards sort first. */
+    buf_puts(buf, ",\"sortText\":");
+    size_t len = board->fqbn.len + 2;
+    char *sort = xmalloc(len + 1);
+    snprintf(sort, len + 1, "%c%.*s", board->port.len ? '0' : '1', (int)board->fqbn.len,
+             board->fqbn.data);
+    buf_json_string(buf, (Str){sort, strlen(sort)});
+    free(sort);
+    buf_puts(buf, ",\"filterText\":");
+    buf_json_string(buf, board->fqbn);
+    buf_puts(buf, ",\"textEdit\":{\"range\":");
+    write_range(buf, src, typed);
+    buf_puts(buf, ",\"newText\":");
+    buf_json_string(buf, board->fqbn);
+    buf_puts(buf, "}}");
+}
+
+/* Completes the value of "#board" with the boards that arduino-cli knows:
+   those connected now, and then every board of the installed cores. An item
+   replaces all of what was typed, as the FQBN's ":" may not count as part of
+   a word to the client. */
+static void complete_board(Buf *buf, const Doc *doc, size_t offset, Str typed) {
+    if (!installed_boards.read) read_boards(&installed_boards, "listall");
+    if (!connected_boards.read ||
+        time(NULL) - connected_boards.read_at >= CONNECTED_BOARDS_SECONDS) {
+        read_boards(&connected_boards, "list");
+    }
+    SrcLoc region = region_before(doc->unit.src, offset, typed.len);
+    bool first = true;
+    for (size_t i = 0; i < connected_boards.count; i++) {
+        write_board(buf, doc->unit.src, region, &connected_boards.items[i], &first);
+    }
+    for (size_t i = 0; i < installed_boards.count; i++) {
+        const Board *board = &installed_boards.items[i];
+        bool shown = false;
+        for (size_t j = 0; j < connected_boards.count && !shown; j++) {
+            shown = str_eq(connected_boards.items[j].fqbn, board->fqbn);
+        }
+        if (!shown) write_board(buf, doc->unit.src, region, board, &first);
+    }
 }
 
 static void handle_completion(Server *server, Arena *arena, const Json *id,
@@ -666,8 +881,23 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     Buf buf = begin_result(arena, id);
     buf_puts(&buf, "[");
     Str typed;
-    if (doc && import_path_before(doc->unit.src, offset, &typed)) {
-        complete_import_path(&buf, doc, offset, typed);
+    bool quoted;
+    if (doc && board_before(doc->unit.src, offset, &typed)) {
+        complete_board(&buf, doc, offset, typed);
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
+    if (doc && import_path_before(doc->unit.src, offset, &typed, &quoted)) {
+        complete_import_path(&buf, doc, offset, typed, quoted);
+        buf_puts(&buf, "]");
+        send_result(&buf);
+        return;
+    }
+    /* ":" asks for completion only to start the "::" of a library path;
+       after a label or the ":" of a conditional there is nothing to offer. */
+    if (doc && offset > 0 && offset <= doc->unit.src.len &&
+        doc->unit.src.data[offset - 1] == ':') {
         buf_puts(&buf, "]");
         send_result(&buf);
         return;
@@ -676,12 +906,15 @@ static void handle_completion(Server *server, Arena *arena, const Json *id,
     if (module) {
         /* After "module." only what the module exports can follow. */
         bool first = true;
-        for (size_t i = 0; module->module && i < module->module->symbols.count; i++) {
-            const Symbol *symbol = module->module->symbols.items[i];
-            if (!symbol->exported) continue;
-            if (!first) buf_puts(&buf, ",");
-            write_completion(&buf, arena, symbol);
-            first = false;
+        for (size_t part = 0; part < module->part_count; part++) {
+            const Unit *unit = module->parts[part];
+            for (size_t i = 0; i < unit->symbols.count; i++) {
+                const Symbol *symbol = unit->symbols.items[i];
+                if (!symbol->exported || !symbol->global) continue;
+                if (!first) buf_puts(&buf, ",");
+                write_completion(&buf, arena, symbol);
+                first = false;
+            }
         }
         buf_puts(&buf, "]");
         send_result(&buf);
@@ -710,7 +943,7 @@ static void handle_initialize(Arena *arena, const Json *id) {
              "\"textDocumentSync\":{\"openClose\":true,\"change\":1,\"save\":true},"
              "\"hoverProvider\":true,"
              "\"definitionProvider\":true,"
-             "\"completionProvider\":{\"triggerCharacters\":[\".\",\"\\\"\",\"/\"]}},"
+             "\"completionProvider\":{\"triggerCharacters\":[\".\",\"\\\"\",\"/\",\":\"]}},"
              "\"serverInfo\":{\"name\":\"wind\",\"version\":\"" WIND_VERSION "\"}}");
     send_result(&buf);
 }

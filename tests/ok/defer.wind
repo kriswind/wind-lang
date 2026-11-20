@@ -1,0 +1,67 @@
+// "defer" runs a statement as its block is left: at the block's end, or by
+// a return, a break or a continue, the latest first.
+
+int calls = 0
+
+int counted(int value) {
+    defer calls++
+    return value * 2
+}
+
+// The value is worked out before the deferred statements run.
+int before_cleanup() {
+    int n = 1
+    defer n = 100
+    return n
+}
+
+void steps() {
+    defer cout << "steps: last\n"
+    defer cout << "steps: second\n"
+    cout << "steps: first\n"
+}
+
+int find(int target) {
+    int values[..] = {4, 8, 15, 16, 23, 42}
+    defer delete(values)
+    for (int i = 0; i < len(values); i++) {
+        if (values[i] == target) return i
+    }
+    return -1
+}
+
+int main() {
+    steps()
+    cout << counted(5) << " " << counted(6) << " " << calls << "\n"
+    cout << before_cleanup() << "\n"
+    cout << find(16) << " " << find(5) << "\n"
+
+    for (int i = 0; i < 4; i++) {
+        defer cout << "] "
+        cout << "[" << i
+        if (i == 1) continue
+        if (i == 3) break
+        cout << "."
+    }
+    cout << "\n"
+
+    int round = 0
+    while (true) {
+        round++
+        defer {
+            cout << "round " << round << " done\n"
+        }
+        if (round == 2) break
+    }
+
+    for (int pass = 0; pass < 1; pass++) {
+        if (pass == 0) {
+            defer cout << "if block left\n"
+            cout << "in the if block\n"
+        }
+        cout << "after the if block\n"
+    }
+    defer cout << "main returns\n"
+    cout << "main ends\n"
+    return 0
+}

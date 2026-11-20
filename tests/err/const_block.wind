@@ -1,0 +1,18 @@
+// What a "const { ... }" block cannot hold.
+const {
+    int SIZE = 4
+    const int AGAIN = 1
+    int MISSING
+    cout << SIZE
+    int later = read()
+}
+
+int read() { return 1 }
+
+int main() {
+    if (SIZE > 0) const {
+        int INSIDE = 1
+    }
+    SIZE = 5
+    return 0
+}

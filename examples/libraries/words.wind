@@ -1,0 +1,42 @@
+// Looks through a handful of words with ::text: counts letters and digits,
+// reads the numbers among them, finds what matches, and writes each word
+// with a capital first letter.
+
+import ::text
+
+int main() {
+    string words[8] = {"wind", "blows", "42", "times", "over", "-7", "windmills", "3rd"}
+
+    int letters = 0
+    int digits = 0
+    int sum = 0
+    for (int i = 0; i < len(words); i++) {
+        string word = words[i]
+        for (int j = 0; j < len(word); j++) {
+            if (text.is_letter(word[j])) letters++
+            if (text.is_digit(word[j])) digits++
+        }
+        int n
+        if (text.parse_int(word, &n)) sum += n
+    }
+    cout << letters << " letters, " << digits << " digits, and the numbers add up to " <<
+        sum << "\n"
+
+    cout << "with \"wind\" in them:"
+    for (int i = 0; i < len(words); i++) {
+        if (text.contains(words[i], "wind")) cout << " " << words[i]
+    }
+    cout << "\nending in s:"
+    for (int i = 0; i < len(words); i++) {
+        if (text.ends_with(words[i], "s")) cout << " " << words[i]
+    }
+
+    cout << "\ncapitalized:"
+    for (int i = 0; i < len(words); i++) {
+        string word = words[i]
+        cout << " " << text.to_upper(word[0])
+        for (int j = 1; j < len(word); j++) cout << word[j]
+    }
+    cout << "\n"
+    return 0
+}

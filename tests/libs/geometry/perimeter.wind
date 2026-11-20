@@ -1,0 +1,1 @@
+export int squarePerimeter(int side) { return 4 * side }

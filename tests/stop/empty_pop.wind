@@ -1,0 +1,8 @@
+// Popping from an empty array stops the program.
+int main() {
+    string names[..]
+    append(names, "only")
+    cout << pop(names) << "\n"
+    cout << pop(names) << "\n"
+    return 0
+}

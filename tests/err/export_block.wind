@@ -1,0 +1,17 @@
+// What an "export { ... }" block cannot hold, and what it leaves private.
+import ::shelf
+
+export {
+    int count = 0
+    export const int TWICE = 2
+    import ::tally
+    const int KEPT = 1
+}
+
+int main() {
+    cout << shelf.weight() << KEPT << "\n"
+    export {
+        const int INSIDE = 1
+    }
+    return 0
+}

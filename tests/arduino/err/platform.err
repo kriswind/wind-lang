@@ -1,0 +1,5 @@
+tests/arduino/err/platform.wind:2:1: error: type 'i128' is not available when building for arduino
+tests/arduino/err/platform.wind:3:1: error: type 'u128' is not available when building for arduino
+tests/arduino/err/platform.wind:4:13: error: integer literal does not fit in 'int'
+tests/arduino/err/platform.wind:5:5: error: a program for arduino has no arguments; 'main' takes no parameters
+tests/arduino/err/platform.wind:6:5: error: 'loop' is called over and over by arduino, so it must be written 'void loop()'

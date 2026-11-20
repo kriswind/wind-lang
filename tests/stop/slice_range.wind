@@ -1,0 +1,7 @@
+// A slice whose ends are out of order stops the program.
+int main() {
+    string s = "abc"
+    int from = 2
+    cout << s[from:1] << "\n"
+    return 0
+}

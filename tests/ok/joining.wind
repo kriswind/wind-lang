@@ -1,0 +1,35 @@
+// "+" with a string on either side joins the two as text, the other
+// written as cout would write it. The text lives until the program ends,
+// or until the "#temp" block it was made in ends.
+
+int noisy() {
+    cout << "noisy "
+    return 7
+}
+int main() {
+    string name = "wind"
+    int runs = 3
+    string line = "took " + 1.5 + " s for " + runs + " runs of " + name + '!'
+    cout << line << "\n"
+    string s = "a"
+    s += "b"
+    s += 3
+    cout << s << " " << len(s) << " " << (s == "ab3") << "\n"
+    cout << ("x" + noisy() + "y") << "\n"
+    string row = "[" + left(name, 6) + "|" + right(fixed(2.0 / 3.0, 3), 7) + "]"
+    cout << row << " " << len(row) << "\n"
+    int kept = 0
+    for (int i = 0; i < 1000; i++) {
+        #temp {
+            string key = "item-" + i
+            kept += len(key)
+        }
+    }
+    cout << kept << "\n"
+    int words[string]
+    #temp {
+        for (int i = 0; i < 3; i++) words["w" + i] = i
+    }
+    cout << words << "\n"
+    return 0
+}

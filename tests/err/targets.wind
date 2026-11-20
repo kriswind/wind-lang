@@ -1,0 +1,3 @@
+#target avr
+#board uno
+int main() { return 0 }

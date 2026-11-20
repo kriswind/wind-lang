@@ -1,0 +1,81 @@
+// Coin change: for a set of coin denominations, the number of ways to make
+// every amount up to a limit (counting each multiset of coins once, modulo
+// a prime), and the fewest coins that make it. Each table is one row over
+// the amounts, filled one coin at a time from the smallest amount up, so a
+// coin can be used any number of times. The coins are distinct values from
+// 2 to 200, from the shared generator, so some amounts cannot be made.
+// Prints the sum of the ways over every amount from 1 to the limit (modulo
+// the prime), the sum of the fewest coins over the amounts that can be
+// made, and how many cannot.
+//
+//     wind run main.wind test|bench
+
+const int MAX_COINS = 40
+const int MAX_AMOUNT = 1000000
+const int PRIME = 1000000007
+
+int coins[MAX_COINS]
+int ways[MAX_AMOUNT + 1]
+int fewest[MAX_AMOUNT + 1]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+// Whether value is among the first count coins.
+bool chosen(int value, int count) {
+    for (int i = 0; i < count; i++) {
+        if (coins[i] == value) return true
+    }
+    return false
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int count = bench ? MAX_COINS : 8
+    int limit = bench ? MAX_AMOUNT : 2000
+    for (int i = 0; i < count; i++) {
+        int coin = 2 + random() % 199
+        while (chosen(coin, i)) coin = 2 + random() % 199
+        coins[i] = coin
+    }
+
+    ways[0] = 1
+    for (int a = 1; a <= limit; a++) ways[a] = 0
+    for (int i = 0; i < count; i++) {
+        int coin = coins[i]
+        for (int a = coin; a <= limit; a++) {
+            int total = ways[a] + ways[a - coin]
+            if (total >= PRIME) total -= PRIME
+            ways[a] = total
+        }
+    }
+
+    // An amount that cannot be made keeps the value limit + 1.
+    fewest[0] = 0
+    for (int a = 1; a <= limit; a++) fewest[a] = limit + 1
+    for (int i = 0; i < count; i++) {
+        int coin = coins[i]
+        for (int a = coin; a <= limit; a++) {
+            int used = fewest[a - coin] + 1
+            if (used < fewest[a]) fewest[a] = used
+        }
+    }
+
+    int ways_sum = 0
+    int fewest_sum = 0
+    int unreachable = 0
+    for (int a = 1; a <= limit; a++) {
+        ways_sum += ways[a]
+        if (ways_sum >= PRIME) ways_sum -= PRIME
+        if (fewest[a] > limit) unreachable++
+        else fewest_sum += fewest[a]
+    }
+    cout << "ways " << ways_sum << "\n"
+    cout << "fewest " << fewest_sum << "\n"
+    cout << "unreachable " << unreachable << "\n"
+    return 0
+}

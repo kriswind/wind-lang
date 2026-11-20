@@ -1,0 +1,1 @@
+464 pairs, 634 distinct values

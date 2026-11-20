@@ -1,0 +1,30 @@
+// What a struct holding a growable array or a map cannot do: be copied.
+struct Bag {
+    string name
+    int items[..]
+}
+
+struct Shelf {
+    Bag bag
+}
+
+int counts[Bag]
+Bag named[string]
+
+Bag make() { return {"new"} }
+
+int main() {
+    Bag one = {"one"}
+    Bag two = one
+    Bag three = {"three", {1, 2}}
+    two = one
+    Bag bags[..]
+    append(bags, one)
+    Bag copied[..] = clone(bags)
+    Shelf shelf = {}
+    Shelf other = shelf
+    int n = one.items
+    one.items = 5
+    cout << n << "\n"
+    return 0
+}

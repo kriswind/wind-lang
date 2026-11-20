@@ -1,0 +1,17 @@
+// Modules made of folders: an import of a folder brings in every .wind file
+// in it and below it, as one module.
+import ::geometry
+import ::geometry as shapes
+import ::geometry/solids
+import ::geometry/perimeter
+import kit
+import kit/ as same_kit
+import kit/parts
+import ::tally
+
+cout << geo.NAME << " " << geo.squareArea(3) << " " << shapes.squarePerimeter(3) << " " <<
+    geo.cubeVolume(2) << "\n"
+cout << solids.cubeVolume(3) << " " << perimeter.squarePerimeter(5) << "\n"
+cout << kit.describe(1) << ", " << parts.label(2) << ", " << same_kit.label(3) << "\n"
+int values[3] = {4, 5, 6}
+cout << tally.count(values) << "\n"

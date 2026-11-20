@@ -1,0 +1,66 @@
+// Arrays of arrays, arrays in structs, and growable arrays and maps that
+// hold arrays: indexed, printed, passed, copied and grown.
+struct Board {
+    string name
+    int cells[3][3]
+    int moves[..]
+}
+
+int total(const int grid[][3]) {
+    int sum = 0
+    for (int r = 0; r < len(grid); r++) {
+        for (int c = 0; c < len(grid[r]); c++) sum += grid[r][c]
+    }
+    return sum
+}
+
+void add_row(int rows[..][..], int n) {
+    int row[..]
+    for (int i = 0; i < n; i++) append(row, i)
+    append(rows, clone(row))
+    delete(row)
+}
+
+int main() {
+    int grid[2][3] = {{1, 2, 3}, {4, 5, 6}}
+    grid[1][2] = 60
+    cout << grid << " " << len(grid) << " " << len(grid[0]) << " " << total(grid) << "\n"
+
+    Board b = {"b", {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {7}}
+    b.cells[2][0] = 5
+    append(b.moves, 8)
+    cout << b << "\n"
+    Board copy = {"c"}
+    copy.cells = b.cells
+    copy.cells[0][0] = 9
+    cout << copy.cells << " " << b.cells[0][0] << "\n"
+
+    int rows[..][..]
+    add_row(rows, 2)
+    add_row(rows, 4)
+    append(rows[0], 99)
+    append(rows, {5, 6, 7})
+    cout << rows << " " << len(rows[1]) << "\n"
+    for (int i, int row[..] in rows) cout << i << ":" << len(row) << " "
+    cout << "\n"
+
+    int groups[string][..]
+    append(groups["even"], 2)
+    append(groups["odd"], 1, 3)
+    append(groups["even"], 4)
+    cout << groups << " " << len(groups["none"]) << " " << has(groups, "none") << "\n"
+    for (string k, int v[..] in groups) cout << k << "=" << len(v) << " "
+    cout << "\n"
+
+    int points[..][2]
+    append(points, {1, 2}, {3, 4})
+    points[1][0] = 30
+    int last[2] = pop(points)
+    cout << points << " " << last << "\n"
+
+    int keep[..] = clone(rows[1])
+    rows[1] = clone(rows[0])
+    cout << keep << " " << rows << "\n"
+
+    return 0
+}

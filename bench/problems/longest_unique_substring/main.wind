@@ -1,0 +1,41 @@
+// Longest unique substring: the longest run with no repeated letter in a
+// long string of random letters from a to z, found by sliding a window
+// over the string. The window starts just past the last time its newest
+// letter was seen. Prints the length, the start of the first longest run,
+// and the run itself.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 20000000
+
+char text[MAX]
+int last[26]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 10000
+    for (int i = 0; i < n; i++) text[i] = char(97 + random() % 26)
+    for (int c = 0; c < 26; c++) last[c] = -1
+    int start = 0
+    int best = 0
+    int bestStart = 0
+    for (int i = 0; i < n; i++) {
+        int c = int(text[i]) - 97
+        if (last[c] >= start) start = last[c] + 1
+        last[c] = i
+        if (i - start + 1 > best) {
+            best = i - start + 1
+            bestStart = start
+        }
+    }
+    cout << best << " letters from " << bestStart << ": "
+    for (int i = bestStart; i < bestStart + best; i++) cout << text[i]
+    cout << "\n"
+    return 0
+}

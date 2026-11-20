@@ -89,8 +89,12 @@ static size_t encode_utf8(unsigned cp, char *out) {
 
 /* Called with the opening quote already consumed. */
 static bool parse_string(JsonParser *jp, Str *out) {
-    /* Every escape decodes to no more bytes than its spelling occupies. */
-    char *buf = arena_alloc(jp->arena, (size_t)(jp->end - jp->p));
+    /* Room for the string's spelling, up to its closing quote, which is
+       enough: every escape decodes to no more bytes than it is spelled in. */
+    const char *close = jp->p;
+    while (close < jp->end && *close != '"') close += *close == '\\' ? 2 : 1;
+    if (close > jp->end) close = jp->end;
+    char *buf = arena_alloc(jp->arena, (size_t)(close - jp->p));
     size_t len = 0;
     for (;;) {
         if (jp->p >= jp->end) return false;

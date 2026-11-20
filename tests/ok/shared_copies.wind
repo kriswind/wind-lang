@@ -1,0 +1,38 @@
+// A struct holding growable arrays or maps can be passed to a function,
+// gone through with "for ... in", or given a name of its own, as a copy
+// that shares those with the original: it reads them, and nothing in the
+// copy can change.
+
+struct Bag {
+    string name
+    int items[..]
+    int counts[string]
+}
+
+int total(Bag bag) {
+    int sum = 0
+    for (int item in bag.items) sum += item
+    return sum + bag.counts["extra"]
+}
+
+void show(Bag bag) {
+    cout << bag.name << ": " << bag.items << " " << len(bag.items) << " " << total(bag) << "\n"
+}
+
+int main() {
+    Bag bags[..]
+    append(bags, {"first"}, {"second"})
+    append(bags[0].items, 1, 2, 3)
+    append(bags[1].items, 10)
+    bags[1].counts["extra"] = 5
+    for (Bag bag in bags) show(bag)
+    show(bags[0])
+    Bag lone = {"lone"}
+    append(lone.items, 7)
+    show(lone)
+    cout << total({"empty"}) << "\n"
+    Bag second = bags[1]
+    cout << second.name << " " << second.items << " " << second.counts << "\n"
+    delete(lone.items)
+    return 0
+}

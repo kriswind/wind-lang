@@ -1,0 +1,5 @@
+// With parts.wind, the module kit, named after its folder since neither
+// file has a #module.
+import parts
+
+export string describe(int n) { return parts.label(n) }

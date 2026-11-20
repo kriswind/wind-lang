@@ -1,0 +1,13 @@
+#target arduino
+#board arduino:avr:uno
+
+// Division, float conversion, assert and panic on a board.
+int main() {
+    int a = 17
+    int b = 5
+    float f = 3.75
+    cout << a / b << " " << a % b << " " << u8(f) << "\n"
+    assert(a > b)
+    if (b == 0) panic("b is ", b)
+    return 0
+}

@@ -9,6 +9,28 @@ typedef struct Stmt Stmt;
 typedef struct Symbol Symbol;
 typedef struct Unit Unit;
 
+/* The built-in functions on growable arrays. */
+typedef enum {
+    BUILTIN_NONE,
+    BUILTIN_APPEND,  /* append(xs, v, ...): adds values at the end */
+    BUILTIN_POP,     /* pop(xs): removes the last element and gives it */
+    BUILTIN_CLEAR,   /* clear(xs): removes every element, keeping the room */
+    BUILTIN_RESERVE, /* reserve(xs, n): makes room for n elements */
+    BUILTIN_DELETE,  /* delete(xs): frees the elements, leaving it empty */
+    BUILTIN_CLONE,   /* clone(a): a new growable array with a copy of a's elements */
+    BUILTIN_HAS,     /* has(m, k): whether a map holds a key */
+    BUILTIN_REMOVE,  /* remove(m, k): takes a key out of a map */
+    /* What cout, cerr and appending to a char array can write a value as: */
+    BUILTIN_LEFT,    /* left(v, width): v and then spaces, to fill width */
+    BUILTIN_RIGHT,   /* right(v, width): spaces and then v */
+    BUILTIN_FIXED,   /* fixed(x, digits): x with that many digits after the point */
+    BUILTIN_EXIT,    /* exit(status): ends the program */
+    BUILTIN_SORT,    /* sort(xs), sort(rows, .field): into order, keeping equals in order */
+    BUILTIN_REVERSE, /* reverse(xs): into the opposite order */
+    BUILTIN_ASSERT,  /* assert(condition): stops the program if it is false */
+    BUILTIN_PANIC,   /* panic(values...): stops the program with a message */
+} Builtin;
+
 /* ---- Symbols ---- */
 
 typedef enum {
@@ -30,24 +52,34 @@ struct Symbol {
        name of its own in the source, and this is its path. */
     SrcLoc loc;
     /* SYM_FUNC: the return type; SYM_TYPE: the type it names;
-       SYM_ENUM_VALUE: its enum; SYM_LABEL, SYM_MODULE: unused; an array: the
-       type of its elements. */
+       SYM_ENUM_VALUE: its enum; SYM_LABEL, SYM_MODULE: unused. An array or
+       a map has a container type: a parameter "T name[]" is a slice, a view
+       of the caller's elements; "T name[..]" and "V name[K]" are the
+       caller's own growable array or map. */
     TypeKind type;
     long long value; /* SYM_ENUM_VALUE */
-    /* An array is either fixed (declared with a length, which it owns) or a
-       slice (an array parameter: a view of someone else's elements, with a
-       length known only at run time). */
-    bool is_array;
-    bool is_slice;
-    size_t length; /* fixed arrays only */
+    /* A variable declared "static" in a function, which lives as long as
+       the program, as one at the top level does. */
+    bool is_static;
+    /* A loop variable of "for (... in ...)", which cannot be assigned. */
+    bool loop_bound;
+    /* An array parameter declared "const": a view whose elements cannot be
+       changed through it. */
+    bool read_only;
+    /* A parameter or loop variable that holds a copy of a struct with a
+       growable array or a map in it. The copy shares those elements with
+       the original, so nothing in it can be changed or pointed to. */
+    bool shares;
     /* Unique within the unit; keeps generated C names from colliding. */
     int id;
     /* The file the symbol is declared in. */
     const Unit *unit;
     /* Marked "export": other files that import this one can use it. */
     bool exported;
-    /* SYM_MODULE: the imported file, or NULL if it could not be loaded. */
-    const Unit *module;
+    /* SYM_MODULE: the files the import brought in: one for a file, every
+       ".wind" file in it for a folder. None if they could not be loaded. */
+    const Unit **parts;
+    size_t part_count;
     /* The declaring statement: STMT_CONST, STMT_VAR, STMT_FUNC,
        STMT_IMPORT or STMT_TYPE. NULL for parameters and labels. */
     const Stmt *decl;
@@ -60,7 +92,23 @@ struct Symbol {
     size_t visible_from;
     size_t visible_to;
     bool used;
+    /* A variable some "&" points into, which a call can therefore change. */
+    bool address_taken;
 };
+
+/* True for a type that is an array of any kind: fixed, a view, or
+   growable. */
+static inline bool any_array(TypeKind type) {
+    ContainerKind kind = type_container(type);
+    return kind == CONTAINER_ARRAY || kind == CONTAINER_SLICE || kind == CONTAINER_LIST;
+}
+
+/* True for an array whose length is known only when the program runs, and
+   which is held as a pointer to its elements and their count. */
+static inline bool runtime_length(TypeKind type) {
+    ContainerKind kind = type_container(type);
+    return kind == CONTAINER_SLICE || kind == CONTAINER_LIST;
+}
 
 typedef struct {
     Symbol **items;
@@ -87,7 +135,28 @@ typedef struct {
     SrcLoc module_loc;
     SrcLoc name_loc;
     Expr *of; /* typeof's operand */
+    /* "ret (*)(params)", a pointer to a function, as written; NULL for any
+       other type. */
+    struct FuncSig *sig;
 } TypeRef;
+
+/* What follows a name in a declaration to make it an array or a map:
+   "[n]", "[]", "[..]" or "[K]". A key written as a name is parsed as a
+   length, and found to be a type by the checker. */
+typedef enum {
+    SUFFIX_LENGTH, /* "[n]" */
+    SUFFIX_OPEN,   /* "[]" */
+    SUFFIX_GROWABLE,
+    SUFFIX_MAP, /* "[K]" with K a built-in type */
+} SuffixKind;
+
+typedef struct {
+    SuffixKind kind;
+    SrcLoc loc;
+    Expr *length;
+    TypeKind key;
+    TypeRef *key_ref;
+} Suffix;
 
 /* ---- Expressions ---- */
 
@@ -115,6 +184,8 @@ typedef enum {
     /* "cin" used as a value: whether the most recent read succeeded. */
     EXPR_CIN_OK,
     EXPR_INDEX,
+    EXPR_SLICE, /* "s[from:to]": a view of part of a string */
+    EXPR_KEY,   /* ".field": the field that sort(rows, .field) orders by */
     /* The built-in len(x); a call to "len" becomes this during analysis. */
     EXPR_LEN,
     /* Replaced by an EXPR_INT_LIT holding the size during analysis. */
@@ -154,6 +225,12 @@ struct Expr {
     TypeKind type; /* set by unit_analyze */
     /* Written as "( expr )", with nothing outside the parentheses. */
     bool parenthesized;
+    /* Checked once already, with the type kept. */
+    bool checked;
+    /* A fixed array or a view, standing for a pointer to its first element,
+       and the array's own type; set by unit_analyze. */
+    bool decayed;
+    TypeKind decayed_from;
     union {
         U128 int_lit;
         Str float_lit; /* spelling, without digit separators */
@@ -167,9 +244,6 @@ struct Expr {
             Str module; /* empty when the name is not qualified */
             SrcLoc module_loc;
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
-            /* An array's name standing for a pointer to its first element;
-               set by unit_analyze. */
-            bool decayed;
         } ident;
         struct {
             Op op;
@@ -188,6 +262,14 @@ struct Expr {
             const Symbol *symbol; /* set by unit_analyze; NULL if undefined */
             Expr **args;
             size_t count;
+            /* Set by unit_analyze for a call of one of the built-in
+               functions on growable arrays, whose first argument is the
+               array; symbol is then NULL. */
+            Builtin builtin;
+            /* A call through a pointer to a function: what gives the
+               pointer, as in "(*f)(x)", "s.on_click(x)" or "f(x)" for a
+               variable f; symbol is then NULL. */
+            Expr *callee;
         } call;
         struct {
             TypeKind to;
@@ -219,11 +301,24 @@ struct Expr {
             Expr *operand;
         } size_of;
         struct {
-            /* An identifier naming an array, or any string or pointer
-               expression. */
+            /* An array, a map, a string or a pointer. */
             Expr *base;
             Expr *index;
+            /* Of a map, as something that is changed: the key is put in
+               if it is missing. Set by unit_analyze. */
+            bool inserts;
         } index;
+        /* EXPR_KEY; index is set by unit_analyze to the field's position */
+        struct {
+            Str name;
+            int index;
+        } key;
+        /* EXPR_SLICE; from and to are NULL where left out: the start, the end */
+        struct {
+            Expr *base;
+            Expr *from;
+            Expr *to;
+        } slice;
         struct {
             Expr *operand; /* as for index.base */
         } len;
@@ -254,6 +349,19 @@ typedef enum {
     STMT_BREAK,
     STMT_CONTINUE,
     STMT_GOTO,
+    /* "for (T x in a)", "for (int i, T x in a)", "for (K k, V v in m)" */
+    STMT_FOR_IN,
+    /* "defer statement": runs the statement when the enclosing block is
+       left, by its end, a return, a break or a continue. */
+    STMT_DEFER,
+    /* What "#temp { ... }" is made of: at its start, noting how much
+       scratch memory there is, and deferred, freeing what was made since. */
+    STMT_SCRATCH,
+    /* "switch (value) { case c: ... default: ... }" */
+    STMT_SWITCH,
+    /* "fallthrough", the last statement of a case that runs on into the
+       next */
+    STMT_FALLTHROUGH,
     STMT_LABEL,
     STMT_RETURN,
     STMT_FUNC,
@@ -261,6 +369,14 @@ typedef enum {
     STMT_TYPE,
     /* "{ ... }" standing on its own, which a directive can be put on. */
     STMT_BLOCK,
+    /* Declarations that a block gives something in common: 'extern
+       "header" { ... }' their header, "export { ... }" their export,
+       "const { ... }" their being constant. Only the parser sees one; the
+       program holds its declarations in its place. */
+    STMT_GROUP,
+    /* "#target name" or "#board name", what the file is compiled for, or
+       "#module name", what an import of it is called. */
+    STMT_SETTING,
 } StmtKind;
 
 /* Whether indexes are tested against the length when the program runs. */
@@ -280,8 +396,11 @@ typedef enum {
 typedef struct {
     Str name;
     SrcLoc loc;
-    TypeKind type; /* field */
+    TypeKind type; /* field: as written before any suffixes; then, once
+                      analyzed, the whole type */
     TypeRef *type_ref;
+    Suffix *suffixes; /* field: "[n]", "[..]" or "[K]" after its name */
+    size_t suffix_count;
     Expr *value; /* enum name: its explicit value, or NULL */
     Symbol *symbol; /* enum name; set by unit_analyze */
 } Member;
@@ -301,14 +420,44 @@ typedef struct {
     SrcLoc close; /* the '}' */
 } Block;
 
+/* One case of a switch: the values that lead to it, which several case
+   labels written one after another share, and what it runs. */
 typedef struct {
-    TypeKind type; /* for an array parameter, the type of its elements */
+    Expr **values;
+    size_t value_count;
+    /* The number each value is, worked out by unit_analyze; NULL in a
+       switch on a string. */
+    long long *numbers;
+    bool is_default; /* "default:" is among its labels */
+    SrcLoc loc;      /* its first label */
+    Block body;
+    bool falls; /* ends with "fallthrough" */
+} SwitchCase;
+
+typedef struct {
+    /* As written before any suffixes; then, once analyzed, the whole type,
+       a container for "T name[]", "T name[..]" or "V name[K]". */
+    TypeKind type;
     TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
     Str name;
     SrcLoc loc;
-    bool is_slice;  /* declared as "T name[]" */
+    Suffix *suffixes;
+    size_t suffix_count;
+    /* Written with "const": for an array, its elements cannot be changed
+       through it, and a constant array can be given for it. */
+    bool is_const;
+    SrcLoc const_loc;
     Symbol *symbol; /* set by unit_analyze */
 } Param;
+
+/* What a pointer to a function points to, as written: "ret (*name)(params)",
+   where a parameter's name may be left out. */
+typedef struct FuncSig {
+    TypeKind ret;
+    TypeRef *ret_ref;
+    Param *params;
+    size_t param_count;
+} FuncSig;
 
 /* A variable that "cin" reads into: an existing one, or one that the read
    itself declares ("cin >> int n"). */
@@ -336,19 +485,47 @@ struct Stmt {
     SrcLoc end;
     /* STMT_CONST, STMT_FUNC, STMT_TYPE: declared with "export". */
     bool exported;
+    /* STMT_CONST, STMT_FUNC: declared with "extern", so that it is defined
+       in C, under its own name. A constant has no value here and a function
+       no body. header is the C header that declares it, or empty, in which
+       case the generated C declares a function itself. */
+    bool external;
+    Str header;
+    /* A header beside the file that declares it, which the library carries:
+       its text, which the generated C holds in place of an #include, and
+       which may use Wind's own types. Empty for any other header. */
+    Str carried;
+    /* The C library a program that uses it must be linked with, as in
+       'link "m"' for -lm, or empty. */
+    Str link;
+    /* STMT_VAR inside a function, declared "static": one variable for the
+       whole program, which keeps its value from one call to the next. */
+    bool is_static;
     /* Set by a directive in front of the statement; covers all of it. */
     BoundsMode bounds;
     union {
         /* STMT_CONST, STMT_VAR */
         struct {
-            TypeKind type; /* for an array, the type of its elements */
+            /* As written before any suffixes; then, once analyzed, the
+               whole type, an array's or a map's included. */
+            TypeKind type;
             TypeRef *type_ref; /* NULL for a built-in type; resolved into "type" */
             Str name;
             Expr *init; /* NULL for a variable left at its zero value */
             Symbol *symbol;
-            /* "T name[length] = { elems }". Elements left out are zero. */
+            /* Its value could not be parsed, which has been reported. The
+               name is declared all the same, so that its uses are not. */
+            bool broken;
+            /* An array or a map: "T name[n]", "T name[]" with its length
+               from its elements, "T name[..]", "V name[K]", or several of
+               these, as in "int grid[3][4]". Its starting elements are
+               elems, and a map's entries elems taken in pairs, a key and
+               then its value; elements left out of a fixed array are zero.
+               A growable array may instead start as init. */
             bool is_array;
-            Expr *length; /* NULL when the length comes from the element count */
+            Suffix *suffixes;
+            size_t suffix_count;
+            bool pairs; /* elems were written "key: value" */
             Expr **elems;
             size_t elem_count;
         } decl;
@@ -360,16 +537,27 @@ struct Stmt {
             Expr *target;
             Expr *value;
             bool compound;
+            bool step; /* written "x++" or "x--" */
             Op op;
         } assign;
         /* STMT_EXPR: always a call */
         Expr *expr;
-        /* STMT_BLOCK */
+        /* STMT_BLOCK; STMT_GROUP, holding the declarations */
         Block block;
-        /* STMT_COUT */
+        /* STMT_SETTING */
+        struct {
+            Str name;  /* "target", "board" or "module" */
+            Str value; /* the target's name, the board's or the module's */
+            SrcLoc value_loc;
+            /* Comes before every statement of the file that is not a
+               setting. */
+            bool leading;
+        } setting;
+        /* STMT_COUT, for "cout" and "cerr" */
         struct {
             Expr **args;
             size_t count;
+            bool to_error; /* "cerr": to the program's error output */
         } cout;
         /* STMT_CIN */
         struct {
@@ -384,17 +572,35 @@ struct Stmt {
             Block else_block;
             bool has_else;
         } if_;
-        /* STMT_WHILE, STMT_DO_WHILE, STMT_FOR */
+        /* STMT_WHILE, STMT_DO_WHILE, STMT_FOR, STMT_FOR_IN */
         struct {
             Stmt *init; /* for only; NULL if left out */
             Expr *cond; /* NULL in a for loop without one: loop forever */
             Stmt *step; /* for only; NULL if left out */
             Block body;
             int id; /* set by unit_analyze; unique among the unit's loops */
+            /* STMT_FOR_IN: the one or two variables named, and what is gone
+               through: an array, a string or a map. */
+            Param each[2];
+            size_t each_count;
+            Expr *over;
         } loop;
-        /* STMT_BREAK, STMT_CONTINUE: the loop it applies to; set by
-           unit_analyze, NULL if it is not inside one. */
+        /* STMT_SWITCH */
+        struct {
+            Expr *subject;
+            SwitchCase *cases;
+            size_t case_count;
+        } switch_;
+        /* STMT_BREAK, STMT_CONTINUE: the loop it applies to, or for a break
+           the switch; set by unit_analyze, NULL if it is not inside one. */
         const Stmt *target;
+        /* STMT_DEFER: what runs when the block is left */
+        Stmt *deferred;
+        /* STMT_SCRATCH: which #temp block, and whether this is its end */
+        struct {
+            int id;
+            bool free;
+        } scratch;
         /* STMT_GOTO, STMT_LABEL */
         struct {
             Str name;
@@ -429,9 +635,11 @@ struct Stmt {
             TypeRef *type_ref;
             Symbol *symbol;
         } type;
-        /* STMT_IMPORT: import "path" [as alias] */
+        /* STMT_IMPORT: import path [as alias], the path written in quotes
+           or without them */
         struct {
-            Str path; /* as written */
+            Str path; /* as written, without the quotes */
+            bool quoted;
             Str alias; /* empty without "as" */
             SrcLoc alias_loc;
             Symbol *symbol; /* set by unit_analyze; NULL if the name is unusable */
@@ -471,6 +679,8 @@ struct Unit {
        file does not exist. */
     const char *real_path;
     Unit *root; /* itself for the root */
+    /* What its "#module" calls it, or empty. */
+    Str module_name;
     /* 0 for the root, and unique among its modules; keeps the generated C
        names of different files apart. */
     int id;
@@ -498,6 +708,18 @@ const char *op_text(Op op);
 bool op_is_shift(Op op);
 
 Program parse_program(Str src, Arena *arena, Diags *diags);
+
+/* What a file says it is compiled for, in the settings at its top: the
+   target's name and the board's, from malloc, or NULL where it says
+   nothing. Read before the file is analyzed, since checking it depends on
+   the target; mistakes in the settings are reported when it is. */
+typedef struct {
+    char *target;
+    char *board;
+} FileSettings;
+
+FileSettings file_settings(Str src);
+void file_settings_release(FileSettings *settings);
 void check_program(Unit *unit);
 
 #endif

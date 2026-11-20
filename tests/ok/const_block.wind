@@ -1,0 +1,24 @@
+// A "const { ... }" block declares each of its lines as a constant, where
+// the block is: at the top level, inside a function, or exported.
+import ::shelf
+
+const {
+    int ROWS = 9
+    int COLUMNS = 9
+    int CELLS = ROWS * COLUMNS
+    string TITLE = "sudoku"
+    int PRIMES[3] = {2, 3, 5}
+}
+
+int border[COLUMNS]
+
+int main() {
+    const {
+        int STEP = 2; int LIMIT = 6
+    }
+    int total = 0
+    for (int i = 0; i < LIMIT; i += STEP) total += i
+    cout << TITLE << " " << CELLS << " " << PRIMES[-1] << " " << len(border) << " " << total
+         << " " << shelf.MAX_JARS << " " << shelf.MAKER << "\n"
+    return 0
+}

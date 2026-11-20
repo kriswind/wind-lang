@@ -1,0 +1,57 @@
+// Game of Life: Conway's rules on a square grid whose edges wrap round (a
+// torus), seeded randomly with about a third of the cells alive, run for an
+// even number of generations between two buffers. Prints how many cells are
+// alive at the end and a checksum of the final grid.
+//
+//     wind run main.wind test|bench
+
+const int MAX_SIZE = 256
+
+u8 first[MAX_SIZE * MAX_SIZE]
+u8 second[MAX_SIZE * MAX_SIZE]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+// One generation: reads the size x size grid in source and writes the next
+// one into target.
+void step(u8 source[], u8 target[], int size) {
+    for (int row = 0; row < size; row++) {
+        int up = (row + size - 1) % size * size
+        int middle = row * size
+        int down = (row + 1) % size * size
+        for (int column = 0; column < size; column++) {
+            int left = (column + size - 1) % size
+            int right = (column + 1) % size
+            u8 count = source[up + left] + source[up + column] + source[up + right] +
+                source[middle + left] + source[middle + right] +
+                source[down + left] + source[down + column] + source[down + right]
+            bool alive = source[middle + column] == 1
+            target[middle + column] = count == 3 || alive && count == 2 ? 1 : 0
+        }
+    }
+}
+
+int main(int argc, string argv[]) {
+    bool bench = argc > 1 && argv[1] == "bench"
+    int size = bench ? MAX_SIZE : 32
+    int generations = bench ? 500 : 40
+    int cells = size * size
+    for (int i = 0; i < cells; i++) first[i] = random() % 3 == 0 ? 1 : 0
+    for (int g = 0; g < generations; g += 2) {
+        step(first, second, size)
+        step(second, first, size)
+    }
+    int alive = 0
+    int checksum = 0
+    for (int i = 0; i < cells; i++) {
+        alive += int(first[i])
+        checksum = (checksum * 31 + int(first[i])) % 1000000007
+    }
+    cout << alive << " alive, checksum " << checksum << "\n"
+    return 0
+}

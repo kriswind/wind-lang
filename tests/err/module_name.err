@@ -1,0 +1,1 @@
+tests/err/module_name.wind:1:9: error: expected a name, found 'for'

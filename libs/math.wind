@@ -1,0 +1,86 @@
+// Mathematics: C's functions of floats, and helpers written in Wind.
+//
+//     import ::math
+//
+//     float r = math.sqrt(2.0)
+//     int n = math.clamp(level, 0, 10)
+//
+// It works on every target. On a board with 32-bit floats, such as an
+// Arduino Uno, a float has about seven digits.
+
+export const float PI = 3.14159265358979323846
+export const float E = 2.71828182845904523536
+
+// C's maths library, linked with the program only when it uses one of
+// these. The trigonometric functions take and give radians.
+export extern "math.h" link "m" {
+    float sqrt(float x)
+    float cbrt(float x)
+    float pow(float x, float y)
+    float exp(float x)
+    float log(float x)
+    float log10(float x)
+    float sin(float x)
+    float cos(float x)
+    float tan(float x)
+    float asin(float x)
+    float acos(float x)
+    float atan(float x)
+    float atan2(float y, float x)
+    float hypot(float x, float y)
+    float floor(float x)
+    float ceil(float x)
+    float round(float x)
+    float trunc(float x)
+    float fmod(float x, float y)
+    float fabs(float x)
+}
+
+// Whole numbers.
+
+export int abs(int n) { return n < 0 ? -n : n }
+export int min(int a, int b) { return a < b ? a : b }
+export int max(int a, int b) { return a > b ? a : b }
+
+// n, kept within low and high.
+export int clamp(int n, int low, int high) { return n < low ? low : n > high ? high : n }
+
+// -1, 0 or 1, as n is below, at or above zero.
+export int sign(int n) { return n < 0 ? -1 : n > 0 ? 1 : 0 }
+
+// The greatest common divisor, and the least common multiple.
+export int gcd(int a, int b) {
+    int x = abs(a)
+    int y = abs(b)
+    while (y != 0) {
+        int rest = x % y
+        x = y
+        y = rest
+    }
+    return x
+}
+
+export int lcm(int a, int b) {
+    if (a == 0 || b == 0) return 0
+    return abs(a / gcd(a, b) * b)
+}
+
+export bool is_prime(int n) {
+    if (n < 2) return false
+    for (int d = 2; d * d <= n; d++) {
+        if (n % d == 0) return false
+    }
+    return true
+}
+
+// Floats.
+
+export float fmin(float a, float b) { return a < b ? a : b }
+export float fmax(float a, float b) { return a > b ? a : b }
+export float fclamp(float x, float low, float high) { return x < low ? low : x > high ? high : x }
+
+// The value t of the way from a to b: a at 0, b at 1.
+export float lerp(float a, float b, float t) { return a + (b - a) * t }
+
+export float radians(float degrees) { return degrees * PI / 180.0 }
+export float degrees(float radians) { return radians * 180.0 / PI }

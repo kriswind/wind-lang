@@ -2,16 +2,17 @@ if exists("b:current_syntax")
   finish
 endif
 
-syn keyword windStorage const export typedef
+syn keyword windStorage const export typedef extern
 syn keyword windStructure struct enum
 syn keyword windOperator typeof
 syn keyword windInclude import
 syn match windInclude "\<as\>\ze\s\+\h\w*\s*$"
-syn keyword windConditional if else
-syn keyword windStatement goto return break continue
+syn keyword windConditional if else switch
+syn keyword windLabel case default
+syn keyword windStatement goto return break continue defer fallthrough
 syn keyword windRepeat while do for
 syn keyword windOperator sizeof
-syn keyword windBuiltin cout cin
+syn keyword windBuiltin cout cerr cin
 syn keyword windBoolean true false NULL
 syn keyword windType void bool string char byte
 syn keyword windType int i8 i16 i32 i64 i128

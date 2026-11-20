@@ -1,0 +1,27 @@
+// "++" and "--" are statements, an operator cannot carry on a line whose
+// statement is complete, a char is not a number, and a pointer is not an array.
+// A declaration whose value is broken still declares its name.
+
+int total(int values[]) { return len(values) }
+
+int main() {
+    int counts[4]
+    int at = 0
+    counts[at++] = 1
+    int next = at++ + 1
+    cout << next << "\n"
+    if (--counts[0] == 0) {
+        cout << "zero\n"
+    }
+    int sum = 1
+        + 2
+    at++
+        + 2
+    char c = 'b'
+    int code = c - 'a'
+    int shifted = c + 1
+    cout << counts[c] << code << shifted << sum << "\n"
+    int *p = &counts[0]
+    cout << total(p) << "\n"
+    return 0
+}

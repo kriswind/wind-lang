@@ -1,0 +1,50 @@
+// Matrix Fibonacci: Fibonacci numbers modulo a prime for many random large
+// indexes, each by raising the 2x2 matrix [[1, 1], [1, 0]] to the index
+// with repeated squaring. Prints the sum of the results modulo the prime.
+// The prime is below 2^26, so a sum of two products of entries stays below
+// 2^53 and exact in languages whose numbers are all floats.
+//
+//     wind run main.wind test|bench
+
+const int PRIME = 67108859
+
+struct Matrix {
+    int a; int b
+    int c; int d
+}
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+Matrix multiply(Matrix x, Matrix y) {
+    return {
+        (x.a * y.a + x.b * y.c) % PRIME, (x.a * y.b + x.b * y.d) % PRIME,
+        (x.c * y.a + x.d * y.c) % PRIME, (x.c * y.b + x.d * y.d) % PRIME
+    }
+}
+
+// The n-th Fibonacci number modulo PRIME: the top right of the matrix to
+// the n-th power.
+int fibonacci(int n) {
+    Matrix result = {1, 0, 0, 1}
+    Matrix base = {1, 1, 1, 0}
+    int left = n
+    while (left > 0) {
+        if (left & 1 == 1) result = multiply(result, base)
+        base = multiply(base, base)
+        left >>= 1
+    }
+    return result.b
+}
+
+int main(int argc, string argv[]) {
+    int queries = argc > 1 && argv[1] == "bench" ? 1000000 : 1000
+    int total = 0
+    for (int i = 0; i < queries; i++) total = (total + fibonacci(random())) % PRIME
+    cout << total << "\n"
+    return 0
+}

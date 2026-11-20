@@ -33,3 +33,17 @@ cin >> C[0]
 int l = len(n)
 int m = len(a, a)
 cout << x << y << z << l << m << b << small[0]
+
+void big_local() {
+    int table[1000000]
+    table[0] = 1
+    cout << table[0] << "\n"
+}
+
+int last_of(int values[]) {
+    return values[-1]
+}
+
+void ends(string word) {
+    cout << word[-1] << "after"[-1] << "\n"
+}

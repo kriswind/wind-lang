@@ -1,0 +1,51 @@
+// Pseudo-random numbers, from a small, fast generator (xorshift) written in
+// Wind. The same seed gives the same numbers on every machine and board,
+// which makes a run that used them easy to repeat.
+//
+//     import ::random
+//
+//     random.seed(42)
+//     int roll = random.range(1, 7)      // 1 to 6
+//
+// The numbers are not fit for anything secret.
+
+u32 state = 2463534242
+
+// Starts the numbers over from a seed. Any seed is fine.
+export void seed(u32 value) {
+    /* The generator never leaves zero, so zero is replaced. */
+    state = value == 0 ? 2463534242 : value
+}
+
+// The next number, from 0 to 4294967295.
+export u32 next() {
+    u32 x = state
+    x ^= x << 13
+    x ^= x >> 17
+    x ^= x << 5
+    state = x
+    return x
+}
+
+// A number from low up to, but not including, high; low when high is not
+// above it.
+export int range(int low, int high) {
+    if (high <= low) return low
+    return low + int(next() % u32(high - low))
+}
+
+// A float from 0 up to, but not including, 1.
+export float unit() { return float(next()) / 4294967296.0 }
+
+// True percent times out of a hundred.
+export bool chance(int percent) { return range(0, 100) < percent }
+
+// Puts the elements of an array in a random order.
+export void shuffle(int values[]) {
+    for (int i = len(values) - 1; i > 0; i--) {
+        int j = range(0, i + 1)
+        int held = values[i]
+        values[i] = values[j]
+        values[j] = held
+    }
+}

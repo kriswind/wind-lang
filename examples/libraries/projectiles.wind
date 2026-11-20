@@ -1,0 +1,37 @@
+// How far a ball flies when thrown at different angles, and the primes
+// below a hundred, using ::math.
+
+import ::math
+
+const float SPEED = 20.0   // metres per second
+const float GRAVITY = 9.81 // metres per second, per second
+
+// Distance travelled on level ground by something thrown at the angle,
+// in degrees, at SPEED.
+float distance(float angle) {
+    return SPEED * SPEED * math.sin(2.0 * math.radians(angle)) / GRAVITY
+}
+
+// Highest point reached on the way.
+float height(float angle) {
+    float up = SPEED * math.sin(math.radians(angle))
+    return up * up / (2.0 * GRAVITY)
+}
+
+int main() {
+    cout << "thrown at " << SPEED << " m/s\n"
+    cout << "angle  distance  height\n"
+    for (int angle = 15; angle <= 75; angle += 15) {
+        float d = math.round(distance(float(angle)) * 10.0) / 10.0
+        float h = math.round(height(float(angle)) * 10.0) / 10.0
+        cout << angle << "     " << d << " m    " << h << " m\n"
+    }
+
+    cout << "\nprimes below 100:"
+    for (int n = 2; n < 100; n++) {
+        if (math.is_prime(n)) cout << " " << n
+    }
+    cout << "\n\ngcd(1071, 462) = " << math.gcd(1071, 462) << ", lcm(4, 6) = " << math.lcm(4, 6) <<
+        ", the square root of 2 is " << math.sqrt(2.0) << "\n"
+    return 0
+}

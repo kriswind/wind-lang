@@ -1,0 +1,2 @@
+#module one
+export int x() { return 1 }

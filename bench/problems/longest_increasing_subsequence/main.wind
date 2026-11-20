@@ -1,0 +1,50 @@
+// Longest increasing subsequence: the length of the longest strictly
+// increasing subsequence of random values, by patience sorting. tails[k]
+// holds the smallest value that ends an increasing subsequence of length
+// k + 1 so far; the tails are increasing, so each value finds its place by
+// binary search, replacing the first tail that is not smaller than it, or
+// extending the list. The values run from 0 to 999999, from the shared
+// generator, so some repeat. Prints the length and the sum of the final
+// tails.
+//
+//     wind run main.wind test|bench
+
+const int MAX = 3000000
+
+int values[MAX]
+int tails[MAX]
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+int longest(int n) {
+    int length = 0
+    for (int i = 0; i < n; i++) {
+        int x = values[i]
+        int low = 0
+        int high = length
+        while (low < high) {
+            int middle = (low + high) / 2
+            if (tails[middle] < x) low = middle + 1
+            else high = middle
+        }
+        tails[low] = x
+        if (low == length) length++
+    }
+    return length
+}
+
+int main(int argc, string argv[]) {
+    int n = argc > 1 && argv[1] == "bench" ? MAX : 5000
+    for (int i = 0; i < n; i++) values[i] = random() % 1000000
+    int length = longest(n)
+    int sum = 0
+    for (int k = 0; k < length; k++) sum += tails[k]
+    cout << "length " << length << "\n"
+    cout << "tails " << sum << "\n"
+    return 0
+}

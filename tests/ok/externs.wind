@@ -1,0 +1,33 @@
+// Functions and constants that C defines, reached through "extern": with
+// the header that declares them, or, without one, declared by the
+// generated C itself.
+extern "stdlib.h" i32 abs(i32 n)
+extern "ctype.h" i32 toupper(i32 c)
+extern "limits.h" const i32 INT_MAX
+extern "stdio.h" const i32 EOF
+
+// A block shares its header among its declarations.
+extern "string.h" {
+    uint strlen(char *text)
+    char *strchr(char *text, i32 c); i32 strcmp(char *a, char *b)
+}
+
+// A block without one: the generated C declares its functions itself.
+extern {
+    i32 putchar(i32 c)
+    i32 rand()
+}
+
+const i32 BIGGEST = INT_MAX
+
+cout << abs(-5) << " " << strlen("wind") << " " << INT_MAX << " " << EOF << "\n"
+putchar(i32('o'))
+putchar(i32('k'))
+putchar(10)
+
+char *word = cstring("loud")
+for (int i = 0; i < int(strlen(word)); i++) word[i] = char(toupper(i32(word[i])))
+cout << word << " " << BIGGEST - 1 << " " << strchr(word, i32('U')) << " " <<
+    (strchr(word, i32('x')) == NULL) << " " << strcmp("a", "b") << "\n"
+putchar(i32('-'))
+cout << (rand() >= 0) << "\n"

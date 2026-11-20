@@ -1,0 +1,22 @@
+struct Row { int cells[] }
+
+void takes(int g[][3]) {}
+
+int main() {
+    int rows[..][..]
+    int *q = rows[0]
+    int *r = &rows[0][0]
+    int g[2][2]
+    g[0] = 5
+    cin >> g[0]
+    int m[string][..]
+    int *z = m["a"]
+    const int C[2][2] = {{1, 2}, {3, 4}}
+    C[0][1] = 3
+    takes(g)
+    int open[2][] = {{1}, {2}}
+    int row[..] = {1, 2}
+    append(rows, row)
+    int a[2][2] = {{1, 2, 3}}
+    return 0
+}

@@ -1,0 +1,8 @@
+#module geo
+
+// Part of the geometry library, which is a folder: a program that imports
+// ::geometry gets what every file in it exports, as one module named by
+// this #module.
+export const string NAME = "geometry"
+export int rectangleArea(int w, int h) { return w * h }
+export int squareArea(int side) { return rectangleArea(side, side) }

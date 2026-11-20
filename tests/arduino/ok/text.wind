@@ -1,0 +1,12 @@
+#target arduino
+#board arduino:avr:uno
+
+// Building text and formatting on a board.
+int main() {
+    char line[..]
+    append(line, "temp ", fixed(21.456, 1), "C")
+    cout << "[" << left(string(line), 12) << "][" << right(fixed(3.14159, 3), 7) << "]\n"
+    cerr << "warn: " << 5 << "\n"
+    delete(line)
+    return 0
+}

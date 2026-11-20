@@ -1,0 +1,7 @@
+int main() {
+    cout << '\x' << "\777" << '\q' << "\n"
+    assert(3)
+    assert()
+    panic()
+    return 0
+}

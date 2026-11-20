@@ -1,0 +1,30 @@
+// What growable arrays do not allow.
+int fixed[3]
+const int LIMITS[..] = {1, 2}
+
+void grow(int into[..]) { append(into, 1) }
+void view(int values[]) {
+    append(values, 1)
+    grow(values)
+}
+extern int c_sum(int values[..])
+
+int main() {
+    int numbers[..] = {1, 2, 3}
+    int *first = &numbers[0]
+    int *all = numbers
+    grow(fixed)
+    append(fixed, 4)
+    numbers = fixed
+    int other[..] = numbers
+    cout << clone(numbers) << "\n"
+    append(numbers, "four")
+    append(numbers)
+    int size = sizeof(numbers)
+    cout << numbers[-1] << "\n"
+    reserve(numbers, "lots")
+    int top = pop(numbers, 2)
+    string names[..] = clone(numbers)
+    cout << first << all << size << top << other << "\n"
+    return 0
+}

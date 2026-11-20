@@ -1,0 +1,36 @@
+// An electronic die: every two seconds it throws, blinks the board's LED as
+// many times as it threw, and reports the throw and a running average over
+// the serial port. It uses ::random, which works on boards too, seeded from
+// the noise on an unconnected analog pin, and ::math.
+//
+//     wind run --fqbn arduino:avr:uno examples/arduino/dice.wind
+
+#target arduino
+#board rp2040:rp2040:rpipico2w
+
+import ::vendor/arduino
+import ::random
+import ::math
+
+int throws = 0
+int total = 0
+
+arduino.pinMode(arduino.LED_BUILTIN, arduino.OUTPUT)
+random.seed(u32(arduino.analogRead(arduino.A0)) * 2654435761 + arduino.micros())
+arduino.waitForSerial(10000)
+cout << "rolling\n"
+
+void loop() {
+    int pips = random.range(1, 7)
+    throws++
+    total += pips
+    for (int i = 0; i < pips; i++) {
+        arduino.digitalWrite(arduino.LED_BUILTIN, arduino.HIGH)
+        arduino.delay(150)
+        arduino.digitalWrite(arduino.LED_BUILTIN, arduino.LOW)
+        arduino.delay(150)
+    }
+    float average = math.round(float(total) / float(throws) * 100.0) / 100.0
+    cout << "throw " << throws << ": " << pips << " (average " << average << ")\n"
+    arduino.delay(2000 - u32(pips) * 300)
+}

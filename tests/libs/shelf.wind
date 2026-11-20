@@ -1,0 +1,29 @@
+// Exports through a block: everything in it is exported, extern blocks
+// included, and what is outside it is not.
+
+export {
+    const int SHELVES = 3
+    const string LABEL = "pantry"
+
+    struct Jar {
+        string name
+        int grams
+    }
+
+    enum Size { SMALL, LARGE }
+
+    Jar fill(string name, int grams) {
+        return {name, grams * weight()}
+    }
+
+    extern "stdlib.h" {
+        int abs(int value)
+    }
+}
+
+int weight() { return 2 }
+
+export const {
+    int MAX_JARS = 12
+    string MAKER = "home"
+}

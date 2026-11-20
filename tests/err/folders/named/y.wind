@@ -1,0 +1,2 @@
+#module two
+export int y() { return 2 }

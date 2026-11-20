@@ -1,0 +1,59 @@
+// Counting islands: how many islands a square grid of land and water has,
+// and how many cells the largest covers, where about 45% of the cells are
+// land, from the shared generator, and land cells touching up, down, left or
+// right belong to one island. Each island is flood-filled with an explicit
+// stack rather than by recursion, and its cells are marked as they are
+// pushed, so each is pushed once.
+//
+//     wind run main.wind test|bench
+
+const int MAX_SIDE = 3000
+const int MAX = MAX_SIDE * MAX_SIDE
+
+// 0 is water, 1 unvisited land, 2 land already counted.
+u8 land[MAX]
+int stack[MAX]
+int top = 0
+
+int seed = 42
+
+int random() {
+    seed = seed * 48271 % 2147483647
+    return seed
+}
+
+void visit(int cell) {
+    if (land[cell] == 1) {
+        land[cell] = 2
+        stack[top] = cell
+        top++
+    }
+}
+
+int main(int argc, string argv[]) {
+    int side = argc > 1 && argv[1] == "bench" ? MAX_SIDE : 60
+    int n = side * side
+    for (int i = 0; i < n; i++) land[i] = random() % 100 < 45 ? 1 : 0
+    int islands = 0
+    int largest = 0
+    for (int start = 0; start < n; start++) {
+        if (land[start] != 1) continue
+        islands++
+        int size = 0
+        visit(start)
+        while (top > 0) {
+            top--
+            int cell = stack[top]
+            size++
+            int row = cell / side
+            int col = cell % side
+            if (row > 0) visit(cell - side)
+            if (row < side - 1) visit(cell + side)
+            if (col > 0) visit(cell - 1)
+            if (col < side - 1) visit(cell + 1)
+        }
+        if (size > largest) largest = size
+    }
+    cout << islands << " islands, the largest of " << largest << " cells\n"
+    return 0
+}
